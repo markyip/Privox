@@ -498,15 +498,14 @@ def install_dependencies(gui_instance, target_base_dir, gpu_support):
 
     # Platform / GPU Specifics
     if sys.platform == 'win32' and gpu_support:
-        # CRITICAL: Install torch/torchaudio FIRST from CUDA index ONLY (no fallback to PyPI)
-        # Using --no-index ensures we don't accidentally get CPU-only versions from PyPI
+        # CRITICAL: Install torch/torchaudio FIRST from CUDA index ONLY (no PyPI fallback)
+        # Don't use --extra-index-url for PyPI here to prevent CPU-only fallback
         torch_cmd = [
             python_exe, "-m", "pip", "install", 
             "--target", lib_dir,
             "--no-input",
             "--upgrade",
             "--index-url", "https://download.pytorch.org/whl/cu124",
-            "--no-index",  # Don't fall back to PyPI for torch
             "torch", "torchaudio"
         ]
         

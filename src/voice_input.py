@@ -95,6 +95,14 @@ else:
 # Path Isolation: Ensure we only use the libraries we installed
 lib_dir = os.path.join(BASE_DIR, "_internal_libs")
 if os.path.exists(lib_dir):
+    # CRITICAL: Disable user site-packages to prevent global packages from overriding our GPU libs
+    import site
+    site.ENABLE_USER_SITE = False
+    # Also remove user site-packages if already in path
+    user_site = site.getusersitepackages() if hasattr(site, 'getusersitepackages') else None
+    if user_site:
+        sys.path = [p for p in sys.path if not p.startswith(user_site)]
+    
     # Scrub any existing _internal_libs from path to avoid 3.12/3.13 pollution
     sys.path = [p for p in sys.path if "_internal_libs" not in p]
     # We insert at the BEGINNING to prioritize our bundled GPU libs over system libs

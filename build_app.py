@@ -24,11 +24,10 @@ PyInstaller.__main__.run([
     # '--hidden-import=voice_input',
     
     # Dependencies to Bundle (Lite but functional)
-    '--hidden-import=pystray',
-    '--hidden-import=pystray._win32',
-    '--hidden-import=sounddevice',
-    '--hidden-import=PIL',
-    # Removed hidden imports for external packages (funasr, etc)
+    # '--hidden-import=pystray',
+    # '--hidden-import=pystray._win32',
+    # '--hidden-import=sounddevice',
+    # '--hidden-import=PIL',
     
     # Explicit Exclusions (Heavy Libs handled by Bootstrap)
     '--exclude-module=torch',
@@ -40,22 +39,18 @@ PyInstaller.__main__.run([
     '--exclude-module=matplotlib',
     '--exclude-module=pandas',
     '--exclude-module=scipy',
-    # '--exclude-module=tkinter', # Allowed for Installer UI
-    '--exclude-module=transformers', # Explicitly exclude transformers too
+    '--exclude-module=transformers', 
     '--exclude-module=faster_whisper',
     '--exclude-module=ctranslate2',
     '--exclude-module=tokenizers',
-    # '--exclude-module=funasr', # Removed
-    # '--exclude-module=modelscope', # Removed
-    # '--exclude-module=opencc', # Removed
-    # '--exclude-module=cn2an', # Removed
-    # '--exclude-module=jieba', # Removed
     '--exclude-module=onnxruntime',
-    
-    # Collects (Ensure bindings and small extensions are present where needed)
-    '--collect-all=llama_cpp',
-    # '--exclude-module=llama_cpp', 
-    # Removed collections for funasr/opencc as they are now external
+    '--exclude-module=llama_cpp', # Exclude llama_cpp as it is in _internal_libs
+    '--exclude-module=PIL',
+    '--exclude-module=pystray',
+    '--exclude-module=sounddevice',
+    '--exclude-module=pynput',
+    '--exclude-module=pyperclip',
+    '--exclude-module=huggingface_hub',
 ])
 
 print("Build Complete. Executable is in 'dist/Privox.exe'")

@@ -130,5 +130,4 @@ Privox is designed to be resource-friendly.
 - [ ] **Lightweight Models**: Explore smaller models for faster execution and reduced storage requirements.
 - [ ] **Simultaneous Multi-language Handling**: Investigate models that can effectively process multiple languages within the same sentence.
 - [ ] **Tone Selection**: Explore building or integrating models that offer multiple tone options (e.g., sarcastic, polite, friendly).
-- [ ] **Size Optimization**: Minimize the executable and overall package size for a lighter footprint.
 - [ ] **Configuration GUI**: A standalone settings window to adjust hotkeys and models without editing `config.json`.

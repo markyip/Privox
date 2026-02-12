@@ -126,8 +126,8 @@ class InstallerGUI(tk.Tk):
         # --- Welcome Page ---
         p1 = ttk.Frame(self.main_content)
         
-        ttk.Label(p1, text="Welcome to Wispr Setup", font=("Segoe UI", 16, "bold")).pack(pady=(10, 20))
-        ttk.Label(p1, text="Wispr Local is a local, privacy-focused speech-to-text tool.\nThis wizard will guide you through the setup process.", justify=tk.CENTER).pack(pady=10)
+        ttk.Label(p1, text="Welcome to Privox Setup", font=("Segoe UI", 16, "bold")).pack(pady=(10, 20))
+        ttk.Label(p1, text="Privox is a local, privacy-focused speech-to-text tool.\nThis wizard will guide you through the setup process.", justify=tk.CENTER).pack(pady=10)
         
         opt_frame = ttk.LabelFrame(p1, text="Installation Mode", padding=15)
         opt_frame.pack(fill=tk.X, pady=20)
@@ -147,7 +147,7 @@ class InstallerGUI(tk.Tk):
         
         # --- Progress Page ---
         p2 = ttk.Frame(self.main_content)
-        ttk.Label(p2, text="Installing Wispr...", font=("Segoe UI", 14, "bold")).pack(pady=(10, 20))
+        ttk.Label(p2, text="Installing Privox...", font=("Segoe UI", 14, "bold")).pack(pady=(10, 20))
         
         self.pb = ttk.Progressbar(p2, variable=self.progress_val, maximum=100)
         self.pb.pack(fill=tk.X, pady=10)
@@ -162,7 +162,7 @@ class InstallerGUI(tk.Tk):
         # --- Success Page ---
         p3 = ttk.Frame(self.main_content)
         ttk.Label(p3, text="Installation Complete!", font=("Segoe UI", 16, "bold"), foreground="green").pack(pady=(40, 20))
-        ttk.Label(p3, text="Wispr Local has been successfully set up.", justify=tk.CENTER).pack(pady=10)
+        ttk.Label(p3, text="Privox has been successfully set up.", justify=tk.CENTER).pack(pady=10)
         
         self.pages["success"] = p3
 
@@ -368,6 +368,7 @@ def install_app_files(log_callback=None):
             # 1. Kill the EXE instances
             subprocess.run(["taskkill", "/F", "/IM", "Privox.exe", "/FI", f"PID ne {my_pid}"], 
                            creationflags=subprocess.CREATE_NO_WINDOW, capture_output=True)
+            # Legacy cleanup
             subprocess.run(["taskkill", "/F", "/IM", "WisprLocal_v2.exe", "/FI", f"PID ne {my_pid}"], 
                            creationflags=subprocess.CREATE_NO_WINDOW, capture_output=True)
             
@@ -709,7 +710,7 @@ def launch_main_app(base_dir):
         import traceback
         err = f"App Launch Failed: {e}\n\n{traceback.format_exc()}"
         log_info(err)
-        ctypes.windll.user32.MessageBoxW(0, err, "Wispr Error", 0x10)
+        ctypes.windll.user32.MessageBoxW(0, err, "Privox Error", 0x10)
 
 def uninstall_app():
     log_info("Uninstalling application...")
@@ -723,14 +724,14 @@ def uninstall_app():
 
     try:
         import winreg
-        key_path = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Wispr"
+        key_path = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Privox"
         winreg.DeleteKey(winreg.HKEY_CURRENT_USER, key_path)
         run_key = r"Software\Microsoft\Windows\CurrentVersion\Run"
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, run_key, 0, winreg.KEY_SET_VALUE) as key:
-             winreg.DeleteValue(key, "WisprLocal")
+             winreg.DeleteValue(key, "Privox")
     except: pass
     
-    app_name = "Wispr Local"
+    app_name = "Privox"
     # Files
     desktop = os.path.join(os.environ['USERPROFILE'], 'Desktop', f"{app_name}.lnk")
     start_menu = os.path.join(os.environ['APPDATA'], 'Microsoft', 'Windows', 'Start Menu', 'Programs', f"{app_name}.lnk")
@@ -745,7 +746,7 @@ def uninstall_app():
     rmdir /s /q "{install_dir}"
     del "%~f0"
     """
-    bat_path = os.path.join(os.environ['TEMP'], "wispr_uninstall.bat")
+    bat_path = os.path.join(os.environ['TEMP'], "privox_uninstall.bat")
     with open(bat_path, "w") as f:
         f.write(cleanup_script)
     subprocess.Popen(["cmd", "/c", bat_path], creationflags=subprocess.CREATE_NO_WINDOW)
@@ -756,7 +757,7 @@ def main():
         sys.exit(0)
 
     is_installed = False
-    install_dir = os.path.join(os.environ['LOCALAPPDATA'], "Wispr")
+    install_dir = os.path.join(os.environ['LOCALAPPDATA'], "Privox")
     
     # Log startup details for debugging
     log_info(f"Startup - EXE_DIR: {EXE_DIR}")

@@ -56,9 +56,6 @@ PyInstaller.__main__.run([
     '--collect-all=llama_cpp',
     # '--exclude-module=llama_cpp', 
     # Removed collections for funasr/opencc as they are now external
-    
-    # Output Name
-    '--name=WisprLocal_v2'
 ])
 
-print("Build Complete. Executable is in 'dist/WisprLocal.exe'")
+print("Build Complete. Executable is in 'dist/Privox.exe'")

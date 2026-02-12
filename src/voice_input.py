@@ -7,21 +7,26 @@ import time
 import json
 import re
 import gc
-import gc
 if sys.platform == 'win32':
     import winreg
 
 # Disable Symlinks for Windows (Fixes WinError 1314)
 os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
 
-# Configure logging immediately
+# Configure logging
 logging.basicConfig(
-    filename='wispr_debug.log',
-    filemode='w',
+    filename='privox_app.log',
+    filemode='a',
     format='%(asctime)s.%(msecs)03d - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S',
-    level=logging.DEBUG
+    level=logging.INFO,
+    force=True
 )
+
+# Silence noisy external loggers
+logging.getLogger("PIL").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
 
 # Redirect stdout/stderr to logging to avoid 'NoneType' has no attribute 'write' in --noconsole mode
 class LoggerWriter:
@@ -37,7 +42,8 @@ sys.stdout = LoggerWriter(logging.info)
 sys.stderr = LoggerWriter(logging.error)
 
 def log_print(msg, **kwargs):
-    logging.info(msg)
+    # Only print to stdout. sys.stdout is already redirected to logging.info
+    # This prevents duplicate log entries.
     print(msg, **kwargs)
 
 def resource_path(relative_path):
@@ -49,7 +55,65 @@ def resource_path(relative_path):
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
 
-log_print("Starting Wispr Voice Input (English Edition)...")
+log_print("Starting Privox...")
+
+# --- 1. System Diagnostics & Path Prioritization ---
+try:
+    import sys
+    import os
+    import logging
+    
+    # We MUST ensure standard libraries are reachable BEFORE we clobber sys.path
+    log_print(f"System Diagnostic - Python Interpreter: {sys.executable}")
+    log_print(f"System Diagnostic - sys.prefix: {sys.prefix}")
+    
+    # Check for core modules
+    try:
+        import timeit
+        import json
+        import re
+        log_print("System Diagnostic - Standard libraries verified.")
+    except ImportError as e:
+        log_print(f"CRITICAL SYSTEM ERROR: Standard library missing: {e}")
+        # If standard libs are missing, something is wrong with the Python install.
+        # We'll try to add the default Lib paths if we can guess them.
+        lib_path = os.path.join(sys.prefix, "Lib")
+        if os.path.exists(lib_path) and lib_path not in sys.path:
+            sys.path.append(lib_path)
+    
+except Exception as e:
+    print(f"Boot Error: {e}")
+
+# Base Directory for models/libs
+if getattr(sys, 'frozen', False):
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    if BASE_DIR.endswith('src'):
+         BASE_DIR = os.path.dirname(BASE_DIR)
+
+# Path Isolation: Ensure we only use the libraries we installed
+lib_dir = os.path.join(BASE_DIR, "_internal_libs")
+if os.path.exists(lib_dir):
+    # Scrub any existing _internal_libs from path to avoid 3.12/3.13 pollution
+    sys.path = [p for p in sys.path if "_internal_libs" not in p]
+    # We insert at the BEGINNING to prioritize our bundled GPU libs over system libs
+    if lib_dir not in sys.path:
+        sys.path.insert(0, lib_dir)
+
+    # Windows DLL paths for CUDA
+    if sys.platform == 'win32':
+        added_dlls = False
+        for root, dirs, files in os.walk(lib_dir):
+            if 'bin' in dirs:
+                bin_path = os.path.normpath(os.path.join(root, 'bin'))
+                if any(f.lower().endswith('.dll') for f in os.listdir(bin_path)):
+                    try:
+                        os.add_dll_directory(bin_path)
+                        added_dlls = True
+                    except: pass
+        if added_dlls:
+             logging.info("NVIDIA/CUDA DLL paths added to environment.")
 
 try:
     log_print("Importing core utilities...")
@@ -59,7 +123,10 @@ try:
     import pystray
     from PIL import Image, ImageDraw
     import pyperclip
-    from huggingface_hub import hf_hub_download
+    from huggingface_hub import hf_hub_download, snapshot_download
+    
+    # Global Torch Import (Essential for multi-threaded access)
+    import torch
     
     # Windows Sound
     try:
@@ -69,16 +136,12 @@ try:
     
     log_print("Core imports successful.")
 except Exception as e:
+    import traceback
     log_print(f"CRITICAL UTILITY IMPORT ERROR: {e}")
+    log_print(traceback.format_exc())
     if sys.platform == 'win32':
         import ctypes
-        ctypes.windll.user32.MessageBoxW(0, f"Critical Utility Initialization Error:\n\n{e}", "Wispr Local Error", 0x10)
-    sys.exit(1)
-except Exception as e:
-    log_print(f"CRITICAL IMPORT ERROR: {e}")
-    if sys.platform == 'win32':
-        import ctypes
-        ctypes.windll.user32.MessageBoxW(0, f"Critical Initialization Error:\n\n{e}", "Wispr Local Error", 0x10)
+        ctypes.windll.user32.MessageBoxW(0, f"Critical Utility Initialization Error:\n\n{e}\n\nCheck privox_app.log for details.", "Privox Error", 0x10)
     sys.exit(1)
 
 # --- Configuration ---
@@ -90,10 +153,10 @@ MIN_SPEECH_DURATION_MS = 250
 SPEECH_PAD_MS = 500
 
 # Models
-WHISPER_SIZE = "distil-medium.en" # Fast, English Only, Accurate
-# WHISPER_SIZE = "base.en" # Alternative smaller model
+WHISPER_SIZE = "turbo" # Default
+WHISPER_REPO = "deepdml/faster-whisper-large-v3-turbo-ct2"
 
-# Llama 3.2 3B Instruct - Best for formatting/instruction following in small size
+# Llama 3.2 3B Instruct
 GRAMMAR_REPO = "bartowski/Llama-3.2-3B-Instruct-GGUF"
 GRAMMAR_FILE = "Llama-3.2-3B-Instruct-Q4_K_M.gguf"
 
@@ -129,7 +192,7 @@ class GrammarChecker:
             return
 
         # 1. Check Local "models" folder (Offline Mode)
-        local_model_path = os.path.join(os.getcwd(), "models", GRAMMAR_FILE)
+        local_model_path = os.path.join(BASE_DIR, "models", GRAMMAR_FILE)
         if os.path.exists(local_model_path):
             log_print(f"Found local model: {local_model_path}")
             model_path = local_model_path
@@ -157,11 +220,11 @@ class GrammarChecker:
             # Heavy Import: Llama
             log_print("Importing llama_cpp...")
             from llama_cpp import Llama
-            import torch
 
             # CPU Fallback for Llama - Safer in bundled environments
             # Try GPU first if available, otherwise fallback to CPU (0)
-            n_gpu = -1 if torch.cuda.is_available() else 0
+            is_gpu = torch.cuda.is_available()
+            n_gpu = -1 if is_gpu else 0
             
             try:
                 self.model = Llama(
@@ -178,7 +241,8 @@ class GrammarChecker:
                     n_gpu_layers=0, 
                     verbose=False
                 )
-            log_print(f"Done. (GPU Layers: {n_gpu if self.model and self.model.context_params.n_gpu_layers > 0 else 0})")
+            
+            log_print(f"Done. (GPU Acceleration: {'ENABLED' if is_gpu else 'DISABLED'})")
         except Exception as e:
             log_print(f"\nError loading Grammar Model: {e}")
             self.loading_error = str(e)
@@ -204,12 +268,15 @@ class GrammarChecker:
                     system_prompt = self.dictation_prompt.replace("{dict}", dict_prompt)
                 else:
                     system_prompt = (
-                        "You are a strict text editing engine. Your ONLY task is to rewrite the user's text to be grammatically correct and better formatted."
+                        "You are a strict text editing engine. Your ONLY task is to rewrite the input text to be grammatically correct, better formatted, and professionally polished. "
+                        "Preserve the original language (English or Traditional Chinese/Cantonese)."
                         "\n\nRULES:"
                         "\n1. Output ONLY the corrected text. Do NOT converse. Do NOT say 'Here is the corrected text'."
-                        "\n2. If the input is a question, correct the grammar of the question. Do NOT answer it."
-                        "\n3. If the input is a list, format it as a markdown bulleted list."
-                        "\n4. Maintain the original meaning."
+                        "\n2. FIX CAPITALIZATION: Ensure the first letter of every sentence is capitalized."
+                        "\n3. FIX PUNCTUATION: Ensure every sentence ends with appropriate punctuation (., ?, or !)."
+                        "\n4. If the input is a question, correct the grammar of the question. Do NOT answer it."
+                        "\n5. If the input is a list, format it as a markdown bulleted list."
+                        "\n6. Maintain the original meaning and language."
                         f"{dict_prompt}"
                     )
                 user_content = f"Input Text: {text}\n\nCorrected Text:"
@@ -270,6 +337,7 @@ class VoiceInputApp:
         
         self.models_ready = False
         self.loading_status = "Initializing..."
+        self.ui_state = "LOADING"
         
         # Initialize Placeholders
         self.grammar_checker = GrammarChecker(
@@ -290,6 +358,7 @@ class VoiceInputApp:
         self.heavy_models_loaded = False
         self.model_lock = threading.Lock()
         self.vram_timeout = 60 # Seconds before unloading
+        self.pending_wakeup = False # Auto-start recording after loading?
 
         # Start loading threads
         threading.Thread(target=self.initial_load, daemon=True).start()
@@ -307,7 +376,6 @@ class VoiceInputApp:
         # 1. Load VAD Model (Silero)
         log_print("Loading Silero VAD...", end="", flush=True)
         try:
-            import torch
             self.vad_model, utils = torch.hub.load(repo_or_dir='snakers4/silero-vad',
                                                   model='silero_vad',
                                                   force_reload=False,
@@ -338,27 +406,50 @@ class VoiceInputApp:
             self.grammar_checker.load_model()
 
             # Load Faster-Whisper
-            log_print(f"Loading Faster-Whisper ({WHISPER_SIZE})...", end="", flush=True)
+            log_print(f"Loading Faster-Whisper ({WHISPER_SIZE})...")
             
             try:
-                from faster_whisper import WhisperModel
-                import torch
+                # 1. Path Diagnostics
+                local_whisper = os.path.join(BASE_DIR, "models", f"whisper-{WHISPER_SIZE}")
+                log_print(f"ASR Diagnostic - BASE_DIR: {BASE_DIR}")
+                log_print(f"ASR Diagnostic - Model path: {local_whisper}")
                 
-                if torch.cuda.is_available():
-                    device_str = "cuda"
-                    compute_type = "float16" 
-                else:
-                    device_str = "cpu"
-                    compute_type = "int8" # CPU usually needs int8 for speed or int8_float32
+                if os.path.exists(local_whisper):
+                    log_print(f"ASR Diagnostic - Folder contents: {os.listdir(local_whisper)}")
+                    bin_file = os.path.join(local_whisper, "model.bin")
+                    if os.path.exists(bin_file):
+                         log_print(f"ASR Diagnostic - model.bin size: {os.path.getsize(bin_file) / (1024*1024):.1f} MB")
+                
+                # 2. Initialization Diagnostics
+                from faster_whisper import WhisperModel
+                log_print(f"ASR Diagnostic - Torch Path: {torch.__file__}")
+                is_gpu = torch.cuda.is_available()
+                log_print(f"ASR Diagnostic - CUDA available: {is_gpu}")
+                
+                if is_gpu:
+                    log_print(f"ASR Diagnostic - CUDA Device: {torch.cuda.get_device_name(0)}")
+                
+                device_str = "cuda" if is_gpu else "cpu"
+                compute_type = "float16" if is_gpu else "int8"
 
-                self.asr_model = WhisperModel(
-                    WHISPER_SIZE, 
-                    device=device_str, 
-                    compute_type=compute_type
-                )
-                log_print(f"Done. (Device: {device_str}, Compute: {compute_type})")
+                # 3. Initialization with Fallback
+                model_path = local_whisper if os.path.exists(os.path.join(local_whisper, "model.bin")) else WHISPER_REPO
+                try:
+                    log_print(f"ASR Diagnostic - Initializing WhisperModel on {device_str}...")
+                    self.asr_model = WhisperModel(model_path, device=device_str, compute_type=compute_type)
+                except Exception as e_gpu:
+                    if is_gpu:
+                        log_print(f"ASR Warning - CUDA failed ({e_gpu}). Falling back to CPU...")
+                        self.asr_model = WhisperModel(model_path, device="cpu", compute_type="int8")
+                    else:
+                        raise e_gpu
+
+                log_print(f"WhisperModel initialized successfully.")
             except Exception as e:
-                log_print(f"\nError loading Whisper: {e}")
+                import traceback
+                error_details = traceback.format_exc()
+                log_print(f"ASR SETUP ERROR: {e}")
+                log_print(f"Traceback: {error_details}")
                 self.loading_status = "Error Loading ASR"
                 self.update_tray_tooltip()
                 return
@@ -368,14 +459,27 @@ class VoiceInputApp:
             self.loading_status = "Ready"
             self.update_status("READY")
             log_print(f"Acceleration Status: {'GPU ENABLED' if torch.cuda.is_available() else 'CPU MODE'}")
-            self.sound_manager.play_start() 
+            
+            # Reset activity timer so we don't immediately unload
+            self.last_activity_time = time.time()
+            self.sound_manager.play_start()
+            
+            # Auto-Start Recording if we woke up from F8
+            if self.pending_wakeup:
+                self.pending_wakeup = False
+                # Must call from main thread logic ideally, but start_listening is thread-safe enough
+                # We need a tiny delay to ensure sound finishes playing or doesn't overlap
+                time.sleep(0.1) 
+                self.start_listening()
+  
 
     def unload_heavy_models(self):
         with self.model_lock:
             if not self.heavy_models_loaded:
                 return
             
-            log_print("Unloading Models (VRAM Saver)...")
+            idle_time = time.time() - self.last_activity_time
+            log_print(f"Unloading Models (VRAM Saver - Idle for {idle_time:.1f}s)...")
             self.asr_model = None
             self.grammar_checker.unload_model()
             
@@ -387,6 +491,7 @@ class VoiceInputApp:
             self.heavy_models_loaded = False
             self.loading_status = "Idle (VRAM Free)"
             self.update_tray_tooltip()
+            self.update_status("SLEEP") # Trigger flat line animation
             log_print("Models Unloaded. VRAM released.")
 
     def load_config(self):
@@ -410,67 +515,186 @@ class VoiceInputApp:
                     
                     # Model overrides
                     global WHISPER_SIZE, GRAMMAR_REPO, GRAMMAR_FILE
+                    old_whisper = WHISPER_SIZE
                     WHISPER_SIZE = config.get("whisper_model", WHISPER_SIZE)
                     GRAMMAR_REPO = config.get("grammar_repo", GRAMMAR_REPO)
                     GRAMMAR_FILE = config.get("grammar_file", GRAMMAR_FILE)
+                    
+                    # Verify model folder exists if overridden
+                    if WHISPER_SIZE != old_whisper:
+                        model_path = os.path.join(BASE_DIR, "models", f"whisper-{WHISPER_SIZE}")
+                        if not os.path.exists(model_path):
+                            log_print(f"WARNING: Configured model '{WHISPER_SIZE}' not found at {model_path}. Transcription may fail.")
                     
                     if hotkey_str in keyboard.Key.__members__:
                         self.hotkey = keyboard.Key[hotkey_str]
                     else:
                         self.hotkey = keyboard.KeyCode.from_char(hotkey_str)
                     
-                    log_print(f"Loaded Config - Hotkey: {self.hotkey}, Sound: {self.sound_enabled}, Timeout: {self.vram_timeout}s")
+                    log_print(f"Loaded Config - Hotkey: {self.hotkey}, Sound: {self.sound_enabled}, Timeout: {self.vram_timeout}s, Model: {WHISPER_SIZE}")
             else:
                 log_print(f"config.json not found at {config_path}, using defaults")
         except Exception as e:
             log_print(f"Error loading config: {e}. Using default.")
 
-    def create_icon(self, color):
-        icon_path = resource_path("assets/icon.png")
-        if os.path.exists(icon_path):
-            try:
-                base_image = Image.open(icon_path)
-                # If we want to add a status overlay, we can do it here
-                # For now, let's just return the image or a colored variant
-                return base_image
-            except Exception as e:
-                log_print(f"Error loading icon file: {e}")
 
-        # Fallback to dynamic drawing if file not found
-        width = 64
-        height = 64
-        image = Image.new('RGB', (width, height), (0, 0, 0))
-        dc = ImageDraw.Draw(image)
-        dc.ellipse((4, 4, 60, 60), outline="white", width=2)
-        dc.ellipse((14, 14, 50, 50), fill=color)
-        return image
 
     def update_tray_tooltip(self):
         if self.icon:
-            self.icon.title = f"Wispr: {self.loading_status}"
+            self.icon.title = f"Privox: {self.loading_status}"
 
     def update_status(self, status):
-        # status: READY, RECORDING, PROCESSING, ERROR, LOADING
-        if not self.icon:
-            return
-            
-        if not self.models_ready:
-            self.icon.icon = self.create_icon("grey")
-            self.update_tray_tooltip()
-            return
+        # status: READY, RECORDING, PROCESSING, ERROR, LOADING, SLEEP
+        self.ui_state = status
+        
+        # Immediate text update (icon handled by loop or here if static)
+        if not self.icon: return
 
         if status == "READY":
-            self.icon.icon = self.create_icon("cyan")
-            self.icon.title = "Wispr: Ready (F8)"
+            self.icon.title = "Privox: Ready (F8)"
         elif status == "RECORDING":
-            self.icon.icon = self.create_icon("red")
-            self.icon.title = "Wispr: Listening..."
+            self.icon.title = "Privox: Listening..."
         elif status == "PROCESSING":
-            self.icon.icon = self.create_icon("yellow")
-            self.icon.title = "Wispr: Processing..."
+            self.icon.title = "Privox: Processing..."
         elif status == "ERROR":
-            self.icon.icon = self.create_icon("orange")
-            self.icon.title = "Wispr: Error/No Mic"
+            self.icon.title = "Privox: Error/No Mic"
+        elif status == "SLEEP":
+             self.icon.title = "Privox: Sleeping (VRAM Saver Active)"
+
+    def animation_loop(self):
+        frame = 0
+        while self.running:
+            try:
+                if not self.icon:
+                    time.sleep(1)
+                    continue
+
+                # Default static icon path
+                icon_path = resource_path("assets/icon.png")
+                base_img = None
+                if os.path.exists(icon_path):
+                     base_img = Image.open(icon_path).convert("RGBA")
+                
+                # If static state, just ensure base icon is set once (to avoid cpu usage)
+                # But here we want custom static states too (e.g. ready = normal)
+                
+                new_icon = None
+                
+                if self.ui_state == "RECORDING":
+                    # Waveform Animation
+                    new_icon = self.draw_waveform(frame, base_img)
+                    frame += 1
+                    time.sleep(0.08) # 12fps
+                    
+                elif self.ui_state == "PROCESSING":
+                    # Spinner Animation
+                    new_icon = self.draw_spinner(frame, base_img)
+                    frame += 1
+                    time.sleep(0.08)
+                    
+                elif self.ui_state == "SLEEP":
+                    # Flat Line (Static or slow pulse?) -> Let's do static flat line
+                    # Only update if current icon is not already it? 
+                    # Simpler to re-draw for now, optimization later if needed.
+                    new_icon = self.draw_flat_line(base_img)
+                    time.sleep(0.5) # Slow update
+                    
+                elif self.ui_state == "ERROR":
+                    # Error Dot (Static - Monotone White)
+                    # Maybe draw an "!" or solid circle
+                    if base_img:
+                        new_icon = base_img.copy()
+                        d = ImageDraw.Draw(new_icon)
+                        # Draw "!" or white dot
+                        d.ellipse((48, 48, 60, 60), fill="white", outline="white")
+                    time.sleep(0.5)
+                    
+                else: # READY or LOADING
+                    # Just the base icon (Normal)
+                    # Maybe clear any overlays
+                    if base_img: new_icon = base_img
+                    time.sleep(0.5)
+
+                if new_icon:
+                    self.icon.icon = new_icon
+                    
+            except Exception as e:
+                log_print(f"Anim Error: {e}")
+                time.sleep(1)
+
+    def draw_waveform(self, frame, base_img):
+        # Draw dynamic waveform bars on top of base or instead of?
+        # User said "waveform as icon". Our icon IS a waveform.
+        # So we should animate the bars of the icon itself? 
+        # But we loaded a PNG. We can't easily animate components of a flat PNG.
+        # OPTION: Draw the waveform procedurally from scratch (like generate_icon.py).
+        
+        size = (64, 64)
+        bg_color = (25, 25, 35, 255) 
+        bar_color = (255, 255, 255, 255)
+        
+        img = Image.new("RGBA", size, bg_color)
+        draw = ImageDraw.Draw(img)
+        
+        # 4 Bars
+        import random
+        import math
+        
+        bar_w = 8
+        gap = 4
+        total_w = (4 * bar_w) + (3 * gap)
+        start_x = (64 - total_w) // 2
+        center_y = 32
+        
+        # Animate heights based on sine wave + noise
+        for i in range(4):
+            # Phase shift for each bar
+            # Time varying
+            t = frame * 0.5
+            
+            # Base height + sin wave
+            # random noise to look like voice
+            noise = random.randint(-5, 5)
+            h = 20 + int(15 * math.sin(t + i)) + noise
+            h = max(4, min(60, h))
+            
+            x = start_x + i * (bar_w + gap)
+            y1 = center_y - (h // 2)
+            y2 = center_y + (h // 2)
+            
+            draw.rectangle((x, y1, x+bar_w, y2), fill=bar_color)
+            
+        # Monotone: No Red Dot
+        # draw.ellipse((50, 50, 60, 60), fill="#ff4444", outline="white")
+            
+        return img
+
+    def draw_spinner(self, frame, base_img):
+        # Processing: Rotating Circle (Monotone White)
+        size = (64, 64)
+        bg_color = (25, 25, 35, 255) 
+        img = Image.new("RGBA", size, bg_color)
+        draw = ImageDraw.Draw(img)
+        
+        # Draw Arc
+        start_angle = (frame * 30) % 360
+        end_angle = (start_angle + 270) % 360
+        
+        draw.arc((12, 12, 52, 52), start=start_angle, end=end_angle, fill="white", width=4)
+        
+        return img
+
+    def draw_flat_line(self, base_img):
+        # Sleep Mode (Monotone White)
+        size = (64, 64)
+        bg_color = (25, 25, 35, 255) 
+        img = Image.new("RGBA", size, bg_color)
+        draw = ImageDraw.Draw(img)
+        
+        # Flat Line
+        draw.line((10, 32, 54, 32), fill="white", width=3) # Changed from grey to white for visibility
+        
+        return img
 
     def audio_callback(self, indata, frames, time, status):
         if self.running and self.mic_active and self.models_ready:
@@ -481,9 +705,13 @@ class VoiceInputApp:
             # Wake up detection
             if not self.heavy_models_loaded:
                 log_print("Wake up detected. Pre-loading models...")
+                self.pending_wakeup = True # Auto-start recording when ready
                 threading.Thread(target=self.load_heavy_models, daemon=True).start()
+                return # Don't fall through to error message
 
-            if not self.vad_model: # VAD must be loaded at least
+            if not self.vad_model or self.asr_model is None:
+                log_print("Ignored F8: Models not fully loaded.")
+                self.sound_manager.play_error()
                 return
 
             if not self.mic_active:
@@ -523,42 +751,60 @@ class VoiceInputApp:
         self.last_activity_time = time.time()
 
     def transcribe(self, audio_data):
-        duration = len(audio_data) / SAMPLE_RATE
-        if duration < (MIN_SPEECH_DURATION_MS / 1000):
-            log_print(f" [Audio too short: {duration:.2f}s - Ignored]")
-            self.update_status("READY")
-            return
-
-        max_amp = np.max(np.abs(audio_data))
-        if max_amp < 0.001: 
-            log_print(f" [Audio too quiet (Max Amp: {max_amp:.4f}) - Ignored]")
-            self.update_status("READY")
-            return
-
-        # Ensure models are loaded before transcribing
-        if not self.heavy_models_loaded:
-            log_print("Waiting for models to load...")
-            self.load_heavy_models()
-
-        log_print(" Transcribing (Faster-Whisper)...", flush=True)
-        t0 = time.time()
         try:
-            # Faster-Whisper expects float32 array
-            # No need for complex VAD merging here as we handle that upstream or pass single segment
+            duration = len(audio_data) / SAMPLE_RATE
+            max_amp = np.max(np.abs(audio_data))
+            rms = np.sqrt(np.mean(audio_data**2))
+            
+            log_print(f"\n--- Transcription Diagnostic ---")
+            log_print(f"Audio Stats - Duration: {duration:.2f}s, Max Amp: {max_amp:.4f}, RMS: {rms:.4f}")
+            
+            if duration < (MIN_SPEECH_DURATION_MS / 1000):
+                log_print(f" [Audio too short - Ignored]")
+                self.update_status("READY")
+                return
+
+            if max_amp < 0.001: 
+                log_print(f" [Audio too quiet - Ignored]")
+                self.update_status("READY")
+                return
+
+            # Ensure models are loaded before transcribing
+            if not self.heavy_models_loaded:
+                log_print("Waiting for models to load...")
+                self.load_heavy_models()
+                if not self.asr_model:
+                     log_print("ASR Model still missing after lazy load attempt.")
+                     self.update_status("READY")
+                     return
+
+            log_print(f" Transcribing Using Model: {WHISPER_SIZE}...", flush=True)
+            t0 = time.time()
+            
+            # Faster-Whisper
             segments, info = self.asr_model.transcribe(
                 audio_data.astype(np.float32), 
                 beam_size=5,
-                language="en", # Enforce English
+                language=None, # Auto-detect
                 vad_filter=True,
                 vad_parameters=dict(min_silence_duration_ms=500)
             )
             
-            raw_text = " ".join([segment.text for segment in segments]).strip()
+            log_print(f" ASR Result - Language Detected: {info.language} ({info.language_probability:.2f})")
+            
+            # Collect segments and log each one
+            results = []
+            for segment in segments:
+                log_print(f"  Segment: [{segment.start:.2f}s -> {segment.end:.2f}s] '{segment.text}'")
+                results.append(segment.text)
+            
+            raw_text = " ".join(results).strip()
             
             t1 = time.time()
-            log_print(f" [ASR Time: {t1 - t0:.3f}s] Raw: {raw_text}")
+            log_print(f" [ASR Total Time: {t1 - t0:.3f}s] Joined Result: '{raw_text}'")
             
             if not raw_text:
+                log_print(" [Empty Transcription Result]")
                 self.update_status("READY")
                 return
 
@@ -608,6 +854,13 @@ class VoiceInputApp:
 
     def start_audio_stream(self):
         try:
+            # Diagnostic: Log input device
+            try:
+                device_info = sd.query_devices(kind='input')
+                log_print(f"Audio Diagnostic - Using Default Input: {device_info.get('name')} (Channels: {device_info.get('max_input_channels')})")
+            except Exception as de:
+                log_print(f"Audio Diagnostic - Could not query input device: {de}")
+
             self.stream = sd.InputStream(
                 callback=self.audio_callback,
                 channels=1,
@@ -721,17 +974,17 @@ class VoiceInputApp:
         )
         
         # Create Icon
-        image = self.create_icon("cyan")
-        self.icon = pystray.Icon("Wispr Voice Input", image, "Wispr: Initializing...", menu)
+        image = self.draw_flat_line(None)
+        self.icon = pystray.Icon("Wispr Local", image, "Wispr: Initializing...", menu)
         
         # Pass icon to grammar checker for notifications immediately
         self.grammar_checker.icon = self.icon
 
         print("System Tray started. Check your taskbar.")
         
-        # Start Processing Thread
-        t = threading.Thread(target=self.processing_loop, daemon=True)
-        t.start()
+        # Start Threads
+        threading.Thread(target=self.processing_loop, daemon=True).start()
+        threading.Thread(target=self.animation_loop, daemon=True).start()
         
         # Run Icon (Native Loop)
         self.icon.run()

@@ -1,6 +1,6 @@
-# Wispr Local (English Edition)
+# Privox (formerly Wispr Local)
 
-A powerful, private, and local voice input assistant for Windows. Wispr Local captures your speech, transcribes it using **Faster-Whisper**, and refines the text using **Llama 3** for perfect grammar and formatting.
+A powerful, private, and local voice input assistant for Windows. Privox captures your speech, transcribes it using **Faster-Whisper**, and refines the text using **Llama 3** for perfect grammar and formatting.
 
 ## Features
 
@@ -22,10 +22,11 @@ A powerful, private, and local voice input assistant for Windows. Wispr Local ca
 
 1.  **Clone the repository:**
 
+    ````bash
     ```bash
-    git clone <repository-url>
-    cd Wispr-local
-    ```
+    git clone https://github.com/markyip/Privox.git
+    cd Privox
+    ````
 
 2.  **Install Dependencies:**
     ```bash
@@ -45,11 +46,11 @@ python src/voice_input.py
 
 - **F8** (Default): Toggle recording.
   - _Press once to start listening, press again to stop._
-- **Dictation Mode**: Just speak normally, and Wispr will type the corrected text into your active window.
+- **Dictation Mode**: Just speak normally, and Privox will type the corrected text into your active window.
 
 ### System Tray
 
-- **Right-click** the cyan Wispr icon in the system tray to:
+- **Right-click** the cyan Privox icon in the system tray to:
   - **Run at Startup**: Toggle auto-launch.
   - **Reconnect Audio**: Restart the microphone stream if issues occur.
   - **Exit**: Close the application.
@@ -58,11 +59,11 @@ python src/voice_input.py
 
 If you cannot access Hugging Face or prefer to use a local model file:
 
-1.  **Create a folder** named `models` in the same directory as `WisprLocal.exe` (or `src/voice_input.py`).
+1.  **Create a folder** named `models` in the same directory as `Privox.exe` (or `src/voice_input.py`).
 2.  **Download the model file:**
     - [Llama-3.2-3B-Instruct-Q4_K_M.gguf](https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf?download=true)
 3.  **Place the file** inside the `models` folder.
-4.  **Launch Wispr**. It will detect the local file and skip the download.
+4.  **Launch Privox**. It will detect the local file and skip the download.
 
 ## Building the Executable
 
@@ -76,7 +77,7 @@ To create a standalone `.exe` file for easy distribution:
 
     _Alternatively, double-click `scripts/build_windows.bat`._
 
-2.  The output executable will be located in `dist/WisprLocal.exe`.
+2.  The output executable will be located in `dist/Privox.exe`.
 
 ### Advanced: CPU-Only Build
 
@@ -87,7 +88,7 @@ If you want a smaller executable (removing NVIDIA drivers) for non-GPU machines:
 
 ## Configuration
 
-Wispr Local uses a `config.json` file for customization. When running as an `.exe`, placed this file in the **same directory** as `WisprLocal.exe`.
+Privox uses a `config.json` file for customization. When running as an `.exe`, placed this file in the **same directory** as `Privox.exe`.
 
 | Parameter           | Default              | Description                                                    |
 | :------------------ | :------------------- | :------------------------------------------------------------- |
@@ -101,18 +102,18 @@ Wispr Local uses a `config.json` file for customization. When running as an `.ex
 | `custom_dictionary` | `[...]`              | List of words to help the AI recognize specific names/terms.   |
 
 > [!TIP]
-> You do not need to rebuild the app after changing `config.json`. Simply restart Wispr to apply new settings.
+> You do not need to rebuild the app after changing `config.json`. Simply restart Privox to apply new settings.
 
 ## Memory Management (VRAM Saver)
 
-Wispr Local is designed to be resource-friendly.
+Privox is designed to be resource-friendly.
 
 - **Active**: Uses ~2-4GB VRAM (depending on models).
 - **Idle**: Unloads models after 60s, dropping VRAM usage to near zero.
 
 ## Troubleshooting
 
-- **Logs**: Check `wispr_debug.log` for detailed error messages.
+- **Logs**: Check `privox_debug.log` for detailed error messages.
 - **Audio Issues**: Use the "Reconnect Audio" tray option.
 - **GPU Not Used**: Ensure CUDA is installed and `torch.cuda.is_available()` returns True.
 

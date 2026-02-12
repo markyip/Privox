@@ -12,37 +12,53 @@ print("Starting PyInstaller Build...")
 
 PyInstaller.__main__.run([
     'src/bootstrap.py',
-    '--name=WisprLocal',
+    '--name=Privox',
     '--onefile',
     '--clean',
     '--noconsole',
-    '--icon=assets/icon.ico',
+    '--icon=assets/privox.ico',
     '--add-data=assets;assets',
-    '--add-data=src/voice_input.py;.', # Include the main script as data so it's next to bootstrap
-    # Hidden imports for bootstrap and basic UI
+    '--add-data=src/voice_input.py;src',
+    
+    # Core Application (NOT bundled as binary, but as data for system-python launch)
+    # '--hidden-import=voice_input',
+    
+    # Dependencies to Bundle (Lite but functional)
     '--hidden-import=pystray',
-    '--hidden-import=pynput',
+    '--hidden-import=pystray._win32',
+    '--hidden-import=sounddevice',
     '--hidden-import=PIL',
-    '--hidden-import=PIL._imaging',
-    '--hidden-import=pyperclip',
-    '--hidden-import=huggingface_hub',
-    '--hidden-import=numpy',
-    '--hidden-import=pkg_resources', # Often needed for pip/entry points
-    # EXCLUDE heavy libraries for Lite Build
+    # Removed hidden imports for external packages (funasr, etc)
+    
+    # Explicit Exclusions (Heavy Libs handled by Bootstrap)
     '--exclude-module=torch',
     '--exclude-module=torchaudio',
-    '--exclude-module=nvidia', # Excludes all nvidia-cuda-*
-    '--exclude-module=llama_cpp',
-    '--exclude-module=faster_whisper',
-    '--exclude-module=transformers',
+    '--exclude-module=torchvision',
+    '--exclude-module=nvidia',
+    '--exclude-module=caffe2',
+    '--exclude-module=triton',
     '--exclude-module=matplotlib',
-    '--exclude-module=notebook',
-    # Optimization
-    '--collect-all=pystray',
-    '--collect-submodules=pynput',
-    '--copy-metadata=tqdm',
-    '--copy-metadata=requests',
-    '--copy-metadata=packaging',
+    '--exclude-module=pandas',
+    '--exclude-module=scipy',
+    # '--exclude-module=tkinter', # Allowed for Installer UI
+    '--exclude-module=transformers', # Explicitly exclude transformers too
+    '--exclude-module=faster_whisper',
+    '--exclude-module=ctranslate2',
+    '--exclude-module=tokenizers',
+    # '--exclude-module=funasr', # Removed
+    # '--exclude-module=modelscope', # Removed
+    # '--exclude-module=opencc', # Removed
+    # '--exclude-module=cn2an', # Removed
+    # '--exclude-module=jieba', # Removed
+    '--exclude-module=onnxruntime',
+    
+    # Collects (Ensure bindings and small extensions are present where needed)
+    '--collect-all=llama_cpp',
+    # '--exclude-module=llama_cpp', 
+    # Removed collections for funasr/opencc as they are now external
+    
+    # Output Name
+    '--name=WisprLocal_v2'
 ])
 
 print("Build Complete. Executable is in 'dist/WisprLocal.exe'")

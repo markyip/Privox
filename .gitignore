@@ -10,7 +10,7 @@ env/
 
 # Logs
 *.log
-wispr_debug.log
+privox_debug.log
 
 # Build Artifacts
 build/

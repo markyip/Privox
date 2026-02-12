@@ -1,5 +1,25 @@
 @echo off
 cd /d "%~dp0\.."
-echo Building Wispr Voice Input...
+echo Cleaning environment...
+if exist "dist" rmdir /s /q dist
+if exist "build" rmdir /s /q build
+if exist "src\__pycache__" rmdir /s /q src\__pycache__
+if exist "__pycache__" rmdir /s /q __pycache__
+
+echo Regenerating Icons...
+python scripts\generate_icon.py
+
+echo Building Privox...
 python build_app.py
+
+if exist "dist\Privox.exe" (
+    echo.
+    echo Copying Privox.exe to root...
+    copy /Y "dist\Privox.exe" "Privox.exe"
+    echo.
+    echo Build SUCCESS! Run 'Privox.exe' to test.
+) else (
+    echo.
+    echo Build FAILED. "dist\Privox.exe" not found.
+)
 pause

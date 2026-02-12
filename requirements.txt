@@ -10,3 +10,5 @@ llama-cpp-python
 huggingface_hub
 pyperclip
 nvidia-cudnn-cu12
+nvidia-cublas-cu12
+pywin32

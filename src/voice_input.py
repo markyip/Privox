@@ -23,6 +23,19 @@ logging.basicConfig(
     level=logging.DEBUG
 )
 
+# Redirect stdout/stderr to logging to avoid 'NoneType' has no attribute 'write' in --noconsole mode
+class LoggerWriter:
+    def __init__(self, level):
+        self.level = level
+    def write(self, message):
+        if message.strip():
+            self.level(message.strip())
+    def flush(self):
+        pass
+
+sys.stdout = LoggerWriter(logging.info)
+sys.stderr = LoggerWriter(logging.error)
+
 def log_print(msg, **kwargs):
     logging.info(msg)
     print(msg, **kwargs)
@@ -150,16 +163,26 @@ class GrammarChecker:
                 return
 
         try:
-            # CPU Fallback for Llama
+            # CPU Fallback for Llama - Safer in bundled environments
+            # Try GPU first if available, otherwise fallback to CPU (0)
             n_gpu = -1 if torch.cuda.is_available() else 0
             
-            self.model = Llama(
-                model_path=model_path, 
-                n_ctx=2048, 
-                n_gpu_layers=n_gpu, 
-                verbose=False
-            )
-            log_print(f"Done. (GPU Layers: {n_gpu})")
+            try:
+                self.model = Llama(
+                    model_path=model_path, 
+                    n_ctx=2048, 
+                    n_gpu_layers=n_gpu, 
+                    verbose=False
+                )
+            except Exception as e:
+                log_print(f"Failed to load Llama with GPU ({n_gpu}), falling back to CPU (0): {e}")
+                self.model = Llama(
+                    model_path=model_path, 
+                    n_ctx=2048, 
+                    n_gpu_layers=0, 
+                    verbose=False
+                )
+            log_print(f"Done. (GPU Layers: {n_gpu if self.model and self.model.context_params.n_gpu_layers > 0 else 0})")
         except Exception as e:
             log_print(f"\nError loading Grammar Model: {e}")
             self.loading_error = str(e)

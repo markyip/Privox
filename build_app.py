@@ -4,9 +4,9 @@ import shutil
 
 # Clean previous builds
 if os.path.exists('build'):
-    shutil.rmtree('build')
+    shutil.rmtree('build', ignore_errors=True)
 if os.path.exists('dist'):
-    shutil.rmtree('dist')
+    shutil.rmtree('dist', ignore_errors=True)
 
 print("Starting PyInstaller Build...")
 
@@ -29,15 +29,19 @@ PyInstaller.__main__.run([
     '--hidden-import=numpy',
     '--hidden-import=numpy._core',
     '--hidden-import=numpy._core._exceptions',
+    '--hidden-import=olefile',
     # Metadata and all data collection for complex libraries
     '--collect-all=llama_cpp',
     '--collect-all=faster_whisper',
     '--collect-all=pystray',
     '--collect-all=numpy',
+    '--hidden-import=PIL',
+    '--hidden-import=PIL._imaging',
     '--copy-metadata=markupsafe',
     '--copy-metadata=torch',
     '--copy-metadata=numpy',
     '--copy-metadata=tqdm',
+    '--copy-metadata=olefile',
     '--copy-metadata=regex',
     '--copy-metadata=requests',
     '--copy-metadata=packaging',

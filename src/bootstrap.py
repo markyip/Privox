@@ -368,9 +368,6 @@ def install_app_files(log_callback=None):
             # 1. Kill the EXE instances
             subprocess.run(["taskkill", "/F", "/IM", "Privox.exe", "/FI", f"PID ne {my_pid}"], 
                            creationflags=subprocess.CREATE_NO_WINDOW, capture_output=True)
-            # Legacy cleanup
-            subprocess.run(["taskkill", "/F", "/IM", "WisprLocal_v2.exe", "/FI", f"PID ne {my_pid}"], 
-                           creationflags=subprocess.CREATE_NO_WINDOW, capture_output=True)
             
             # 2. Kill Python processes running our script (more targeted)
             # We use wmic for targeted killing of python processes specifically running voice_input.py
@@ -501,17 +498,62 @@ def install_dependencies(gui_instance, target_base_dir, gpu_support):
 
     # Platform / GPU Specifics
     if sys.platform == 'win32' and gpu_support:
-        # 1. Base command with CUDA index for Torch
-        cmd = [
+        # CRITICAL: Install torch/torchaudio FIRST from CUDA index ONLY (no fallback to PyPI)
+        # Using --no-index ensures we don't accidentally get CPU-only versions from PyPI
+        torch_cmd = [
             python_exe, "-m", "pip", "install", 
             "--target", lib_dir,
             "--no-input",
             "--upgrade",
             "--index-url", "https://download.pytorch.org/whl/cu124",
-            "--extra-index-url", "https://pypi.org/simple",
-            "--extra-index-url", "https://abetlen.github.io/llama-cpp-python/whl/cu124"
+            "--no-index",  # Don't fall back to PyPI for torch
+            "torch", "torchaudio"
         ]
-        # nvidia-cudnn-cu12 and nvidia-cublas-cu12 are already in packages list for gpu
+        
+        if log_callback: log_callback(f"Installing PyTorch with CUDA 12.4: {' '.join(torch_cmd)}")
+        
+        process = subprocess.Popen(
+            torch_cmd, 
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.STDOUT, 
+            text=True, 
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
+        )
+        gui_instance.active_process = process
+        
+        count = 0
+        for line in process.stdout:
+            if log_callback: log_callback(f"PIP: {line.strip()}")
+            count += 1
+            if count % 10 == 0:
+                current = gui_instance.progress_val.get()
+                if current < 20:
+                    gui_instance.progress_val.set(current + 1)
+                    
+        process.wait()
+        gui_instance.active_process = None
+        
+        if process.returncode != 0:
+            if log_callback: log_callback("ERROR: PyTorch GPU installation failed!")
+            return False
+        
+        # Now install remaining packages from PyPI + llama-cpp from CUDA wheel
+        remaining_packages = [
+            "faster-whisper",
+            "netifaces",
+            "numpy<2.0.0",
+            "nvidia-cudnn-cu12",
+            "nvidia-cublas-cu12"
+        ]
+        
+        cmd = [
+            python_exe, "-m", "pip", "install", 
+            "--target", lib_dir,
+            "--no-input",
+            "--upgrade",
+            "--index-url", "https://pypi.org/simple",
+            "--extra-index-url", "https://abetlen.github.io/llama-cpp-python/whl/cu124"
+        ] + remaining_packages + ["llama-cpp-python"]
     else:
         # Standard CPU/Mac install
         cmd = [
@@ -519,14 +561,12 @@ def install_dependencies(gui_instance, target_base_dir, gpu_support):
             "--target", lib_dir,
             "--no-input",
             "--upgrade"
-        ]
+        ] + packages
 
-    cmd += packages
-
-    if log_callback: log_callback(f"Installing dependencies with: {' '.join(cmd)}")
+    if log_callback: log_callback(f"Installing remaining dependencies: {' '.join(cmd)}")
     
     try:
-        # 1. Install Standard Packages
+        # Install remaining packages
         process = subprocess.Popen(
             cmd, 
             stdout=subprocess.PIPE, 
@@ -537,7 +577,7 @@ def install_dependencies(gui_instance, target_base_dir, gpu_support):
         gui_instance.active_process = process
         
         # Simple progress tracking for dependencies
-        # Roughly 0-40% total setup progress. Start at 5, end at 40.
+        # Roughly 0-40% total setup progress. Start at 20 (after torch), end at 40.
         count = 0
         for line in process.stdout:
             if log_callback: log_callback(f"PIP: {line.strip()}")
@@ -717,8 +757,7 @@ def uninstall_app():
     try:
         # Kill the app if running (excluding this process)
         my_pid = os.getpid()
-        subprocess.run(["taskkill", "/F", "/IM", "WisprLocal_v2.exe", "/FI", f"PID ne {my_pid}"], creationflags=subprocess.CREATE_NO_WINDOW)
-        subprocess.run(["taskkill", "/F", "/IM", "WisprLocal.exe", "/FI", f"PID ne {my_pid}"], creationflags=subprocess.CREATE_NO_WINDOW)
+        subprocess.run(["taskkill", "/F", "/IM", "Privox.exe", "/FI", f"PID ne {my_pid}"], creationflags=subprocess.CREATE_NO_WINDOW)
         time.sleep(1)
     except: pass
 

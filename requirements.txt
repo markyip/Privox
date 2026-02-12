@@ -1,0 +1,12 @@
+faster-whisper
+sounddevice
+numpy
+torch
+torchaudio
+pynput
+pystray
+Pillow
+llama-cpp-python
+huggingface_hub
+pyperclip
+nvidia-cudnn-cu12

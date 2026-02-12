@@ -1,0 +1,15 @@
+{
+  "hotkey": "f8",
+  "sound_enabled": true,
+  "vram_timeout": 60,
+  "whisper_model": "distil-medium.en",
+  "grammar_repo": "bartowski/Llama-3.2-3B-Instruct-GGUF",
+  "grammar_file": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+  "dictation_prompt": null,
+  "custom_dictionary": [
+    "Wispr",
+    "SenseVoice",
+    "Phi-4",
+    "Silero"
+  ]
+}

@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+venv/
+env/
+.env
+
+# Logs
+*.log
+wispr_debug.log
+
+# Build Artifacts
+build/
+dist/
+*.spec
+
+# VS Code
+.vscode/
+
+# Debug files
+debug_*.py
+debug_*.txt
+pip_install_log*.txt
+
+# Models (if manually placed)
+models/
+*.gguf
+*.bin
+
+
+# Windows
+Thumbs.db

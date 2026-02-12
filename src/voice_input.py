@@ -206,14 +206,14 @@ class GrammarChecker:
                 except Exception:
                     log_print("Grammar Model not found locally. Downloading... (This may take time)")
                     if self.icon:
-                        self.icon.notify("Downloading Grammar Model (2GB)... Please wait.", "Wispr Setup")
+                        self.icon.notify("Downloading Grammar Model (2GB)... Please wait.", "Privox Setup")
                 
                 model_path = hf_hub_download(repo_id=GRAMMAR_REPO, filename=GRAMMAR_FILE)
             except Exception as e:
                 log_print(f"\nError downloading model: {e}")
                 self.loading_error = str(e)
                 if self.icon:
-                     self.icon.notify("Error: Cloud not download model. Check internet or place in 'models' folder.", "Wispr Error")
+                     self.icon.notify("Error: Cloud not download model. Check internet or place in 'models' folder.", "Privox Error")
                 return
 
         try:
@@ -258,7 +258,7 @@ class GrammarChecker:
             if is_command:
                 # Agent Mode
                 system_prompt = self.command_prompt or (
-                    "You are Wispr, an intelligent assistant. Execute the user's instruction perfectly. "
+                    "You are Privox, an intelligent assistant. Execute the user's instruction perfectly. "
                     "Output ONLY the result. Do not chat."
                 )
                 user_content = text
@@ -812,9 +812,9 @@ class VoiceInputApp:
             is_command = False
             command_text = raw_text
             
-            # if raw_text.lower().startswith("wispr") or raw_text.lower().startswith("whisper"):
+            # if raw_text.lower().startswith("privox"):
             #     is_command = True
-            #     command_text = re.sub(r'^(wispr|whisper)\s*,?\s*', '', raw_text, flags=re.IGNORECASE)
+            #     command_text = re.sub(r'^(privox)\s*,?\s*', '', raw_text, flags=re.IGNORECASE)
             #     log_print(f" [Command Mode Detected] Input: {command_text}")
             
             log_print(" Refining format (Llama 3.2)...")
@@ -929,7 +929,7 @@ class VoiceInputApp:
             return
 
         key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
-        app_name = "WisprLocal"
+        app_name = "Privox"
         # If frozen, use executable path. If script, use python + script path (less reliable for auto-start without wrapper)
         # But user wants this for the built exe mainly.
         exe_path = sys.executable 
@@ -954,7 +954,7 @@ class VoiceInputApp:
             return False
             
         key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
-        app_name = "WisprLocal"
+        app_name = "Privox"
         try:
             key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_READ)
             winreg.QueryValueEx(key, app_name)
@@ -975,7 +975,7 @@ class VoiceInputApp:
         
         # Create Icon
         image = self.draw_flat_line(None)
-        self.icon = pystray.Icon("Wispr Local", image, "Wispr: Initializing...", menu)
+        self.icon = pystray.Icon("Privox", image, "Privox: Initializing...", menu)
         
         # Pass icon to grammar checker for notifications immediately
         self.grammar_checker.icon = self.icon

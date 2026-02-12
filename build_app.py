@@ -11,45 +11,38 @@ if os.path.exists('dist'):
 print("Starting PyInstaller Build...")
 
 PyInstaller.__main__.run([
-    'src/voice_input.py',
+    'src/bootstrap.py',
     '--name=WisprLocal',
     '--onefile',
     '--clean',
     '--noconsole',
     '--icon=assets/icon.ico',
     '--add-data=assets;assets',
-    # Hidden imports for dynamic dependencies
+    '--add-data=src/voice_input.py;.', # Include the main script as data so it's next to bootstrap
+    # Hidden imports for bootstrap and basic UI
     '--hidden-import=pystray',
     '--hidden-import=pynput',
-    '--hidden-import=faster_whisper',
-    '--hidden-import=llama_cpp',
-    '--hidden-import=torch',
-    '--hidden-import=markupsafe',
-    '--hidden-import=torchaudio',
-    '--hidden-import=numpy',
-    '--hidden-import=numpy._core',
-    '--hidden-import=numpy._core._exceptions',
-    # Metadata and all data collection for complex libraries
-    '--collect-all=llama_cpp',
-    '--collect-all=faster_whisper',
-    '--collect-all=pystray',
-    '--collect-all=numpy',
     '--hidden-import=PIL',
     '--hidden-import=PIL._imaging',
-    '--copy-metadata=markupsafe',
-    '--copy-metadata=torch',
-    '--copy-metadata=numpy',
-    '--copy-metadata=tqdm',
-    '--copy-metadata=regex',
-    '--copy-metadata=requests',
-    '--copy-metadata=packaging',
-    # Exclude problematic large libraries that aren't used to keep the exe smaller
+    '--hidden-import=pyperclip',
+    '--hidden-import=huggingface_hub',
+    '--hidden-import=numpy',
+    '--hidden-import=pkg_resources', # Often needed for pip/entry points
+    # EXCLUDE heavy libraries for Lite Build
+    '--exclude-module=torch',
+    '--exclude-module=torchaudio',
+    '--exclude-module=nvidia', # Excludes all nvidia-cuda-*
+    '--exclude-module=llama_cpp',
+    '--exclude-module=faster_whisper',
     '--exclude-module=transformers',
     '--exclude-module=matplotlib',
     '--exclude-module=notebook',
-    '--exclude-module=jedi',
-    # Optimization: ignore irrelevant data
+    # Optimization
+    '--collect-all=pystray',
     '--collect-submodules=pynput',
+    '--copy-metadata=tqdm',
+    '--copy-metadata=requests',
+    '--copy-metadata=packaging',
 ])
 
 print("Build Complete. Executable is in 'dist/WisprLocal.exe'")

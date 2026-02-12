@@ -52,37 +52,28 @@ def resource_path(relative_path):
 log_print("Starting Wispr Voice Input (English Edition)...")
 
 try:
-    log_print("Importing sounddevice...")
+    log_print("Importing core utilities...")
     import sounddevice as sd
-    log_print("Importing numpy...")
     import numpy as np
-    log_print("Importing torch...")
-    import torch
-    
-    log_print("Importing faster_whisper...")
-    from faster_whisper import WhisperModel
-    
-    log_print("Importing pynput...")
     from pynput import keyboard
-    
-    log_print("Importing pystray...")
     import pystray
     from PIL import Image, ImageDraw
+    import pyperclip
+    from huggingface_hub import hf_hub_download
     
     # Windows Sound
     try:
         import winsound
     except ImportError:
         winsound = None
-
-    log_print("Importing llama_cpp...")
-    from llama_cpp import Llama
-    from huggingface_hub import hf_hub_download
     
-    log_print("Importing pyperclip...")
-    import pyperclip
-    
-    log_print("All imports successful.")
+    log_print("Core imports successful.")
+except Exception as e:
+    log_print(f"CRITICAL UTILITY IMPORT ERROR: {e}")
+    if sys.platform == 'win32':
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(0, f"Critical Utility Initialization Error:\n\n{e}", "Wispr Local Error", 0x10)
+    sys.exit(1)
 except Exception as e:
     log_print(f"CRITICAL IMPORT ERROR: {e}")
     if sys.platform == 'win32':
@@ -163,6 +154,11 @@ class GrammarChecker:
                 return
 
         try:
+            # Heavy Import: Llama
+            log_print("Importing llama_cpp...")
+            from llama_cpp import Llama
+            import torch
+
             # CPU Fallback for Llama - Safer in bundled environments
             # Try GPU first if available, otherwise fallback to CPU (0)
             n_gpu = -1 if torch.cuda.is_available() else 0
@@ -311,6 +307,7 @@ class VoiceInputApp:
         # 1. Load VAD Model (Silero)
         log_print("Loading Silero VAD...", end="", flush=True)
         try:
+            import torch
             self.vad_model, utils = torch.hub.load(repo_or_dir='snakers4/silero-vad',
                                                   model='silero_vad',
                                                   force_reload=False,
@@ -341,15 +338,12 @@ class VoiceInputApp:
             self.grammar_checker.load_model()
 
             # Load Faster-Whisper
-            # Load Faster-Whisper
             log_print(f"Loading Faster-Whisper ({WHISPER_SIZE})...", end="", flush=True)
             
-            # Simple check if model exists in cache (limited, but helpful)
-            # Faster-whisper handles downloads internally, but we can warn user if it might be slow.
-            if self.icon:
-                 self.icon.title = "Wispr: Loading AI Models..."
-            
             try:
+                from faster_whisper import WhisperModel
+                import torch
+                
                 if torch.cuda.is_available():
                     device_str = "cuda"
                     compute_type = "float16" 

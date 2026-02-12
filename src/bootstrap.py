@@ -365,8 +365,12 @@ def install_app_files(log_callback=None):
         if log_callback: log_callback(f"Terminating old instances...")
         try:
             my_pid = os.getpid()
-            # 1. Kill the EXE instances
+            # 1. Kill the EXE instances (current and legacy names)
             subprocess.run(["taskkill", "/F", "/IM", "Privox.exe", "/FI", f"PID ne {my_pid}"], 
+                           creationflags=subprocess.CREATE_NO_WINDOW, capture_output=True)
+            subprocess.run(["taskkill", "/F", "/IM", "python.exe", "/FI", f"PID ne {my_pid}"], 
+                           creationflags=subprocess.CREATE_NO_WINDOW, capture_output=True)
+            subprocess.run(["taskkill", "/F", "/IM", "pythonw.exe", "/FI", f"PID ne {my_pid}"], 
                            creationflags=subprocess.CREATE_NO_WINDOW, capture_output=True)
             
             # 2. Kill Python processes running our script (more targeted)
@@ -379,7 +383,7 @@ def install_app_files(log_callback=None):
                     try: subprocess.run(["taskkill", "/F", "/PID", pid], creationflags=subprocess.CREATE_NO_WINDOW)
                     except: pass
             
-            time.sleep(1.5) # Wait for them to die
+            time.sleep(2.5) # Increased wait for processes to fully terminate
         except: pass
         
         if log_callback: log_callback(f"Copying to {target_dir}...")

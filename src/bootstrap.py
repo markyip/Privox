@@ -512,7 +512,14 @@ exit
         "faster-whisper",
         "netifaces",
         "numpy<2.0.0", # Essential for binary compatibility with current AI libs
-        "llama-cpp-python"
+        "llama-cpp-python",
+        "sounddevice",
+        "pynput",
+        "pystray",
+        "Pillow",
+        "pyperclip",
+        "huggingface_hub",
+        "pywin32"
     ]
     
     if gpu_support and sys.platform == 'win32':
@@ -577,7 +584,14 @@ exit
             "netifaces",
             "numpy<2.0.0",
             "nvidia-cudnn-cu12",
-            "nvidia-cublas-cu12"
+            "nvidia-cublas-cu12",
+            "sounddevice",
+            "pynput",
+            "pystray",
+            "Pillow",
+            "pyperclip",
+            "huggingface_hub",
+            "pywin32"
         ]
         
         cmd = [

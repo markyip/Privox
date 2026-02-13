@@ -757,35 +757,16 @@ def clean_duplicates(lib_dir, log_callback=None):
                     # Actually, if we removed 2.x and only 1.26 remains, we are good.
                     continue
 
-                # General Case: Surgical Strike
-                # Remove ALL dist-info folders AND the package folder itself
-                # to force pip to re-install the correct one.
-                
-                # 1. Remove all .dist-info folders
+                # Surgical metadata cleanup (metadata only)
                 for ver, folder in versions:
                     full_path = os.path.join(lib_dir, folder)
-                    if log_callback: log_callback(f"Removing duplicate metadata: {folder}")
+                    if log_callback: log_callback(f"Removing redundant metadata: {folder}")
                     try: shutil.rmtree(full_path, ignore_errors=True)
                     except: pass
-                    
-                # 2. Try to identify and remove the package folder
-                # Common pattern: package name (e.g. "sympy", "markupsafe")
-                # But sometimes it's different (e.g. "Pillow" -> "PIL").
-                # We try standard import name.
-                pkg_folder_candidates = [pkg_name, pkg_name.replace('-', '_')]
                 
-                # Handle special cases if known
-                if pkg_name == "pillow": pkg_folder_candidates = ["PIL"]
-                if pkg_name == "scikit-learn": pkg_folder_candidates = ["sklearn"]
-                
-                for candidate in pkg_folder_candidates:
-                    full_path = os.path.join(lib_dir, candidate)
-                    if os.path.isdir(full_path):
-                        if log_callback: log_callback(f"Removing package folder to force reinstall: {candidate}")
-                        try: shutil.rmtree(full_path, ignore_errors=True)
-                        except Exception as e:
-                            # It might be locked, but we try.
-                            if log_callback: log_callback(f"Warning: Could not remove {candidate}: {e}")
+                # We NO LONGER remove the package folder (candidate),
+                # as pip should be able to reconcile the state once the metadata is clean.
+                # This prevents redundant full reinstalls of large library files.
 
     except Exception as e:
         if log_callback: log_callback(f"Cleanup warning: {e}")
@@ -1005,7 +986,8 @@ def install_dependencies(gui_instance, target_base_dir, gpu_support):
              "--no-input",
              # NO --upgrade by default if we skipping wipe
              "--index-url", "https://pypi.org/simple",
-             "--extra-index-url", "https://download.pytorch.org/whl/cu124" # Allow finding +cu124 deps if needed
+             "--extra-index-url", "https://download.pytorch.org/whl/cu124", 
+             "--upgrade-strategy", "only-if-needed"
         ]
         
         if not skip_wipe:

@@ -439,9 +439,8 @@ class VoiceInputApp:
         self.vram_timeout = 60 # Seconds before unloading
         self.pending_wakeup = False # Auto-start recording after loading?
         
-        # Multi-key hotkey support
-        self.pressed_keys = set()
-        self.target_hotkey_set = set() # Set of keys that must be pressed
+        # Hotkey support
+        self.hotkey = keyboard.Key.f8 # Default key
 
         # Start loading threads
         threading.Thread(target=self.initial_load, daemon=True).start()
@@ -601,33 +600,19 @@ class VoiceInputApp:
                         if not os.path.exists(model_path):
                             log_print(f"WARNING: Configured model '{WHISPER_SIZE}' not found at {model_path}. Transcription may fail.")
                     
-                    self.target_hotkey_set = set()
-                    parts = hotkey_str.split('+')
-                    for part in parts:
-                        part = part.strip().lower()
-                        if part in ['ctrl', 'control']:
-                            self.target_hotkey_set.add(keyboard.Key.ctrl_l)
-                        elif part == 'shift':
-                            self.target_hotkey_set.add(keyboard.Key.shift_l)
-                        elif part in ['alt', 'option']:
-                            self.target_hotkey_set.add(keyboard.Key.alt_l)
-                        elif part in ['cmd', 'command', 'win', 'super']:
-                            self.target_hotkey_set.add(keyboard.Key.cmd_l)
-                        elif part in keyboard.Key.__members__:
-                            self.target_hotkey_set.add(keyboard.Key[part])
-                        elif len(part) == 1:
-                            self.target_hotkey_set.add(keyboard.KeyCode.from_char(part))
+                    # Simple hotkey support (single key only)
+                    self.hotkey = keyboard.Key.f8
+                    if hotkey_str in keyboard.Key.__members__:
+                        self.hotkey = keyboard.Key[hotkey_str]
+                    elif len(hotkey_str) == 1:
+                        self.hotkey = keyboard.KeyCode.from_char(hotkey_str)
+                    else:
+                        if hotkey_str.upper() in keyboard.Key.__members__:
+                            self.hotkey = keyboard.Key[hotkey_str.upper()]
                         else:
-                            # Try uppercase members as well (for F8 etc if user types lowercase)
-                            if part.upper() in keyboard.Key.__members__:
-                                self.target_hotkey_set.add(keyboard.Key[part.upper()])
-                            else:
-                                log_print(f"Unknown key in hotkey: {part}")
+                            log_print(f"Unknown hotkey: {hotkey_str}. Using F8.")
                     
-                    if not self.target_hotkey_set:
-                        self.target_hotkey_set = {keyboard.Key.f8}
-                    
-                    log_print(f"Loaded Config - Hotkey: {hotkey_str} ({self.target_hotkey_set}), Sound: {self.sound_enabled}, Timeout: {self.vram_timeout}s, Model: {WHISPER_SIZE}")
+                    log_print(f"Loaded Config - Hotkey: {hotkey_str}, Sound: {self.sound_enabled}, Timeout: {self.vram_timeout}s, Model: {WHISPER_SIZE}")
             else:
                 log_print(f"config.json not found at {config_path}, using defaults")
         except Exception as e:
@@ -798,20 +783,7 @@ class VoiceInputApp:
             self.q.put(indata.copy())
 
     def on_press(self, key):
-        # Normalize modifier keys (e.g. ctrl_r -> ctrl_l if that's what we store)
-        if key in [keyboard.Key.ctrl_r, keyboard.Key.ctrl_l]: key = keyboard.Key.ctrl_l
-        if key in [keyboard.Key.shift_r, keyboard.Key.shift_l]: key = keyboard.Key.shift_l
-        if key in [keyboard.Key.alt_gr, keyboard.Key.alt_l]: key = keyboard.Key.alt_l
-        if key in [keyboard.Key.cmd_r, keyboard.Key.cmd_l]: key = keyboard.Key.cmd_l
-
-        self.pressed_keys.add(key)
-        
-        # Check if ALL target keys are pressed
-        if self.target_hotkey_set.issubset(self.pressed_keys):
-            # To avoid repeated triggers while holding, we check if this was a fresh hit
-            # Actually, pynput often repeats events. We need to check if we already handled this "press"
-            # But for a voice toggle, once is enough.
-            
+        if key == self.hotkey:
             # Wake up detection
             if not self.heavy_models_loaded:
                 log_print("Wake up detected. Pre-loading models...")
@@ -835,13 +807,7 @@ class VoiceInputApp:
                 self.stop_listening()
 
     def on_release(self, key):
-        if key in [keyboard.Key.ctrl_r, keyboard.Key.ctrl_l]: key = keyboard.Key.ctrl_l
-        if key in [keyboard.Key.shift_r, keyboard.Key.shift_l]: key = keyboard.Key.shift_l
-        if key in [keyboard.Key.alt_gr, keyboard.Key.alt_l]: key = keyboard.Key.alt_l
-        if key in [keyboard.Key.cmd_r, keyboard.Key.cmd_l]: key = keyboard.Key.cmd_l
-
-        if key in self.pressed_keys:
-            self.pressed_keys.remove(key)
+        pass
 
     def start_listening(self):
         self.last_activity_time = time.time()
@@ -1106,7 +1072,6 @@ class VoiceInputApp:
         # Setup Tray Menu
         menu = pystray.Menu(
             pystray.MenuItem('Run at Startup', self.toggle_startup, checked=self.check_startup_status),
-            pystray.MenuItem('Reconnect Audio', self.reconnect_action),
             pystray.MenuItem('Exit', self.exit_action)
         )
         

@@ -1,36 +1,65 @@
 # Python
-__pycache__/
+**/__pycache__/
 *.py[cod]
 *$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
 
 # Environments
 venv/
 env/
 .env
+.venv
+pip-log.txt
+pip-delete-this-directory.txt
 
 # Logs
 *.log
-privox_debug.log
+privox_*.log
 
 # Build Artifacts
 build/
 dist/
 *.spec
 *.exe
+_internal_libs/
 
-# VS Code
+# Models
+models/
+*.gguf
+*.bin
+*.onnx
+
+# IDEs
 .vscode/
+.idea/
+*.swp
+*.swo
 
 # Debug files
 debug_*.py
 debug_*.txt
 pip_install_log*.txt
+debug_launcher.bat
+debug_output.txt
 
-# Models (if manually placed)
-models/
-*.gguf
-*.bin
-
-
-# Windows
+# OS
 Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store

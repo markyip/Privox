@@ -7,6 +7,7 @@ import time
 import json
 import re
 import gc
+import concurrent.futures
 if sys.platform == 'win32':
     import winreg
 
@@ -216,8 +217,9 @@ MIN_SPEECH_DURATION_MS = 250
 SPEECH_PAD_MS = 500
 
 # Models
-WHISPER_SIZE = "turbo" # Default
-WHISPER_REPO = "deepdml/faster-whisper-large-v3-turbo-ct2"
+# Models
+WHISPER_SIZE = "distil-large-v3" # Balanced (Multilingual)
+WHISPER_REPO = "Systran/faster-distil-whisper-large-v3"
 
 # Llama 3.2 3B Instruct
 GRAMMAR_REPO = "bartowski/Llama-3.2-3B-Instruct-GGUF"
@@ -227,18 +229,28 @@ GRAMMAR_FILE = "Llama-3.2-3B-Instruct-Q4_K_M.gguf"
 class SoundManager:
     def __init__(self, enabled=True):
         self.enabled = enabled and (winsound is not None)
+        self.lock = threading.Lock()
+
+    def _play(self, freq, duration):
+        if self.enabled:
+            # Using a lock ensures beeps don't collide if triggered rapidly
+            try:
+                with self.lock:
+                    winsound.Beep(freq, duration)
+            except Exception as e:
+                log_print(f"Sound Error: {e}")
 
     def play_start(self):
         if self.enabled:
-            threading.Thread(target=winsound.Beep, args=(880, 150), daemon=True).start()
+            threading.Thread(target=self._play, args=(1000, 200), daemon=True).start()
 
     def play_stop(self):
         if self.enabled:
-            threading.Thread(target=winsound.Beep, args=(440, 150), daemon=True).start()
+            threading.Thread(target=self._play, args=(750, 200), daemon=True).start()
 
     def play_error(self):
         if self.enabled:
-            threading.Thread(target=winsound.Beep, args=(200, 500), daemon=True).start()
+            threading.Thread(target=self._play, args=(400, 500), daemon=True).start()
 
 
 class GrammarChecker:
@@ -459,6 +471,7 @@ class VoiceInputApp:
             return
 
     def load_heavy_models(self):
+        """Concurrent loading of ASR and Grammar models to minimize wake-up latency."""
         with self.model_lock:
             if self.heavy_models_loaded:
                 return
@@ -467,75 +480,62 @@ class VoiceInputApp:
             self.loading_status = "Loading Models..."
             self.update_tray_tooltip()
 
-            # Load Grammar
-            self.grammar_checker.load_model()
-
-            # Load Faster-Whisper
-            log_print(f"Loading Faster-Whisper ({WHISPER_SIZE})...")
-            
-            try:
-                # 1. Path Diagnostics
-                local_whisper = os.path.join(BASE_DIR, "models", f"whisper-{WHISPER_SIZE}")
-                log_print(f"ASR Diagnostic - BASE_DIR: {BASE_DIR}")
-                log_print(f"ASR Diagnostic - Model path: {local_whisper}")
-                
-                if os.path.exists(local_whisper):
-                    log_print(f"ASR Diagnostic - Folder contents: {os.listdir(local_whisper)}")
-                    bin_file = os.path.join(local_whisper, "model.bin")
-                    if os.path.exists(bin_file):
-                         log_print(f"ASR Diagnostic - model.bin size: {os.path.getsize(bin_file) / (1024*1024):.1f} MB")
-                
-                # 2. Initialization Diagnostics
-                from faster_whisper import WhisperModel
-                log_print(f"ASR Diagnostic - Torch Path: {torch.__file__}")
-                is_gpu = torch.cuda.is_available()
-                log_print(f"ASR Diagnostic - CUDA available: {is_gpu}")
-                
-                if is_gpu:
-                    log_print(f"ASR Diagnostic - CUDA Device: {torch.cuda.get_device_name(0)}")
-                
-                device_str = "cuda" if is_gpu else "cpu"
-                compute_type = "float16" if is_gpu else "int8"
-
-                # 3. Initialization with Fallback
-                model_path = local_whisper if os.path.exists(os.path.join(local_whisper, "model.bin")) else WHISPER_REPO
+            def load_grammar():
                 try:
-                    log_print(f"ASR Diagnostic - Initializing WhisperModel on {device_str}...")
-                    self.asr_model = WhisperModel(model_path, device=device_str, compute_type=compute_type)
-                except Exception as e_gpu:
-                    if is_gpu:
-                        log_print(f"ASR Warning - CUDA failed ({e_gpu}). Falling back to CPU...")
-                        self.asr_model = WhisperModel(model_path, device="cpu", compute_type="int8")
-                    else:
-                        raise e_gpu
+                    self.grammar_checker.load_model()
+                    return True
+                except Exception as e:
+                    log_print(f"Parallel Load Error (Grammar): {e}")
+                    return False
 
-                log_print(f"WhisperModel initialized successfully.")
-            except Exception as e:
-                import traceback
-                error_details = traceback.format_exc()
-                log_print(f"ASR SETUP ERROR: {e}")
-                log_print(f"Traceback: {error_details}")
-                self.loading_status = "Error Loading ASR"
+            def load_asr():
+                try:
+                    # 1. Path Diagnostics
+                    local_whisper = os.path.join(BASE_DIR, "models", f"whisper-{WHISPER_SIZE}")
+                    is_gpu = torch.cuda.is_available()
+                    device_str = "cuda" if is_gpu else "cpu"
+                    compute_type = "float16" if is_gpu else "int8"
+                    
+                    from faster_whisper import WhisperModel
+                    model_path = local_whisper if os.path.exists(os.path.join(local_whisper, "model.bin")) else WHISPER_REPO
+                    
+                    log_print(f"ASR Diagnostic - Initializing WhisperModel ({WHISPER_SIZE}) on {device_str}...")
+                    self.asr_model = WhisperModel(model_path, device=device_str, compute_type=compute_type)
+                    log_print(f"WhisperModel initialized successfully.")
+                    return True
+                except Exception as e:
+                    log_print(f"Parallel Load Error (ASR): {e}")
+                    self.loading_status = "Error Loading ASR"
+                    return False
+
+            # Use ThreadPoolExecutor for concurrent model loading
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                futures = [executor.submit(load_grammar), executor.submit(load_asr)]
+                results = [f.result() for f in futures]
+
+            if not all(results):
+                log_print("CRITICAL: One or more models failed to load.")
                 self.update_tray_tooltip()
                 return
 
-            self.models_ready = True # VAD + Heavy loaded
+            self.models_ready = True
             self.heavy_models_loaded = True
             self.loading_status = "Ready"
             self.update_status("READY")
-            log_print(f"Acceleration Status: {'GPU ENABLED' if torch.cuda.is_available() else 'CPU MODE'}")
             
             # Reset activity timer so we don't immediately unload
             self.last_activity_time = time.time()
-            self.sound_manager.play_start()
             
-            # Auto-Start Recording if we woke up from F8
+            # If this was a manual F8 wakeup, we immediately start listening. 
+            # Otherwise (initial load), we play the 'Ready' sound.
             if self.pending_wakeup:
+                log_print("Pending Wakeup found. Auto-starting recording...")
                 self.pending_wakeup = False
-                # Must call from main thread logic ideally, but start_listening is thread-safe enough
-                # We need a tiny delay to ensure sound finishes playing or doesn't overlap
+                # Tiny delay to ensure UI updates and avoid race conditions with sound manager
                 time.sleep(0.1) 
                 self.start_listening()
+            else:
+                self.sound_manager.play_start()
   
 
     def unload_heavy_models(self):
@@ -581,9 +581,11 @@ class VoiceInputApp:
                     self.command_prompt = config.get("command_prompt", None)
                     
                     # Model overrides
-                    global WHISPER_SIZE, GRAMMAR_REPO, GRAMMAR_FILE
+                    # Model overrides
+                    global WHISPER_SIZE, WHISPER_REPO, GRAMMAR_REPO, GRAMMAR_FILE
                     old_whisper = WHISPER_SIZE
                     WHISPER_SIZE = config.get("whisper_model", WHISPER_SIZE)
+                    WHISPER_REPO = config.get("whisper_repo", WHISPER_REPO)
                     GRAMMAR_REPO = config.get("grammar_repo", GRAMMAR_REPO)
                     GRAMMAR_FILE = config.get("grammar_file", GRAMMAR_FILE)
                     
@@ -912,14 +914,14 @@ class VoiceInputApp:
 
     def paste_text(self, text):
         try:
-            original_clipboard = pyperclip.paste()
+            # original_clipboard = pyperclip.paste() # DISABLED: User wants to keep text for manual paste
             pyperclip.copy(text)
             time.sleep(0.05) 
             with self.keyboard_controller.pressed(keyboard.Key.ctrl):
                 self.keyboard_controller.press('v')
                 self.keyboard_controller.release('v')
             time.sleep(0.2) 
-            pyperclip.copy(original_clipboard)
+            # pyperclip.copy(original_clipboard) # DISABLED
         except Exception as e:
             log_print(f"Paste Error: {e}")
             self.keyboard_controller.type(text)
@@ -956,7 +958,7 @@ class VoiceInputApp:
             
         while self.running:
             # VRAM Saver Check
-            if self.heavy_models_loaded and not self.is_listening:
+            if self.heavy_models_loaded and not self.is_listening and self.ui_state != "PROCESSING":
                 if (time.time() - self.last_activity_time) > self.vram_timeout:
                     self.unload_heavy_models()
 

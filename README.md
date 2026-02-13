@@ -2,11 +2,22 @@
 
 A powerful, private, and local voice input assistant for Windows. Privox captures your speech, transcribes it using **Faster-Whisper**, and refines the text using **Llama 3** for perfect grammar and formatting.
 
+> [!WARNING]
+> **Disk Space Requirement**: This application requires approximately **4GB** of free disk space.
+>
+> **Why so large?** Privox runs completely locally to ensure your privacy. This means it bundles:
+>
+> 1.  **AI Models**: High-quality speech recognition (Whisper) and text refinement (Llama 3) models.
+> 2.  **GPU Drivers**: NVIDIA CUDA libraries bundled directly to ensure it works out-of-the-box without complex system configuration.
+> 3.  **Python Runtime**: A dedicated Python environment to avoid conflicts with your system.
+
 ## Features
 
-- **High-Accuracy Transcription**: Powered by `faster-whisper` (Distil-Medium.en).
+- **High-Accuracy Transcription**: Powered by `faster-whisper` (Distil-Large-v3).
+- **Multilingual Support**: Supports English, Traditional Chinese (Cantonese), Mandarin, Japanese, Korean, and many European languages.
 - **Intelligent Formatting**: Uses `Llama-3.2-3B-Instruct` to fix grammar, punctuation, and format lists automatically.
-- **English-Only Stack**: Optimized for speed and accuracy in English dictation.
+- **Auto-Stop**: Automatically stops recording after **10 seconds** of silence.
+- **Customizable Persona**: Modify the "Dictation Prompt" in `config.json` to change how the AI rewrites your text (e.g., summarize, bullet points, formal tone).
 - **VRAM Saver**: Dynamically unloads AI models from memory after 60 seconds of inactivity to free up resources for games and other apps.
 - **System Tray Integration**: Minimalist UI with quick access to settings and auto-launch configuration.
 - **Auto-Launch**: Option to start automatically with Windows.
@@ -16,17 +27,16 @@ A powerful, private, and local voice input assistant for Windows. Privox capture
 - **OS**: Windows 10/11
 - **GPU**: NVIDIA GPU with CUDA support (Recommended for speed).
   - _Note: Llama 3 can run on CPU, but GPU is faster._
-- **Python**: 3.10 - 3.12
+- **Python**: 3.10 - 3.12 (if running from source)
 
 ## Installation
 
 1.  **Clone the repository:**
 
-    ````bash
     ```bash
     git clone https://github.com/markyip/Privox.git
     cd Privox
-    ````
+    ```
 
 2.  **Install Dependencies:**
     ```bash
@@ -90,18 +100,21 @@ If you want a smaller executable (removing NVIDIA drivers) for non-GPU machines:
 
 Privox uses a `config.json` file for customization. When running as an `.exe`, placed this file in the **same directory** as `Privox.exe`.
 
-| Parameter            | Default              | Description                                                    |
-| :------------------- | :------------------- | :------------------------------------------------------------- |
-| `hotkey`             | `"f8"`               | Keys like `"f8"`, `"f10"`, or characters like `"space"`.       |
-| `sound_enabled`      | `true`               | Enables/disables start and stop beeps.                         |
-| `vram_timeout`       | `60`                 | Seconds of inactivity before AI models are unloaded from VRAM. |
-| `whisper_model`      | `"distil-medium.en"` | Faster-Whisper model size.                                     |
-| `auto_stop_enabled`  | `true`               | Automatically stop recording after silence.                    |
-| `silence_timeout_ms` | `10000`              | Milliseconds of silence before auto-stop.                      |
-| `grammar_repo`       | (Llama 3.2)          | HuggingFace repository for the formatting model.               |
-| `grammar_file`       | (GGUF)               | Specific GGUF file to use.                                     |
-| `dictation_prompt`   | `null`               | Custom system prompt for dictation. Use `{dict}` for hints.    |
-| `custom_dictionary`  | `[...]`              | List of words to help the AI recognize specific names/terms.   |
+| Parameter            | Default                 | Description                                                           |
+| :------------------- | :---------------------- | :-------------------------------------------------------------------- |
+| `hotkey`             | `"f8"`                  | Keys like `"f8"`, `"f10"`, or characters like `"space"`.              |
+| `sound_enabled`      | `true`                  | Enables/disables start and stop beeps.                                |
+| `vram_timeout`       | `60`                    | Seconds of inactivity before AI models are unloaded from VRAM.        |
+| `whisper_model`      | `"distil-large-v3"`     | Faster-Whisper model size.                                            |
+| `auto_stop_enabled`  | `true`                  | Automatically stop recording after silence.                           |
+| `silence_timeout_ms` | `10000`                 | Milliseconds of silence before auto-stop.                             |
+| `grammar_repo`       | (Llama 3.2)             | HuggingFace repository for the formatting model.                      |
+| `grammar_file`       | (GGUF)                  | Specific GGUF file to use.                                            |
+| `dictation_prompt`   | (Default System Prompt) | Custom system prompt. Use `{dict}` to insert custom dictionary hints. |
+| `custom_dictionary`  | `[...]`                 | List of words to help the AI recognize specific names/terms.          |
+
+> [!TIP]
+> **Customizing Behavior**: You can change `dictation_prompt` to make Privox behave differently (e.g., "Summarize this spoken text into a single sentence").
 
 > [!TIP]
 > You do not need to rebuild the app after changing `config.json`. Simply restart Privox to apply new settings.
@@ -127,6 +140,8 @@ Privox is designed to be resource-friendly.
 ## Roadmap
 
 - [x] **Multi-language Support**: Add support for non-English transcription (Cantonese, Mandarin, etc.) and translation features.
+- [x] **Auto-Stop Implementation**.
+- [x] **Custom System Prompts**.
 - [ ] **Lightweight Models**: Explore smaller models for faster execution and reduced storage requirements.
 - [ ] **Simultaneous Multi-language Handling**: Investigate models that can effectively process multiple languages within the same sentence.
 - [ ] **Tone Selection**: Explore building or integrating models that offer multiple tone options (e.g., sarcastic, polite, friendly).

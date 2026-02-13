@@ -1,4 +1,5 @@
 import os
+import shutil
 import sys
 import subprocess
 import threading
@@ -7,7 +8,8 @@ import logging
 import importlib
 import queue
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
+import winreg
 
 # Disable Symlinks for Windows (Fixes WinError 1314)
 os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
@@ -47,6 +49,15 @@ else:
         force=True,
         handlers=[logging.StreamHandler(sys.stdout)]
     )
+    
+    # Proactive Cleanup: Delete any remnant log files from previous debug sessions
+    try:
+        for log_file in ['privox_setup.log', 'privox_app.log']:
+            full_path = os.path.join(EXE_DIR, log_file)
+            if os.path.exists(full_path):
+                os.remove(full_path)
+    except:
+        pass
 
 # Redirect stdout/stderr to logging to avoid 'NoneType' has no attribute 'write' in --noconsole mode
 class LoggerWriter:
@@ -106,7 +117,9 @@ class InstallerGUI(tk.Tk):
         
         # Variables
         self.gpu_support = tk.BooleanVar(value=True if sys.platform == 'win32' else False)
-        self.install_mode = tk.BooleanVar(value=True) # True=Install, False=Portable
+        # Default install dir
+        default_path = os.path.join(os.environ.get('LOCALAPPDATA', os.environ.get('USERPROFILE', 'C:\\')), "Privox")
+        self.install_dir = tk.StringVar(value=default_path)
         self.progress_text = tk.StringVar(value="Ready to install...")
         self.progress_val = tk.DoubleVar(value=0)
         self.active_process = None
@@ -142,15 +155,20 @@ class InstallerGUI(tk.Tk):
         ttk.Label(p1, text="Welcome to Privox Setup", font=("Segoe UI", 16, "bold")).pack(pady=(10, 20))
         ttk.Label(p1, text="Privox is a local, privacy-focused speech-to-text tool.\nThis wizard will guide you through the setup process.", justify=tk.CENTER).pack(pady=10)
         
-        opt_frame = ttk.LabelFrame(p1, text="Installation Mode", padding=15)
-        opt_frame.pack(fill=tk.X, pady=20)
+        # Path Selection
+        path_frame = ttk.LabelFrame(p1, text="Installation Destination", padding=15)
+        path_frame.pack(fill=tk.X, pady=10)
         
-        ttk.Radiobutton(opt_frame, text="Install to System (Recommended)", variable=self.install_mode, value=True).pack(anchor=tk.W, pady=5)
-        ttk.Label(opt_frame, text="   Installs to AppData, creates shortcuts, and enables auto-start.", font=("Segoe UI", 9), foreground="gray").pack(anchor=tk.W)
+        path_input_frame = ttk.Frame(path_frame)
+        path_input_frame.pack(fill=tk.X)
         
-        ttk.Radiobutton(opt_frame, text="Run Portable Mode", variable=self.install_mode, value=False).pack(anchor=tk.W, pady=(15, 5))
-        ttk.Label(opt_frame, text="   Runs directly from this folder. No shortcuts created.", font=("Segoe UI", 9), foreground="gray").pack(anchor=tk.W)
+        self.entry_path = ttk.Entry(path_input_frame, textvariable=self.install_dir)
+        self.entry_path.pack(side=tk.LEFT, fill=tk.X, expand=True)
         
+        ttk.Button(path_input_frame, text="Browse...", command=self.browse_path).pack(side=tk.LEFT, padx=(5, 0))
+        
+        ttk.Label(path_frame, text="Privox will be installed in the folder above.", font=("Segoe UI", 8), foreground="gray").pack(anchor=tk.W, pady=(5, 0))
+
         gpu_frame = ttk.Frame(p1)
         gpu_frame.pack(fill=tk.X, pady=10)
         ttk.Checkbutton(gpu_frame, text="Install NVIDIA GPU Support (~2GB)", variable=self.gpu_support).pack(anchor=tk.W)
@@ -162,10 +180,8 @@ class InstallerGUI(tk.Tk):
         p2 = ttk.Frame(self.main_content)
         ttk.Label(p2, text="Installing Privox...", font=("Segoe UI", 14, "bold")).pack(pady=(10, 20))
         
-        self.pb = ttk.Progressbar(p2, variable=self.progress_val, maximum=100)
-        self.pb.pack(fill=tk.X, pady=10)
-        
-        ttk.Label(p2, textvariable=self.progress_text, font=("Segoe UI", 9)).pack(anchor=tk.W)
+        # [Removed ProgressBar]
+        # [Removed Status Label]
         
         self.log_box = tk.Text(p2, height=12, state=tk.DISABLED, font=("Consolas", 8))
         self.log_box.pack(fill=tk.BOTH, expand=True, pady=10)
@@ -200,6 +216,11 @@ class InstallerGUI(tk.Tk):
             self.btn_next.config(text="Launch", state=tk.NORMAL, command=self.launch_and_exit)
             self.btn_cancel.config(text="Close", state=tk.NORMAL, command=self.destroy)
 
+    def browse_path(self):
+        new_dir = filedialog.askdirectory(initialdir=self.install_dir.get(), title="Select Installation Folder")
+        if new_dir:
+            self.install_dir.set(os.path.normpath(new_dir))
+
     def on_cancel(self):
         if self.current_page_name == "progress":
             if not messagebox.askyesno("Cancel Setup", "Do you want to stop the installation?"):
@@ -233,25 +254,24 @@ class InstallerGUI(tk.Tk):
     def run_install_process(self):
         try:
             log_info("Starting installation thread...")
-            target_exe_path = sys.executable
-            target_dir = EXE_DIR
+            target_dir = os.path.normpath(self.install_dir.get())
+            target_exe_path = os.path.join(target_dir, "Privox.exe")
             
             # 1. Install Files (EXE)
-            if self.install_mode.get():
-                self.log("Installing application files...")
-                new_path = install_app_files(self.log)
-                if new_path:
-                    target_exe_path = new_path
-                    target_dir = os.path.dirname(target_exe_path)
-                else:
-                    self.log("Installation failed. Using portable mode.")
+            self.log(f"Installing application files to {target_dir}...")
+            new_path = install_app_files(target_dir, self.log)
+            if new_path:
+                target_exe_path = new_path
+            else:
+                self.log("Installation failed.")
+                self.after(0, self.show_failure_state)
+                return
             
             self.target_dir = target_dir
             self.target_exe = target_exe_path
 
             # 2. Install Dependencies
             self.log("Checking dependencies...")
-            self.pb.config(value=5) # Visual start
             
             success = install_dependencies(self, target_dir, self.gpu_support.get())
             if not success:
@@ -259,15 +279,13 @@ class InstallerGUI(tk.Tk):
                     self.log("Installation cancelled by user.")
                 else:
                     self.log("Dependency installation failed!")
+                    self.after(0, self.show_failure_state)
                 return
-
-            self.pb.config(value=40)
 
             # 3. Download Model
             self.log("Checking AI Models...")
             check_and_download_model(self, target_dir)
             
-            self.pb.config(value=100)
             self.log("Setup Finished.")
             
             # 4. Finalize
@@ -282,20 +300,20 @@ class InstallerGUI(tk.Tk):
             import traceback
             log_info(traceback.format_exc())
             
-            def show_error_state():
-                messagebox.showerror("Installation Error", msg)
-                self.progress_text.set("Installation Failed.")
-                self.btn_next.config(text="Exit", state=tk.NORMAL, command=self.destroy)
-                self.btn_cancel.config(state=tk.DISABLED)
+            log_info(traceback.format_exc())
+            
+            self.after(0, self.show_failure_state)
 
-            self.after(0, show_error_state)
+    def show_failure_state(self):
+        """ Switches buttons to Exit mode on failure. """
+        self.btn_next.config(text="Exit", state=tk.NORMAL, command=self.destroy)
+        self.btn_cancel.config(state=tk.DISABLED)
+        messagebox.showerror("Installation Failed", "Privox setup could not complete.\nCheck the logs for details.")
 
     def launch_and_exit(self):
         try:
-            if self.install_mode.get():
-                subprocess.Popen([self.target_exe, "--run"])
-            else:
-                 launch_main_app(self.target_dir)
+            # We always launch the installed EXE now
+            subprocess.Popen([self.target_exe, "--run"])
             
             self.destroy()
             sys.exit(0)
@@ -326,55 +344,70 @@ def create_shortcut(target, shortcut_path, description="", icon=None):
         return False
 
 def get_python_exe(log_callback=None):
-    """ Finds a real Python interpreter matching the current major.minor version. """
-    target_ver = f"{sys.version_info.major}.{sys.version_info.minor}"
+    """ 
+    Finds a suitable Python interpreter. 
+    Prioritizes 3.12, 3.11, 3.10 for better CUDA/Llama-CPP compatibility. 
+    """
+    # Preferred versions for GPU support
+    preferred_versions = ["3.12", "3.11", "3.10"]
     
-    if getattr(sys, 'frozen', False):
-        # 1. Try common absolute paths FIRST
-        potential_names = ["python.exe", "pythonw.exe"]
-        potential_paths = []
-        for name in potential_names:
-            potential_paths.extend([
-                os.path.expandvars(rf"%LOCALAPPDATA%\Programs\Python\Python313\{name}"),
-                os.path.expandvars(rf"%LOCALAPPDATA%\Programs\Python\Python312\{name}"),
-                rf"C:\ProgramData\miniconda3\{name}",
-                rf"C:\ProgramData\anaconda3\{name}",
-                os.path.expandvars(rf"%SystemDrive%\Python313\{name}"),
-                os.path.expandvars(rf"%SystemDrive%\Python312\{name}"),
+    # 1. Search for Preferred Versions First (Win/Mac)
+    search_paths = []
+    
+    # Windows specific paths
+    if sys.platform == 'win32':
+        for ver in preferred_versions:
+            ver_clean = ver.replace(".", "") # 3.12 -> 312
+            search_paths.extend([
+                os.path.expandvars(rf"%LOCALAPPDATA%\Programs\Python\Python{ver_clean}\python.exe"),
+                os.path.expandvars(rf"%SystemDrive%\Python{ver_clean}\python.exe"),
+                rf"C:\Python{ver_clean}\python.exe",
             ])
-        
-        for path in potential_paths:
-            if os.path.exists(path):
-                # Verify version
-                try:
-                    ver = subprocess.check_output([path, "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"], 
-                                                   text=True, creationflags=subprocess.CREATE_NO_WINDOW).strip()
-                    if ver == target_ver:
-                        if log_callback: log_callback(f"Using verified Python {ver}: {path}")
-                        return path
-                except: continue
+            
+    # Check explicitly defined paths
+    for path in search_paths:
+        if os.path.exists(path):
+             try:
+                # Verify it is actually the version we expect
+                ver_out = subprocess.check_output(
+                    [path, "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"], 
+                    text=True, creationflags=subprocess.CREATE_NO_WINDOW if sys.platform=='win32' else 0
+                ).strip()
+                
+                if ver_out in preferred_versions:
+                    if log_callback: log_callback(f"Found Preferred Python {ver_out}: {path}")
+                    return path
+             except: continue
 
-        # 2. Try PATH
-        for cmd in ["python", "python3", "py"]:
-            try:
-                ver = subprocess.check_output([cmd, "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"], 
-                                               text=True, creationflags=subprocess.CREATE_NO_WINDOW).strip()
-                if ver == target_ver:
-                    # Check if pip is available
-                    subprocess.run([cmd, "-m", "pip", "--version"], capture_output=True, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
-                    if log_callback: log_callback(f"Using system Python {ver} (pip found): {cmd}")
-                    return cmd
-            except: continue
-        
-        return None
-    return sys.executable
+    # 2. Search PATH for 'python', 'python3' and check version
+    for cmd in ["python", "python3", "py"]:
+        try:
+             ver_out = subprocess.check_output(
+                [cmd, "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"], 
+                text=True, creationflags=subprocess.CREATE_NO_WINDOW if sys.platform=='win32' else 0
+             ).strip()
+             
+             if ver_out in preferred_versions:
+                 if log_callback: log_callback(f"Found Preferred Python {ver_out} in PATH: {cmd}")
+                 return cmd
+        except: continue
 
-def install_app_files(log_callback=None):
-    """ Copies the EXE and resources to LocalAppData. Does NOT launch the app. """
+    # 3. Strict Checking: DO NOT fallback to sys.executable if it doesn't match
+    # Because sys.executable might be 3.13 (bundled), which we explicitly do NOT want.
+    
+    current_ver = f"{sys.version_info.major}.{sys.version_info.minor}"
+    if current_ver in preferred_versions:
+        # If the runner itself is 3.12, we can use it (unlikely in frozen mode but possible)
+        return sys.executable
+        
+    if log_callback: log_callback(f"Warning: No compatible Python ({preferred_versions}) found. Current runtime is {current_ver} (Incompatible).")
+    return None
+
+def install_app_files(target_dir, log_callback=None):
+    """ Copies the EXE and resources to the target directory. Does NOT launch the app. """
     try:
         app_name = "Privox"
         exe_name = "Privox.exe"
-        target_dir = os.path.join(os.environ['LOCALAPPDATA'], "Privox")
         target_exe = os.path.join(target_dir, exe_name)
         
         if not os.path.exists(target_dir):
@@ -436,11 +469,29 @@ def install_app_files(log_callback=None):
             
             dst = os.path.join(target_dir, folder)
             if os.path.exists(src):
-                if log_callback: log_callback(f"Copying {folder}...")
-                if os.path.exists(dst): 
-                    try: shutil.rmtree(dst)
-                    except: pass
-                shutil.copytree(src, dst)
+                if log_callback: log_callback(f"Merging {folder}...")
+                if folder == "models":
+                    # Smart merge for models to preserve existing huge downloads
+                    if not os.path.exists(dst):
+                        os.makedirs(dst)
+                    
+                    for item in os.listdir(src):
+                        s = os.path.join(src, item)
+                        d = os.path.join(dst, item)
+                        if os.path.isdir(s):
+                            if os.path.exists(d): 
+                                # Only wipe subfolders specifically bundled in installer
+                                try: shutil.rmtree(d)
+                                except: pass
+                            shutil.copytree(s, d)
+                        else:
+                            shutil.copy2(s, d)
+                else:
+                    # For assets, a clean wipe is fine/safer
+                    if os.path.exists(dst): 
+                        try: shutil.rmtree(dst)
+                        except: pass
+                    shutil.copytree(src, dst)
         
         # 3. Copy Source Code (for script-based launch)
         src_dir = os.path.join(target_dir, "src")
@@ -487,64 +538,324 @@ def install_app_files(log_callback=None):
         if log_callback: log_callback(f"Install error: {e}")
         return None
 
+def download_file(url, dest, log_callback=None, progress_var=None):
+    import urllib.request
+    try:
+        if log_callback: log_callback(f"Downloading {os.path.basename(dest)}...")
+        
+        def reporthook(blocknum, blocksize, totalsize):
+            readsofar = blocknum * blocksize
+            if totalsize > 0:
+                percent = readsofar * 1e2 / totalsize
+                if progress_var:
+                    # Map 0-100% download to whatever visual range we want, or just log occasionally
+                    pass
+
+        urllib.request.urlretrieve(url, dest, reporthook)
+        return True
+    except Exception as e:
+        if log_callback: log_callback(f"Download error: {e}")
+        return False
+
+def prompt_and_install_python(gui_instance):
+    """
+    Downloads and installs Python 3.12 if missing.
+    Returns the path to the new python.exe or None.
+    """
+    log_callback = gui_instance.log
+    
+    # 1. Ask User
+    if not messagebox.askyesno("Python Missing", "Privox requires Python 3.12 (or compatible) to run.\n\nWould you like to download and install Python 3.12 automatically?"):
+        return None
+
+    try:
+        # 2. Download Python 3.12 Installer
+        py_url = "https://www.python.org/ftp/python/3.12.2/python-3.12.2-amd64.exe"
+        installer_path = os.path.join(os.environ['TEMP'], "python_3.12_install.exe")
+        
+        if log_callback: log_callback("Downloading Python 3.12 Installer (~25MB)...")
+        # Reuse existing progress bar if possible, or just infinite spinner logic
+        if hasattr(gui_instance, 'pb'):
+            gui_instance.pb.config(mode='indeterminate')
+            gui_instance.pb.start(10)
+            
+        if not download_file(py_url, installer_path, log_callback):
+            messagebox.showerror("Error", "Failed to download Python installer.")
+            return None
+            
+        # 3. Run Installer (Passive)
+        if log_callback: log_callback("Installing Python 3.12 (Standard)...")
+        if log_callback: log_callback("Please accept the User Account Control (UAC) prompt if it appears.")
+        
+        # /passive = progress bar, no interaction
+        # PrependPath=1 = Add to PATH (Critical for easy detection later)
+        # InstallAllUsers=0 = Install to %LocalAppData%, no Admin needed usually (unless PrependPath triggers it)
+        cmd = [installer_path, "/passive", "PrependPath=1", "Include_test=0", "Include_doc=0"]
+        
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if hasattr(gui_instance, 'pb'):
+            gui_instance.pb.stop()
+            gui_instance.pb.config(mode='determinate')
+            
+        if proc.returncode == 0:
+            if log_callback: log_callback("Python 3.12 successfully installed.")
+            # Clean up
+            try: os.remove(installer_path)
+            except: pass
+            
+            # 4. Re-scan for Python
+            # We need to refresh environment variables for the current process to see PATH changes?
+            # Actually, installer changes User registry PATH, but current process environment is stale.
+            # We have to check explicit default install locations for 3.12.
+            
+            # Common user install path: %LOCALAPPDATA%\Programs\Python\Python312\python.exe
+            user_path = os.path.expandvars(r"%LOCALAPPDATA%\Programs\Python\Python312\python.exe")
+            if os.path.exists(user_path):
+                return user_path
+                
+            return get_python_exe(log_callback) # Try standard detection again
+        else:
+            if log_callback: log_callback(f"Python install failed (Code {proc.returncode})")
+            return None
+            
+    except Exception as e:
+        if log_callback: log_callback(f"Python Auto-Install Error: {e}")
+        return None
+
+def prompt_and_install_python(gui_instance):
+    """
+    Downloads and installs Python 3.12 if missing.
+    Returns the path to the new python.exe or None.
+    """
+    log_callback = gui_instance.log
+    import urllib.request
+    import tkinter.messagebox as messagebox
+    
+    # 1. Ask User
+    if not messagebox.askyesno("Python Missing", "Privox requires Python 3.12 (or compatible) to run.\n\nWould you like to download and install Python 3.12 automatically?"):
+        return None
+
+    try:
+        # 2. Download Python 3.12 Installer
+        py_url = "https://www.python.org/ftp/python/3.12.2/python-3.12.2-amd64.exe"
+        installer_path = os.path.join(os.environ['TEMP'], "python_3.12_install.exe")
+        
+        if log_callback: log_callback("Downloading Python 3.12 Installer (~25MB)...")
+        # Reuse existing progress bar if possible, or just infinite spinner logic
+        # [Removed PB usage]
+            
+        def reporthook(blocknum, blocksize, totalsize):
+            pass # simplified
+
+        urllib.request.urlretrieve(py_url, installer_path, reporthook)
+            
+        # 3. Run Installer (Passive)
+        if log_callback: log_callback("Installing Python 3.12 (Standard)...")
+        if log_callback: log_callback("Please accept the User Account Control (UAC) prompt if it appears.")
+        
+        # /passive = progress bar, no interaction
+        # PrependPath=1 = Add to PATH (Critical for easy detection later)
+        cmd = [installer_path, "/passive", "PrependPath=1", "Include_test=0", "Include_doc=0"]
+        
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        
+        # [Removed PB usage]
+            
+        if proc.returncode == 0:
+            if log_callback: log_callback("Python 3.12 successfully installed.")
+            try: os.remove(installer_path)
+            except: pass
+            
+            # 4. Re-scan for Python
+            # Common user install path: %LOCALAPPDATA%\Programs\Python\Python312\python.exe
+            user_path = os.path.expandvars(r"%LOCALAPPDATA%\Programs\Python\Python312\python.exe")
+            if os.path.exists(user_path):
+                return user_path
+                
+            return get_python_exe(log_callback) # Try standard detection again
+        else:
+            if log_callback: log_callback(f"Python install failed (Code {proc.returncode})")
+            return None
+            
+    except Exception as e:
+        if log_callback: log_callback(f"Python Auto-Install Error: {e}")
+        return None
+
+def clean_duplicates(lib_dir, log_callback=None):
+    """
+    Scans lib_dir for packages with multiple .dist-info folders.
+    If duplicates are found, it removes ALL versions of that package to force a clean re-install.
+    Special handling for numpy to prefer < 2.0.0.
+    """
+    if not os.path.exists(lib_dir): return
+    
+    try:
+        if log_callback: log_callback("Scanning for duplicate libraries...")
+        
+        # 1. Group by package name
+        # Map: package_name -> [(version, dist_info_folder_name), ...]
+        packages = {}
+        
+        for item in os.listdir(lib_dir):
+            if item.endswith(".dist-info"):
+                # Parse name and version from "package_name-version.dist-info"
+                # This can be tricky (e.g. nvidia-cudnn-cu12-9.x.x)
+                # Standard is name-version.dist-info
+                try:
+                    parts = item.replace(".dist-info", "").rsplit('-', 1)
+                    if len(parts) == 2:
+                        name, version = parts
+                        name = name.lower().replace('_', '-') # Normalize name
+                        if name not in packages:
+                            packages[name] = []
+                        packages[name].append((version, item))
+                except:
+                    continue
+
+        # 2. Check for duplicates
+        for pkg_name, versions in packages.items():
+            if len(versions) > 1:
+                if log_callback: log_callback(f"Found duplicate versions for '{pkg_name}': {[v[0] for v in versions]}")
+                
+                # Special Case: Numpy
+                if pkg_name == "numpy":
+                    # Remove only 2.x if present
+                    for ver, folder in versions:
+                        if ver.startswith("2."):
+                            full_path = os.path.join(lib_dir, folder)
+                            if log_callback: log_callback(f"Removing incompatible numpy: {folder}")
+                            try: shutil.rmtree(full_path, ignore_errors=True)
+                            except: pass
+                    # If we still have duplicates (e.g. 1.26 and 1.25), let's just wipe them all to be safe?
+                    # Actually, if we removed 2.x and only 1.26 remains, we are good.
+                    continue
+
+                # General Case: Surgical Strike
+                # Remove ALL dist-info folders AND the package folder itself
+                # to force pip to re-install the correct one.
+                
+                # 1. Remove all .dist-info folders
+                for ver, folder in versions:
+                    full_path = os.path.join(lib_dir, folder)
+                    if log_callback: log_callback(f"Removing duplicate metadata: {folder}")
+                    try: shutil.rmtree(full_path, ignore_errors=True)
+                    except: pass
+                    
+                # 2. Try to identify and remove the package folder
+                # Common pattern: package name (e.g. "sympy", "markupsafe")
+                # But sometimes it's different (e.g. "Pillow" -> "PIL").
+                # We try standard import name.
+                pkg_folder_candidates = [pkg_name, pkg_name.replace('-', '_')]
+                
+                # Handle special cases if known
+                if pkg_name == "pillow": pkg_folder_candidates = ["PIL"]
+                if pkg_name == "scikit-learn": pkg_folder_candidates = ["sklearn"]
+                
+                for candidate in pkg_folder_candidates:
+                    full_path = os.path.join(lib_dir, candidate)
+                    if os.path.isdir(full_path):
+                        if log_callback: log_callback(f"Removing package folder to force reinstall: {candidate}")
+                        try: shutil.rmtree(full_path, ignore_errors=True)
+                        except Exception as e:
+                            # It might be locked, but we try.
+                            if log_callback: log_callback(f"Warning: Could not remove {candidate}: {e}")
+
+    except Exception as e:
+        if log_callback: log_callback(f"Cleanup warning: {e}")
+
 def install_dependencies(gui_instance, target_base_dir, gpu_support):
     log_callback = gui_instance.log
     lib_dir = os.path.join(target_base_dir, "_internal_libs")
     version_file = os.path.join(lib_dir, ".py_version")
-    current_ver = f"{sys.version_info.major}.{sys.version_info.minor}"
     
-    # Define python_exe EARLY because it's needed for the fixer script
+    # Define python_exe EARLY
     python_exe = get_python_exe(log_callback)
-    if not python_exe:
-        if log_callback: log_callback("Error: No Python interpreter found! Please install Python.")
-        return False
+    
+    # If get_python_exe returns sys.executable (the frozen app) but we are frozen, 
+    # it means it didn't find a valid external python.
+    launching_self = getattr(sys, 'frozen', False) and (python_exe == sys.executable)
+    
+    if not python_exe or launching_self:
+        if log_callback: log_callback("No suitable Python found. Prompting for installation...")
+        new_python = prompt_and_install_python(gui_instance)
+        if new_python:
+            python_exe = new_python
+        else:
+            if log_callback: log_callback("Error: Python installation cancelled or failed.")
+            import tkinter.messagebox as messagebox
+            messagebox.showerror("Requirement Missing", "Privox cannot run without Python 3.12+. Setup will now exit.")
+            return False
 
+    # Get the ACTUAL version of the python_exe we found
+    try:
+        actual_ver = subprocess.check_output(
+            [python_exe, "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
+            text=True, creationflags=subprocess.CREATE_NO_WINDOW if sys.platform=='win32' else 0
+        ).strip()
+    except:
+        actual_ver = f"{sys.version_info.major}.{sys.version_info.minor}"
+
+    if log_callback: log_callback(f"Using Python Runtime: {actual_ver}")
+
+    skip_wipe = False
     if os.path.exists(lib_dir):
-        # ALWAYS attempt to rename the folder on every install/update.
-        # This is the ONLY way to guarantee no 'PermissionError (WinError 5)' from locked DLLs
-        # because even if a process has a DLL open, you can usually rename the PARENT folder on Windows.
-        if log_callback: log_callback("Checking for locked libraries...")
-        temp_cleanup = lib_dir + f".old_{int(time.time())}"
-        success = False
+        # Check if key libraries exist to determine if we can skip wiping
+        has_torch = os.path.exists(os.path.join(lib_dir, "torch"))
+        has_llama = os.path.exists(os.path.join(lib_dir, "llama_cpp"))
+        has_whisper = os.path.exists(os.path.join(lib_dir, "faster_whisper"))
         
-        # Try up to 3 times to clear the folder
-        for attempt in range(3):
-            try:
-                if not os.path.exists(lib_dir):
-                    success = True
-                    break
-                    
-                if log_callback: log_callback(f"Wiping existing libraries (Attempt {attempt+1})...")
-                os.rename(lib_dir, temp_cleanup)
-                os.makedirs(lib_dir)
-                # Try to delete the old one in a thread
-                threading.Thread(target=lambda: shutil.rmtree(temp_cleanup, ignore_errors=True), daemon=True).start()
-                success = True
-                break
-            except Exception as e:
-                if log_callback: log_callback(f"Folder locked: {e}. Retrying force delete...")
-                
-                # Force delete with batch
-                script_path = os.path.join(os.environ['TEMP'], f"delete_libs_{int(time.time())}.bat")
-                with open(script_path, "w") as f:
-                    # More aggressive rd /s /q
-                    f.write(f'@echo off\ntimeout /t 1 /nobreak >nul\nrd /s /q "{lib_dir}"\nexit\n')
-                
-                subprocess.run(["cmd", "/c", script_path], creationflags=subprocess.CREATE_NO_WINDOW)
-                time.sleep(2.0)
-                try: os.remove(script_path)
-                except: pass
-                
-                if not os.path.exists(lib_dir):
+        if has_torch and has_llama and has_whisper:
+            if log_callback: log_callback("Existing libraries found. Skipping wipe to save time/bandwidth.")
+            # Run cleanup to ensure no duplicate metadata from previous bad runs
+            clean_duplicates(lib_dir, log_callback)
+            skip_wipe = True
+        else:
+            # ALWAYS attempt to rename the folder on every install/update.
+            # This is the ONLY way to guarantee no 'PermissionError (WinError 5)' from locked DLLs
+            # because even if a process has a DLL open, you can usually rename the PARENT folder on Windows.
+            if log_callback: log_callback("Checking for locked libraries...")
+            temp_cleanup = lib_dir + f".old_{int(time.time())}"
+            success = False
+            
+            # Try up to 3 times to clear the folder
+            for attempt in range(3):
+                try:
+                    if not os.path.exists(lib_dir):
+                        success = True
+                        break
+                        
+                    if log_callback: log_callback(f"Wiping existing libraries (Attempt {attempt+1})...")
+                    os.rename(lib_dir, temp_cleanup)
                     os.makedirs(lib_dir)
+                    # Try to delete the old one in a thread
+                    threading.Thread(target=lambda: shutil.rmtree(temp_cleanup, ignore_errors=True), daemon=True).start()
                     success = True
                     break
-
-        if not success:
-            if log_callback: 
-                log_callback("FATAL ERROR: Could not clear library folder.")
-                log_callback("Please REBOOT your computer and try again.")
-            raise Exception("Installation blocked by locked files. Please reboot and retry.")
+                except Exception as e:
+                    if log_callback: log_callback(f"Folder locked: {e}. Retrying force delete...")
+                    
+                    # Force delete with batch
+                    script_path = os.path.join(os.environ['TEMP'], f"delete_libs_{int(time.time())}.bat")
+                    with open(script_path, "w") as f:
+                        # More aggressive rd /s /q
+                        f.write(f'@echo off\ntimeout /t 1 /nobreak >nul\nrd /s /q "{lib_dir}"\nexit\n')
+                    
+                    subprocess.run(["cmd", "/c", script_path], creationflags=subprocess.CREATE_NO_WINDOW)
+                    time.sleep(2.0)
+                    try: os.remove(script_path)
+                    except: pass
+                    
+                    if not os.path.exists(lib_dir):
+                        os.makedirs(lib_dir)
+                        success = True
+                        break
+    
+            if not success:
+                if log_callback: 
+                    log_callback("FATAL ERROR: Could not clear library folder.")
+                    log_callback("Please REBOOT your computer and try again.")
+                raise Exception("Installation blocked by locked files. Please reboot and retry.")
     else:
         os.makedirs(lib_dir)
 
@@ -554,21 +865,8 @@ def install_dependencies(gui_instance, target_base_dir, gpu_support):
     torch_check = os.path.join(lib_dir, "torch")
     
     # ---------------------------------------------------------
-    # NEW: Run dependency fixer script to handle CUDA Integration
-    # This helps fix "No CUDA toolset found" errors in CMake
+    # CUDA integration handled via pre-built wheels (Py3.12)
     # ---------------------------------------------------------
-    # We now look in src/ because that's where we copy it
-    fixer_script = os.path.join(target_base_dir, "src", "fix_cuda_build.py")
-    if os.path.exists(fixer_script) and gpu_support and sys.platform == 'win32':
-         if log_callback: log_callback("Running CUDA Integration Fixer...")
-         try:
-             # DEBUG: Log before running fixer
-             if log_callback: log_callback(f"DEBUG: Executing {fixer_script}")
-             subprocess.run([python_exe, fixer_script], check=True, 
-                            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0)
-             if log_callback: log_callback("DEBUG: CUDA Fixer completed.")
-         except Exception as e:
-             if log_callback: log_callback(f"Warning: CUDA Fixer failed ({e}). Compilation might fail.")
     # ---------------------------------------------------------
 
     # Validation: Check if we have the RIGHT torch version (CUDA)
@@ -606,10 +904,14 @@ def install_dependencies(gui_instance, target_base_dir, gpu_support):
             python_exe, "-m", "pip", "install", 
             "--target", lib_dir,
             "--no-input",
-            "--force-reinstall", # FORCE reinstall to overwrite any CPU version
+            # "--force-reinstall", # FORCE reinstall to overwrite any CPU version
             "--index-url", "https://download.pytorch.org/whl/cu124",
             # NO extra-index-url here to prevent PyPI fallback
-        ] + torch_packages
+        ] 
+        if not skip_wipe:
+            torch_cmd.append("--force-reinstall")
+        
+        torch_cmd += torch_packages
 
         if log_callback: log_callback(f"Step 1/3: Installing PyTorch (CUDA)...")
         
@@ -635,10 +937,14 @@ def install_dependencies(gui_instance, target_base_dir, gpu_support):
                 python_exe, "-m", "pip", "install", 
                 "--target", lib_dir,
                 "--no-input",
-                "--force-reinstall",
-                "--index-url", "https://abetlen.github.io/llama-cpp-python/whl/cu124",
-                "llama-cpp-python"
+                # "--force-reinstall",
+                "--index-url", "https://pypi.org/simple",
+                "--extra-index-url", "https://abetlen.github.io/llama-cpp-python/whl/cu124",
+                "llama-cpp-python",
+                "numpy<2.0.0" # CRITICAL: Force compatible numpy here to prevent pulling 2.x
             ]
+            if not skip_wipe:
+                llama_cmd_gpu.append("--force-reinstall")
             
             if log_callback: log_callback(f"Step 2/3: Attempting to install Llama-CPP CUDA wheel...")
             if not run_pip(gui_instance, llama_cmd_gpu):
@@ -646,73 +952,24 @@ def install_dependencies(gui_instance, target_base_dir, gpu_support):
             else:
                 if log_callback: log_callback("Success: Installed Llama-CPP CUDA wheel.")
 
-        except:
-            if log_callback: log_callback("Warning: Pre-built CUDA wheel not found. Attempting fallback...")
-            try:
-                # Check for NVCC
-                subprocess.run(["nvcc", "--version"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                if log_callback: log_callback("NVCC detected. Attempting to compile Llama-CPP from source for GPU...")
-                
-                # Set environment variables for compilation
-                env = os.environ.copy()
-                env["CMAKE_ARGS"] = "-DGGML_CUDA=on"
-                env["FORCE_CMAKE"] = "1"
-                
-                # Install from source (no binary preference)
-                llama_cmd_compile = [
-                    python_exe, "-m", "pip", "install", 
-                    "--target", lib_dir,
-                    "--no-input",
-                    "--force-reinstall",
-                    "--upgrade",
-                    "--no-cache-dir",
-                    "llama-cpp-python"
-                ]
-                
-                # Custom run_pip with env support
-                process = subprocess.Popen(
-                    llama_cmd_compile, 
-                    stdout=subprocess.PIPE, 
-                    stderr=subprocess.STDOUT, 
-                    text=True, 
-                    env=env,
-                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
-                )
-                gui_instance.active_process = process
-                
-                for line in process.stdout:
-                    if log_callback: log_callback(f"COMPILE: {line.strip()}")
-                
-                process.wait()
-                gui_instance.active_process = None
-                
-                if process.returncode == 0:
-                        if log_callback: log_callback("Successfully compiled Llama-CPP with CUDA support!")
-                else:
-                        raise Exception("Compilation failed")
-
-            except Exception as e:
-                if log_callback: log_callback(f"Compilation fallback failed ({e}). Proceeding to CPU version.")
-                
-                llama_cmd_cpu = [
-                    python_exe, "-m", "pip", "install", 
-                    "--target", lib_dir,
-                    "--no-input",
-                    "--upgrade",
-                    "--index-url", "https://pypi.org/simple",
-                    "llama-cpp-python"
-                ]
-                run_pip(gui_instance, llama_cmd_cpu)
-            if log_callback: log_callback("Warning: Llama-CPP CUDA wheel not found (likely no Python 3.13 support yet). Falling back to CPU version...")
+        except Exception as e:
+            if log_callback: log_callback(f"Warning: Pre-built CUDA wheel not found: {e}")
+            if log_callback: log_callback("Falling back to CPU version...")
+            
+            # STEP 3: FALLBACK to CPU
             llama_cmd_cpu = [
                 python_exe, "-m", "pip", "install", 
                 "--target", lib_dir,
                 "--no-input",
                 "--upgrade",
-                "--index-url", "https://pypi.org/simple",
-                "llama-cpp-python"
+                "--force-reinstall",
+                "llama-cpp-python",
+                "numpy<2.0.0" # CRITICAL
             ]
-            run_pip(gui_instance, llama_cmd_cpu)
+            if not run_pip(gui_instance, llama_cmd_cpu):
+                 if log_callback: log_callback("ERROR: Llama-CPP (CPU) installation failed.")
+                 return False
+
 
         # STEP 3: Install Remaining Dependencies
         remaining = [p for p in packages if p not in ["torch", "torchaudio", "nvidia-cudnn-cu12", "nvidia-cublas-cu12", "llama-cpp-python"]]
@@ -720,10 +977,15 @@ def install_dependencies(gui_instance, target_base_dir, gpu_support):
              python_exe, "-m", "pip", "install", 
              "--target", lib_dir,
              "--no-input",
-             # NO --upgrade
+             # NO --upgrade by default if we skipping wipe
              "--index-url", "https://pypi.org/simple",
              "--extra-index-url", "https://download.pytorch.org/whl/cu124" # Allow finding +cu124 deps if needed
-        ] + remaining
+        ]
+        
+        if not skip_wipe:
+            cmd.append("--upgrade")
+            
+        cmd += remaining
     else:
         # Standard CPU/Mac install
         cmd = [
@@ -734,16 +996,28 @@ def install_dependencies(gui_instance, target_base_dir, gpu_support):
         ] + packages
 
     if log_callback: log_callback(f"Step 3/3: Installing other dependencies (sounddevice, etc.)...")
-    result = run_pip(gui_instance, cmd, version_file, current_ver)
+    result = run_pip(gui_instance, cmd, version_file, actual_ver)
 
     # SELF-VERIFICATION
     if result:
          try:
-             # import sys  <-- CAUSES UnboundLocalError because sys is used earlier in this function!
-             if lib_dir not in sys.path: sys.path.insert(0, lib_dir)
-             if log_callback: log_callback("Verifying sounddevice installation...")
-             import sounddevice
-             if log_callback: log_callback("Verification SUCCESS: sounddevice imported.")
+             # Only verify if we are running the SAME python version
+             # Otherwise importing _internal_libs (pyd files) will crash
+             running_ver = f"{sys.version_info.major}.{sys.version_info.minor}"
+             
+             # Check if the installed lib is for this version
+             with open(version_file, "r") as f:
+                 installed_ver = f.read().strip()
+                 
+             if installed_ver == running_ver:
+                 if lib_dir not in sys.path: sys.path.insert(0, lib_dir)
+                 if log_callback: log_callback(f"Verifying sounddevice installation (Python {running_ver})...")
+                 import sounddevice
+                 if log_callback: log_callback("Verification SUCCESS: sounddevice imported.")
+             else:
+                 if log_callback: log_callback(f"Skipping import verification: Installed Runtime ({installed_ver}) != Bootstrap Runtime ({running_ver})")
+                 if log_callback: log_callback("Verification ASSUMED SUCCESS based on pip exit code.")
+                 
          except ImportError as e:
              if log_callback: log_callback(f"Verification FAILED: Could not import sounddevice ({e})")
              # Don't fail the whole setup, but warn
@@ -803,7 +1077,6 @@ def check_and_download_model(gui_instance, target_base_dir):
     try:
         # Pre-import standard libraries to prevent shadowing (UUID issue fix)
         import uuid
-        import shutil
         import json
         
         lib_dir = os.path.join(target_base_dir, "_internal_libs")
@@ -825,8 +1098,8 @@ def check_and_download_model(gui_instance, target_base_dir):
         set_progress(60)
 
         # 2. Whisper Model (Faster-Whisper Format)
-        whisper_model_name = "turbo"
-        whisper_repo = "deepdml/faster-whisper-large-v3-turbo-ct2"
+        whisper_model_name = "distil-large-v3"
+        whisper_repo = "Systran/faster-distil-whisper-large-v3"
         whisper_target = os.path.join(models_dir, "whisper-" + whisper_model_name)
         
         # Check for repo-specific tag to force redownload if we switched repos
@@ -846,7 +1119,6 @@ def check_and_download_model(gui_instance, target_base_dir):
              needs_download = True
              if os.path.exists(whisper_target):
                  safe_log(f"Repository mismatch ({existing_repo} vs {whisper_repo}). Clearing old model data...")
-                 import shutil
                  try:
                      shutil.rmtree(whisper_target)
                      os.makedirs(whisper_target)
@@ -887,7 +1159,6 @@ def setup_dll_paths(lib_dir):
     """ Ensures Windows finds DLLs in subfolders (like nvidia/cudnn/bin). """
     if sys.platform != 'win32': return
     try:
-        import os
         # Recursive check for 'bin' folders containing DLLs
         added = False
         for root, dirs, files in os.walk(lib_dir):
@@ -1005,17 +1276,27 @@ def main():
         uninstall_app()
         sys.exit(0)
 
-    is_installed = False
-    install_dir = os.path.join(os.environ['LOCALAPPDATA'], "Privox")
+    # Try to get install dir from registry if exists
+    install_dir = os.path.join(os.environ.get('LOCALAPPDATA', os.environ.get('USERPROFILE', 'C:\\')), "Privox")
+    try:
+        if sys.platform == 'win32':
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Privox") as key:
+                reg_path, _ = winreg.QueryValueEx(key, "InstallLocation")
+                if reg_path and os.path.exists(reg_path):
+                    install_dir = reg_path
+    except:
+        pass
     
     # Proactively clean up any residual folders from previous installs/updates
     proactive_cleanup(install_dir)
     
     # Log startup details for debugging
     log_info(f"Startup - EXE_DIR: {EXE_DIR}")
-    log_info(f"Install Dir: {install_dir}")
+    log_info(f"Detected Install Dir: {install_dir}")
     log_info(f"Args: {sys.argv}")
     
+    is_installed = False
     if os.path.normcase(os.path.normpath(EXE_DIR)) == os.path.normcase(os.path.normpath(install_dir)):
         is_installed = True
         log_info("Detected: Running from install directory.")

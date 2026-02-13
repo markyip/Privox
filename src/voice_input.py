@@ -218,8 +218,8 @@ SPEECH_PAD_MS = 500
 
 # Models
 # Models
-WHISPER_SIZE = "distil-large-v3" # Balanced (Multilingual)
-WHISPER_REPO = "Systran/faster-distil-whisper-large-v3"
+WHISPER_SIZE = "large-v3-turbo-cantonese" # Optimized for Hong Kong Code-switching
+WHISPER_REPO = "JackyHoCL/whisper-large-v3-turbo-cantonese-yue-english-ct2"
 
 # Llama 3.2 3B Instruct
 GRAMMAR_REPO = "bartowski/Llama-3.2-3B-Instruct-GGUF"
@@ -343,15 +343,16 @@ class GrammarChecker:
                     system_prompt = self.dictation_prompt.replace("{dict}", dict_prompt)
                 else:
                     system_prompt = (
-                        "You are a strict text editing engine. Your ONLY task is to rewrite the input text to be grammatically correct, better formatted, and professionally polished. "
-                        "Preserve the original language (English or Traditional Chinese/Cantonese)."
+                        "You are a strict text editing engine expert in Hong Kong style 'Kongish' (mixed Cantonese and English). "
+                        "Your ONLY task is to rewrite the input text to be grammatically correct and polished while PRESERVING the mixed language style. "
+                        "If the user mixes Cantonese and English, keep that mixture in the output. Fix only typos, grammar, and punctuation."
                         "\n\nRULES:"
                         "\n1. Output ONLY the corrected text. Do NOT converse. Do NOT say 'Here is the corrected text'."
                         "\n2. FIX CAPITALIZATION: Ensure the first letter of every sentence is capitalized."
-                        "\n3. FIX PUNCTUATION: Ensure every sentence ends with appropriate punctuation (., ?, or !)."
-                        "\n4. If the input is a question, correct the grammar of the question. Do NOT answer it."
-                        "\n5. FORMATTING: Use paragraphs for natural speech or narrative. Use markdown bulleted lists ONLY when the content is clearly a series of distinct items, a list of steps, or a shopping list."
-                        "\n6. Maintain the original meaning and language."
+                        "\n3. FIX PUNCTUATION: Use appropriate Chinese punctuation for Cantonese parts (e.g., ，、。) and standard punctuation for English."
+                        "\n4. If the input is a question, correct the grammar. Do NOT answer it."
+                        "\n5. FORMATTING: Use paragraphs for natural speech. Use bulleted lists ONLY for clear list structures."
+                        "\n6. Maintain the original core meaning and the Cantonese-English balance."
                         f"{dict_prompt}"
                     )
                 user_content = f"Input Text: {text}\n\nCorrected Text:"
@@ -859,7 +860,8 @@ class VoiceInputApp:
             segments, info = self.asr_model.transcribe(
                 audio_data.astype(np.float32), 
                 beam_size=5,
-                language=None, # Auto-detect
+                language="yue", # Force Cantonese + English support
+                initial_prompt="這是一段廣東話同英文混合嘅錄音。It contains Cantonese and English mixed together.",
                 vad_filter=True,
                 vad_parameters=dict(min_silence_duration_ms=500)
             )

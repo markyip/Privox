@@ -514,8 +514,9 @@ def install_app_files(target_dir, log_callback=None):
             shutil.copy2(fixer_src, os.path.join(src_dir, "fix_cuda_build.py"))
         
         if log_callback: log_callback("Creating Shortcuts...")
+        icon_path = os.path.join(target_dir, "assets", "app_icon.ico")
         start_menu = os.path.join(os.environ['APPDATA'], 'Microsoft', 'Windows', 'Start Menu', 'Programs')
-        create_shortcut(target_exe, os.path.join(start_menu, f"{app_name}.lnk"), "Privox AI Voice Input", target_exe)
+        create_shortcut(target_exe, os.path.join(start_menu, f"{app_name}.lnk"), "Privox AI Voice Input", icon_path)
         
         if log_callback: log_callback("Registering Uninstaller...")
         import winreg
@@ -523,7 +524,7 @@ def install_app_files(target_dir, log_callback=None):
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path) as key:
             winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, app_name)
             winreg.SetValueEx(key, "UninstallString", 0, winreg.REG_SZ, f'"{target_exe}" --uninstall')
-            winreg.SetValueEx(key, "DisplayIcon", 0, winreg.REG_SZ, target_exe)
+            winreg.SetValueEx(key, "DisplayIcon", 0, winreg.REG_SZ, icon_path)
             winreg.SetValueEx(key, "Publisher", 0, winreg.REG_SZ, "Privox")
             winreg.SetValueEx(key, "InstallLocation", 0, winreg.REG_SZ, target_dir)
             winreg.SetValueEx(key, "NoModify", 0, winreg.REG_DWORD, 1)
@@ -1098,8 +1099,8 @@ def check_and_download_model(gui_instance, target_base_dir):
         set_progress(60)
 
         # 2. Whisper Model (Faster-Whisper Format)
-        whisper_model_name = "distil-large-v3"
-        whisper_repo = "Systran/faster-distil-whisper-large-v3"
+        whisper_model_name = "large-v3-turbo-cantonese"
+        whisper_repo = "JackyHoCL/whisper-large-v3-turbo-cantonese-yue-english-ct2"
         whisper_target = os.path.join(models_dir, "whisper-" + whisper_model_name)
         
         # Check for repo-specific tag to force redownload if we switched repos
@@ -1323,8 +1324,16 @@ def main():
         app = InstallerGUI()
         app.mainloop()
     else:
-        print("Running in Dev Mode")
-        launch_main_app(EXE_DIR)
+        # Dev Mode: If libs are missing, still allow running the installer GUI 
+        # to initialize the environment.
+        lib_dir = os.path.join(EXE_DIR, "_internal_libs")
+        if not os.path.exists(lib_dir) or not os.listdir(lib_dir):
+            print("Dev Mode: Dependencies missing. Launching Installer GUI for setup...")
+            app = InstallerGUI()
+            app.mainloop()
+        else:
+            print("Running in Dev Mode")
+            launch_main_app(EXE_DIR)
 
 if __name__ == "__main__":
     main()

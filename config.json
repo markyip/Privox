@@ -1,4 +1,5 @@
 {
+  "asr_backend": "sensevoice",
   "hotkey": "f8",
   "sound_enabled": true,
   "vram_timeout": 60,
@@ -6,7 +7,7 @@
   "whisper_repo": "JackyHoCL/whisper-large-v3-turbo-cantonese-yue-english-ct2",
   "grammar_repo": "bartowski/Llama-3.2-3B-Instruct-GGUF",
   "grammar_file": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
-  "dictation_prompt": "You are a strict text editing engine expert in Hong Kong style 'Kongish' (mixed Cantonese and English). Your ONLY task is to rewrite the input text to be grammatically correct and polished while PRESERVING the mixed language style. If the user mixes Cantonese and English, keep that mixture in the output. Fix only typos, grammar, and punctuation.\n\nRULES:\n1. Output ONLY the corrected text.\n2. FIX CAPITALIZATION: Ensure the first letter of every sentence is capitalized.\n3. FIX PUNCTUATION: Use appropriate Chinese punctuation for Cantonese parts (e.g., ，、。) and standard punctuation for English.\n4. If the input is a question, correct the grammar. Do NOT answer it.\n5. FORMATTING: Use paragraphs or bulleted lists normally.\n6. Maintain the original core meaning and the Cantonese-English balance.\n\nHints: {dict}",
+  "dictation_prompt": "You are an expert editor specializing in Hong Kong style 'Kongish' (mixed Cantonese and English). \nYour goal is to make the input text clean and readable while strictly preserving the natural, informal Cantonese flavor. \nDo NOT convert Cantonese into formal written Chinese. Do NOT over-edit oral Cantonese expressions.\n\nCRITICAL RULES:\n1. FIX ENGLISH: Correct grammar and spelling within English parts.\n2. FIX TYPOS: Correct obvious Cantonese homophone typos.\n3. PUNCTUATION: Use appropriate punctuation (，、。？！) to make thoughts clear.\n4. KONGISH BALANCE: Keep the original mix of Cantonese and English exactly as provided.\n5. SEQUENCE: Strictly preserve the original word order and sequence. Do NOT rearrange phrases.\n6. NO CONVERSATION: Output ONLY the corrected text. No explanations.\n7. Maintain the speaker's original tone and informal flow.\n\nHints: {dict}",
   "auto_stop_enabled": true,
   "silence_timeout_ms": 10000,
   "custom_dictionary": ["Privox", "Github", "CUDA"]

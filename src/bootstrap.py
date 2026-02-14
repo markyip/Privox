@@ -418,6 +418,9 @@ def install_app_files(target_dir, log_callback=None):
         
         # Copy Assets & Config
         config_path = os.path.join(EXE_DIR, "config.json")
+        if not os.path.exists(config_path) and getattr(sys, 'frozen', False):
+             config_path = os.path.join(sys._MEIPASS, "config.json")
+             
         if os.path.exists(config_path):
              shutil.copy2(config_path, os.path.join(target_dir, "config.json"))
 

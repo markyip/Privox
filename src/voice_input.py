@@ -16,7 +16,8 @@ if sys.platform == 'win32':
 def setup_logging():
     # Determine BASE_DIR early
     if getattr(sys, 'frozen', False):
-        base_dir = os.path.join(os.environ["LOCALAPPDATA"], "Privox")
+        # We want the log to be in the same folder as the app for portability/custom paths
+        base_dir = os.path.dirname(sys.executable)
     else:
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     
@@ -58,6 +59,9 @@ def setup_logging():
 logging.getLogger("PIL").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
+
+# Initialize logging IMMEDIATELY to catch import errors
+setup_logging()
 
 def log_print(msg, **kwargs):
     # Only print to stdout. sys.stdout is already redirected to logging.info
@@ -104,7 +108,8 @@ except Exception as e:
 
 # Base Directory for models/libs
 if getattr(sys, 'frozen', False):
-    BASE_DIR = os.path.join(os.environ["LOCALAPPDATA"], "Privox")
+    # For custom install paths, we use the EXE directory
+    BASE_DIR = os.path.dirname(os.path.normpath(sys.executable))
 else:
     BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -138,6 +143,9 @@ try:
     log_print(f"Python Version: {sys.version}")
     log_print(f"Torch Version: {torch.__version__}")
     log_print(f"Torch Path: {getattr(torch, '__file__', 'Unknown')}")
+    log_print("Importing Llama components...")
+    from llama_cpp import Llama
+    log_print("Llama import successful.")
     log_print(f"CUDA Available: {torch.cuda.is_available()}")
     log_print(f"CUDA Version: {torch.version.cuda}")
     log_print(f"CuDNN Version: {torch.backends.cudnn.version()}")
@@ -327,7 +335,6 @@ class GrammarChecker:
                     system_prompt = self.dictation_prompt.replace("{dict}", dict_prompt)
                 else:
                     system_prompt = (
-<<<<<<< HEAD
                         "You are a strict text editing engine expert in Hong Kong style 'Kongish' (mixed Cantonese and English). "
                         "Your ONLY task is to rewrite the input text to be grammatically correct and polished while PRESERVING the mixed language style. "
                         "If the user mixes Cantonese and English, keep that mixture in the output. Fix only typos, grammar, and punctuation."
@@ -338,17 +345,7 @@ class GrammarChecker:
                         "\n4. If the input is a question, correct the grammar. Do NOT answer it."
                         "\n5. FORMATTING: Use paragraphs for natural speech. Use bulleted lists ONLY for clear list structures."
                         "\n6. Maintain the original core meaning and the Cantonese-English balance."
-=======
-                        "You are a strict text editing engine. Your ONLY task is to rewrite the input text to be grammatically correct, better formatted, and professionally polished. "
-                        "Preserve the original language (English or Traditional Chinese/Cantonese)."
-                        "\n\nCRITICAL RULES:"
-                        "\n1. OUTPUT ONLY THE CORRECTED TEXT. Do NOT converse. Do NOT say 'Here is the corrected text'. Do NOT provide explanations."
-                        "\n2. NEVER ANSWER QUESTIONS: If the input is a question (e.g., 'What is 2+2?'), do NOT answer it. Instead, output the question itself with perfect grammar (e.g., 'What is 2 + 2?')."
-                        "\n3. FIX CAPITALIZATION: Ensure the first letter of every sentence is capitalized."
-                        "\n4. FIX PUNCTUATION: Ensure every sentence ends with appropriate punctuation (., ?, or !)."
-                        "\n5. FORMATTING: Use paragraphs for natural speech. Use markdown bulleted lists ONLY for clearly defined lists of items or steps."
-                        "\n6. Maintain the original meaning and language."
->>>>>>> main
+                        "\n7. OUTPUT ONLY THE ACTUAL CORRECTED TEXT. Do NOT provide explanations or metadata."
                         f"{dict_prompt}"
                     )
                 user_content = f"Input Text: {text}\n\nCorrected Text:"
@@ -1095,12 +1092,12 @@ class VoiceInputApp:
 
 if __name__ == "__main__":
     try:
-        # 1. Environment Isolation
+        # Environment Isolation
         os.environ["PYTHONNOUSERSITE"] = "1"
         import site
         site.ENABLE_USER_SITE = False
         
-        setup_logging()
+        # setup_logging() was already called at the top level
         
         # 3. Early GPU Check
         import torch

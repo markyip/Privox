@@ -10,52 +10,54 @@ import gc
 import concurrent.futures
 if sys.platform == 'win32':
     import winreg
+    import ctypes
+    from ctypes import wintypes
 
-# Disable Symlinks for Windows (Fixes WinError 1314)
-os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
+def setup_logging():
+    # Determine BASE_DIR early
+    if getattr(sys, 'frozen', False):
+        base_dir = os.path.join(os.environ["LOCALAPPDATA"], "Privox")
+    else:
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    
+    if not os.path.exists(base_dir):
+        try: os.makedirs(base_dir, exist_ok=True)
+        except: pass
 
-# Configure logging
-# Default to console only unless PRIVOX_DEBUG=1 is set
-log_level = logging.INFO
-log_format = '%(asctime)s.%(msecs)03d - %(levelname)s - %(message)s'
-log_datefmt = '%Y-%m-%d %H:%M:%S'
+    # Configure logging to always write to file in AppData
+    log_file = os.path.join(base_dir, 'privox_app.log')
+    log_level = logging.INFO
+    log_format = '%(asctime)s.%(msecs)03d - %(levelname)s - %(message)s'
+    log_datefmt = '%Y-%m-%d %H:%M:%S'
 
-if os.environ.get("PRIVOX_DEBUG") == "1":
-    logging.basicConfig(
-        filename='privox_app.log',
-        filemode='a',
-        format=log_format,
-        datefmt=log_datefmt,
-        level=log_level,
-        force=True
-    )
-else:
-    # Console only logging - explicitly use StreamHandler to avoid any default file behavior
     logging.basicConfig(
         format=log_format,
         datefmt=log_datefmt,
         level=log_level,
         force=True,
-        handlers=[logging.StreamHandler(sys.stdout)]
+        handlers=[
+            logging.FileHandler(log_file, encoding='utf-8'),
+            logging.StreamHandler(sys.stdout) if sys.stdout else logging.NullHandler()
+        ]
     )
+    
+    # Redirect stdout/stderr
+    class LoggerWriter:
+        def __init__(self, level):
+            self.level = level
+        def write(self, message):
+            if message.strip():
+                self.level(message.strip())
+        def flush(self):
+            pass
+
+    sys.stdout = LoggerWriter(logging.info)
+    sys.stderr = LoggerWriter(logging.error)
 
 # Silence noisy external loggers
 logging.getLogger("PIL").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
-
-# Redirect stdout/stderr to logging to avoid 'NoneType' has no attribute 'write' in --noconsole mode
-class LoggerWriter:
-    def __init__(self, level):
-        self.level = level
-    def write(self, message):
-        if message.strip():
-            self.level(message.strip())
-    def flush(self):
-        pass
-
-sys.stdout = LoggerWriter(logging.info)
-sys.stderr = LoggerWriter(logging.error)
 
 def log_print(msg, **kwargs):
     # Only print to stdout. sys.stdout is already redirected to logging.info
@@ -101,71 +103,25 @@ except Exception as e:
     print(f"Boot Error: {e}")
 
 # Base Directory for models/libs
-# CRITICAL FIX: When running as frozen EXE, sys.executable is in the install dir,
-# but bootstrap might have placed libs in %LOCALAPPDATA% if we are running from there.
 if getattr(sys, 'frozen', False):
-    # Check 1: Is _internal_libs next to the EXE? (Portable mode)
-    exe_dir = os.path.dirname(sys.executable)
-    local_lib = os.path.join(exe_dir, "_internal_libs")
-    
-    # Only use local lib if it exists AND HAS CONTENT
-    if os.path.exists(local_lib) and os.listdir(local_lib):
-        BASE_DIR = exe_dir
-        log_print(f"DEBUG: Using Portable Libs at {local_lib}")
-    else:
-        # Check 2: Default Install Location (%LOCALAPPDATA%/Privox)
-        # This is where bootstrap.py installs things.
-        BASE_DIR = os.path.join(os.environ["LOCALAPPDATA"], "Privox")
-        log_print(f"DEBUG: Using AppData Libs at {BASE_DIR}")
+    BASE_DIR = os.path.join(os.environ["LOCALAPPDATA"], "Privox")
 else:
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-    if BASE_DIR.endswith('src'):
-         BASE_DIR = os.path.dirname(BASE_DIR)
+    BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# Path Isolation: Ensure we only use the libraries we installed
-lib_dir = os.path.join(BASE_DIR, "_internal_libs")
-log_print(f"Resolved Library Directory: {lib_dir}")
-if os.path.exists(lib_dir):
-    # CRITICAL: Disable user site-packages to prevent global packages from overriding our GPU libs
-    import site
-    site.ENABLE_USER_SITE = False
-    # Also remove user site-packages if already in path
-    user_site = site.getusersitepackages() if hasattr(site, 'getusersitepackages') else None
-    if user_site:
-        sys.path = [p for p in sys.path if not p.startswith(user_site)]
-    
-    # Scrub any existing _internal_libs from path to avoid 3.12/3.13 pollution
-    sys.path = [p for p in sys.path if "_internal_libs" not in p]
-    # We insert at the BEGINNING to prioritize our bundled GPU libs over system libs
-    if lib_dir not in sys.path:
-        sys.path.insert(0, lib_dir)
-
-    # Windows DLL paths for CUDA
-    if sys.platform == 'win32':
-        added_dlls = False
-        for root, dirs, files in os.walk(lib_dir):
-            if 'bin' in dirs:
-                bin_path = os.path.normpath(os.path.join(root, 'bin'))
-                if any(f.lower().endswith('.dll') for f in os.listdir(bin_path)):
-                    try:
-                        os.add_dll_directory(bin_path)
-                        added_dlls = True
-                    except: pass
-        if added_dlls:
-             logging.info("NVIDIA/CUDA DLL paths added to environment.")
+# Simplified Path Logic: Trust Pixi environment but handle DLLs if needed
+if sys.platform == 'win32':
+    # Ensure CUDA DLLs from pixi env are reachable (usually in .pixi/envs/default/bin)
+    pixi_bin = os.path.join(BASE_DIR, ".pixi", "envs", "default", "bin")
+    if os.path.exists(pixi_bin):
+        try:
+            os.add_dll_directory(pixi_bin)
+            logging.info(f"Added Pixi bin to DLL directory: {pixi_bin}")
+        except Exception as e:
+            logging.warning(f"Failed to add Pixi bin to DLL directory: {e}")
 
 try:
     log_print("Importing core utilities...")
     log_print(f"DEBUG: sys.path is: {sys.path}")
-    if os.path.exists(lib_dir):
-        try:
-             contents = os.listdir(lib_dir)
-             sd_found = 'sounddevice' in contents or any(x.startswith('sounddevice') for x in contents)
-             log_print(f"DEBUG: _internal_libs exists. items={len(contents)}. sounddevice_found={sd_found}")
-        except Exception as e:
-             log_print(f"DEBUG: Error listing lib_dir: {e}")
-    else:
-        log_print(f"DEBUG: _internal_libs NOT FOUND at {lib_dir}")
 
     import sounddevice as sd
     import numpy as np
@@ -179,7 +135,9 @@ try:
     import torch
     
     log_print(f"--- TORCH DIAGNOSTICS ---")
+    log_print(f"Python Version: {sys.version}")
     log_print(f"Torch Version: {torch.__version__}")
+    log_print(f"Torch Path: {getattr(torch, '__file__', 'Unknown')}")
     log_print(f"CUDA Available: {torch.cuda.is_available()}")
     log_print(f"CUDA Version: {torch.version.cuda}")
     log_print(f"CuDNN Version: {torch.backends.cudnn.version()}")
@@ -190,6 +148,12 @@ try:
         log_print("1. CPU version of Torch installed (check version above)")
         log_print("2. Missing CUDA DLLs in PATH")
         log_print("3. GPU driver issues")
+        
+        # Native Popup for visibility
+        if sys.platform == 'win32' and not getattr(sys, 'frozen', False):
+             # Only show popup in dev mode for now to avoid annoying users, 
+             # OR we can show it if we explicitly want GPU.
+             pass
     log_print(f"-------------------------")
     
     # Windows Sound
@@ -201,11 +165,12 @@ try:
     log_print("Core imports successful.")
 except Exception as e:
     import traceback
+    err_stack = traceback.format_exc()
     log_print(f"CRITICAL UTILITY IMPORT ERROR: {e}")
-    log_print(traceback.format_exc())
+    log_print(err_stack)
     if sys.platform == 'win32':
         import ctypes
-        ctypes.windll.user32.MessageBoxW(0, f"Critical Utility Initialization Error:\n\n{e}\n\nCheck privox_app.log for details.", "Privox Error", 0x10)
+        ctypes.windll.user32.MessageBoxW(0, f"Privox Import Error:\n\n{e}\n\nTraceback:\n{err_stack[:500]}...", "Privox Fatal Error", 0x10)
     sys.exit(1)
 
 # --- Configuration ---
@@ -294,22 +259,39 @@ class GrammarChecker:
         try:
             # Heavy Import: Llama
             log_print("Importing llama_cpp...")
+            try:
+                import llama_cpp
+                log_print(f"llama-cpp-python Version: {getattr(llama_cpp, '__version__', 'Unknown')}")
+                # Log the system info string - this tells us if CUDA is actually compiled in
+                sys_info = llama_cpp.llama_print_system_info()
+                log_print(f"llama-cpp-python System Info: {sys_info}")
+                if "CUDA = 1" in str(sys_info) or "BLAS = 1" in str(sys_info):
+                    log_print("GPU Backend detected in llama-cpp-python.")
+                else:
+                    log_print("WARNING: llama-cpp-python appears to be CPU-ONLY.")
+            except ImportError as ie:
+                log_print(f"CRITICAL: Failed to import llama_cpp: {ie}")
+                raise ie
+                
             from llama_cpp import Llama
 
-            # CPU Fallback for Llama - Safer in bundled environments
-            # Try GPU first if available, otherwise fallback to CPU (0)
+            # Assertive GPU Offloading for Llama 3.2 3B
             is_gpu = torch.cuda.is_available()
-            n_gpu = -1 if is_gpu else 0
+            # If GPU is available, offload EVERYTHING (approx 28-33 layers for 3B)
+            # Setting a very high number (99) ensures all layers are offloaded
+            n_gpu = 99 if is_gpu else 0
             
             try:
+                log_print(f"Loading Llama (GPU={is_gpu}, request_layers={n_gpu})...")
                 self.model = Llama(
                     model_path=model_path, 
                     n_ctx=2048, 
                     n_gpu_layers=n_gpu, 
-                    verbose=False
+                    verbose=False,
+                    n_threads=os.cpu_count() // 2 # Use half cores for safety if on CPU
                 )
             except Exception as e:
-                log_print(f"Failed to load Llama with GPU ({n_gpu}), falling back to CPU (0): {e}")
+                log_print(f"GPU Load failed, falling back to CPU: {e}")
                 self.model = Llama(
                     model_path=model_path, 
                     n_ctx=2048, 
@@ -321,6 +303,8 @@ class GrammarChecker:
         except Exception as e:
             log_print(f"\nError loading Grammar Model: {e}")
             self.loading_error = str(e)
+            if sys.platform == 'win32':
+                 ctypes.windll.user32.MessageBoxW(0, f"Error loading Grammar Model (Llama):\n\n{e}\n\nCheck logs for details.", "Privox Model Error", 0x10)
 
     def correct(self, text, is_command=False):
         if not self.model or not text.strip():
@@ -343,6 +327,7 @@ class GrammarChecker:
                     system_prompt = self.dictation_prompt.replace("{dict}", dict_prompt)
                 else:
                     system_prompt = (
+<<<<<<< HEAD
                         "You are a strict text editing engine expert in Hong Kong style 'Kongish' (mixed Cantonese and English). "
                         "Your ONLY task is to rewrite the input text to be grammatically correct and polished while PRESERVING the mixed language style. "
                         "If the user mixes Cantonese and English, keep that mixture in the output. Fix only typos, grammar, and punctuation."
@@ -353,6 +338,17 @@ class GrammarChecker:
                         "\n4. If the input is a question, correct the grammar. Do NOT answer it."
                         "\n5. FORMATTING: Use paragraphs for natural speech. Use bulleted lists ONLY for clear list structures."
                         "\n6. Maintain the original core meaning and the Cantonese-English balance."
+=======
+                        "You are a strict text editing engine. Your ONLY task is to rewrite the input text to be grammatically correct, better formatted, and professionally polished. "
+                        "Preserve the original language (English or Traditional Chinese/Cantonese)."
+                        "\n\nCRITICAL RULES:"
+                        "\n1. OUTPUT ONLY THE CORRECTED TEXT. Do NOT converse. Do NOT say 'Here is the corrected text'. Do NOT provide explanations."
+                        "\n2. NEVER ANSWER QUESTIONS: If the input is a question (e.g., 'What is 2+2?'), do NOT answer it. Instead, output the question itself with perfect grammar (e.g., 'What is 2 + 2?')."
+                        "\n3. FIX CAPITALIZATION: Ensure the first letter of every sentence is capitalized."
+                        "\n4. FIX PUNCTUATION: Ensure every sentence ends with appropriate punctuation (., ?, or !)."
+                        "\n5. FORMATTING: Use paragraphs for natural speech. Use markdown bulleted lists ONLY for clearly defined lists of items or steps."
+                        "\n6. Maintain the original meaning and language."
+>>>>>>> main
                         f"{dict_prompt}"
                     )
                 user_content = f"Input Text: {text}\n\nCorrected Text:"
@@ -437,6 +433,9 @@ class VoiceInputApp:
         self.model_lock = threading.Lock()
         self.vram_timeout = 60 # Seconds before unloading
         self.pending_wakeup = False # Auto-start recording after loading?
+        
+        # Hotkey support
+        self.hotkey = keyboard.Key.f8 # Default key
 
         # Start loading threads
         threading.Thread(target=self.initial_load, daemon=True).start()
@@ -596,15 +595,19 @@ class VoiceInputApp:
                         if not os.path.exists(model_path):
                             log_print(f"WARNING: Configured model '{WHISPER_SIZE}' not found at {model_path}. Transcription may fail.")
                     
-                    hotkey_lookup = hotkey_str.lower()
-                    if hotkey_lookup in keyboard.Key.__members__:
-                        self.hotkey = keyboard.Key[hotkey_lookup]
-                    elif hotkey_str.upper() in keyboard.Key.__members__:
-                        self.hotkey = keyboard.Key[hotkey_str.upper()]
-                    else:
+                    # Simple hotkey support (single key only)
+                    self.hotkey = keyboard.Key.f8
+                    if hotkey_str in keyboard.Key.__members__:
+                        self.hotkey = keyboard.Key[hotkey_str]
+                    elif len(hotkey_str) == 1:
                         self.hotkey = keyboard.KeyCode.from_char(hotkey_str)
+                    else:
+                        if hotkey_str.upper() in keyboard.Key.__members__:
+                            self.hotkey = keyboard.Key[hotkey_str.upper()]
+                        else:
+                            log_print(f"Unknown hotkey: {hotkey_str}. Using F8.")
                     
-                    log_print(f"Loaded Config - Hotkey: {self.hotkey}, Sound: {self.sound_enabled}, Timeout: {self.vram_timeout}s, Model: {WHISPER_SIZE}")
+                    log_print(f"Loaded Config - Hotkey: {hotkey_str}, Sound: {self.sound_enabled}, Timeout: {self.vram_timeout}s, Model: {WHISPER_SIZE}")
             else:
                 log_print(f"config.json not found at {config_path}, using defaults")
         except Exception as e:
@@ -781,15 +784,15 @@ class VoiceInputApp:
                 log_print("Wake up detected. Pre-loading models...")
                 self.pending_wakeup = True # Auto-start recording when ready
                 threading.Thread(target=self.load_heavy_models, daemon=True).start()
-                return # Don't fall through to error message
+                return
 
             if not self.vad_model or self.asr_model is None:
-                log_print("Ignored F8: Models not fully loaded.")
+                log_print("Ignored Hotkey: Models not fully loaded.")
                 self.sound_manager.play_error()
                 return
 
             if not self.mic_active:
-                log_print("Ignored F8: No Microphone Active")
+                log_print("Ignored Hotkey: No Microphone Active")
                 self.sound_manager.play_error()
                 return
                 
@@ -797,6 +800,9 @@ class VoiceInputApp:
                 self.start_listening()
             else:
                 self.stop_listening()
+
+    def on_release(self, key):
+        pass
 
     def start_listening(self):
         self.last_activity_time = time.time()
@@ -953,9 +959,6 @@ class VoiceInputApp:
             self.sound_manager.play_error()
 
     def processing_loop(self):
-        listener = keyboard.Listener(on_press=self.on_press)
-        listener.start()
-        
         self.start_audio_stream()
             
         while self.running:
@@ -992,11 +995,8 @@ class VoiceInputApp:
                 time.sleep(1)
 
     def exit_action(self, icon, item):
-        self.running = False
-        if self.stream:
-            self.stream.stop()
-            self.stream.close()
-        icon.stop()
+        icon.visible = False
+        icon.stop() 
         os._exit(0)
 
     def reconnect_action(self, icon, item):
@@ -1046,10 +1046,28 @@ class VoiceInputApp:
             return False
 
     def run(self):
+        # Single Instance Mutex Check (Windows)
+        self.mutex_handle = None
+        if sys.platform == 'win32':
+            mutex_name = "Global\\Privox_SingleInstance_Mutex"
+            self.mutex_handle = ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name)
+            last_error = ctypes.windll.kernel32.GetLastError()
+            
+            # ERROR_ALREADY_EXISTS = 183
+            if last_error == 183:
+                log_print("Another instance of Privox is already running. Exiting.")
+                if self.mutex_handle:
+                    ctypes.windll.kernel32.CloseHandle(self.mutex_handle)
+                
+                # POPUP to let user know why it's invisible
+                ctypes.windll.user32.MessageBoxW(0, "Privox is already running in the background.\nCheck your system tray or Task Manager.", "Privox", 0x40)
+                sys.exit(0)
+            
+            log_print("Acquired single-instance mutex.")
+
         # Setup Tray Menu
         menu = pystray.Menu(
             pystray.MenuItem('Run at Startup', self.toggle_startup, checked=self.check_startup_status),
-            pystray.MenuItem('Reconnect Audio', self.reconnect_action),
             pystray.MenuItem('Exit', self.exit_action)
         )
         
@@ -1066,9 +1084,44 @@ class VoiceInputApp:
         threading.Thread(target=self.processing_loop, daemon=True).start()
         threading.Thread(target=self.animation_loop, daemon=True).start()
         
+        # Start Keyboard Listener
+        self.keyboard_listener = keyboard.Listener(on_press=self.on_press, on_release=self.on_release)
+        self.keyboard_listener.start()
+        
         # Run Icon (Native Loop)
+        log_print("Starting Tray Icon Loop...")
+        # ctypes.windll.user32.MessageBoxW(0, "About to show Tray Icon. Click OK to continue.", "Privox Debug", 0x40)
         self.icon.run()
 
 if __name__ == "__main__":
-    app = VoiceInputApp()
-    app.run()
+    try:
+        # 1. Environment Isolation
+        os.environ["PYTHONNOUSERSITE"] = "1"
+        import site
+        site.ENABLE_USER_SITE = False
+        
+        setup_logging()
+        
+        # 3. Early GPU Check
+        import torch
+        gpu_detected = torch.cuda.is_available()
+        
+        logging.info("--- VoiceInputApp Startup ---")
+        logging.info(f"Python Executable: {sys.executable}")
+        logging.info(f"sys.path: {sys.path}")
+        logging.info(f"GPU Support Detected: {gpu_detected}")
+        if gpu_detected:
+            logging.info(f"Using GPU: {torch.cuda.get_device_name(0)}")
+        else:
+            logging.warning("GPU NOT DETECTED early. Processing may be slow.")
+        
+        app = VoiceInputApp()
+        app.run()
+    except Exception as e:
+        import traceback
+        err_msg = f"Fatal Error on Startup:\n\n{e}\n\n{traceback.format_exc()}"
+        logging.error(err_msg)
+        if sys.platform == 'win32':
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(0, f"Privox failed to start:\n\n{e}\n\nCheck privox_app.log for details.", "Privox Fatal Error", 0x10)
+        sys.exit(1)

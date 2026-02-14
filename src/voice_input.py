@@ -1,5 +1,11 @@
 import sys
 import os
+
+# --- 0. Hard Environment Isolation (MUST BE FIRST) ---
+os.environ["PYTHONNOUSERSITE"] = "1"
+import site
+site.ENABLE_USER_SITE = False
+
 import logging
 import threading
 import queue
@@ -1092,13 +1098,6 @@ class VoiceInputApp:
 
 if __name__ == "__main__":
     try:
-        # Environment Isolation
-        os.environ["PYTHONNOUSERSITE"] = "1"
-        import site
-        site.ENABLE_USER_SITE = False
-        
-        # setup_logging() was already called at the top level
-        
         # 3. Early GPU Check
         import torch
         gpu_detected = torch.cuda.is_available()

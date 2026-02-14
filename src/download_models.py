@@ -6,6 +6,11 @@ def log(msg):
     print(f"[ModelSetup] {msg}", flush=True)
 
 def main():
+    # 0. Environment Isolation
+    os.environ["PYTHONNOUSERSITE"] = "1"
+    import site
+    site.ENABLE_USER_SITE = False
+    
     target_base_dir = os.getcwd()
     models_dir = os.path.join(target_base_dir, "models")
     if not os.path.exists(models_dir):
@@ -73,8 +78,8 @@ def main():
         log(f"Grammar Model {grammar_file} present.")
 
     # 2. Whisper Model (Faster-Whisper Format)
-    whisper_model_name = "distil-large-v3"
-    whisper_repo = "Systran/faster-distil-whisper-large-v3"
+    whisper_model_name = "large-v3-turbo-cantonese" 
+    whisper_repo = "JackyHoCL/whisper-large-v3-turbo-cantonese-yue-english-ct2"
     whisper_target = os.path.join(models_dir, "whisper-" + whisper_model_name)
     
     # Check for repo-specific tag to force redownload if we switched repos

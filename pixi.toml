@@ -28,6 +28,7 @@ ninja = "*"
 numpy = "<2.0.0" 
 pywin32 = "*"
 pyinstaller = "*"
+setuptools = "*"
 
 
 [pypi-dependencies]

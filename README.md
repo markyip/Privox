@@ -3,25 +3,24 @@
 A powerful, private, and local voice input assistant for Windows. Privox captures your speech, transcribes it using **Faster-Whisper**, and refines the text using **Llama 3** for perfect grammar and formatting.
 
 > [!WARNING]
-> **Disk Space Requirement**: This application requires approximately **10GB** of free disk space.
+> **Disk Space Requirement**: This application requires approximately **15GB** of free disk space for the AI models and portable environments.
 >
 > **Why so large?** Privox runs completely locally to ensure your privacy. This means it bundles:
 >
-> 1.  **AI Models**: High-quality speech recognition (Whisper) and text refinement (Llama 3) models.
-> 2.  **GPU Drivers**: NVIDIA CUDA libraries bundled directly to ensure it works out-of-the-box without complex system configuration.
-> 3.  **Python Runtime**: A dedicated Python environment to avoid conflicts with your system.
+> 1.  **AI Models**: High-quality speech recognition (Whisper) and text refinement (Llama 3) models (~13GB total).
+> 2.  **GPU Drivers**: NVIDIA CUDA libraries bundled via Pixi to ensure performance.
+> 3.  **Portable Runtime**: A dedicated Pixi environment to avoid system conflicts.
 
 ## Features
 
 - **High-Accuracy Transcription**: Powered by `faster-whisper` (Distil-Large-v3).
 - **Multilingual Support**: Supports English, Traditional Chinese (Cantonese), Mandarin, Japanese, Korean, and many European languages.
 - **Intelligent Formatting**: Uses `Llama-3.2-3B-Instruct` to fix grammar, punctuation, and format lists automatically.
+- **Strict Editing Mode**: Optimized to polish text without conversational filler or answering questions.
 - **Auto-Stop**: Automatically stops recording after **10 seconds** of silence.
-- **Customizable Persona**: Modify the "Dictation Prompt" in `config.json` to change how the AI rewrites your text (e.g., summarize, bullet points, formal tone).
-- **VRAM Saver**: Dynamically unloads AI models from memory after 60 seconds of inactivity to free up resources for games and other apps.
-- **System Tray Integration**: Minimalist UI with quick access to settings and auto-launch configuration.
-- **Auto-Launch**: Option to start automatically with Windows.
-- **Smart Updates**: Only downloads what you need during updates, preserving heavy AI libraries to save bandwidth.
+- **Disk Safety**: Built-in verification to ensure sufficient storage before installation.
+- **VRAM Saver**: Dynamically unloads AI models from memory after 60 seconds of inactivity.
+- **Pixi Orchestration**: Isolated dependencies and CUDA management for high reliability.
 
 ## Requirements
 
@@ -32,18 +31,24 @@ A powerful, private, and local voice input assistant for Windows. Privox capture
 
 ## Installation
 
-1.  **Clone the repository:**
+### For Users
 
+1. Download the latest `Privox.exe` from the Releases page.
+2. Run the installer and follow the GUI prompts.
+3. The installer will automatically set up the environment and models.
+
+### For Developers
+
+1.  **Clone the repository:**
     ```bash
     git clone https://github.com/markyip/Privox.git
     cd Privox
     ```
-
-2.  **Run the Setup & App:**
+2.  **Install Pixi** (if not already installed): [https://pixi.sh/](https://pixi.sh/)
+3.  **Initialize Environment:**
     ```bash
-    python src/bootstrap.py
+    pixi run start
     ```
-    _This will automatically install dependencies and download the required AI models into your project folder. Alternatively, you can double-click `scripts/run.bat`._
 
 ## Usage
 
@@ -80,19 +85,28 @@ If you cannot access Hugging Face or prefer to use a local model file:
 3.  **Place the file** inside the `models` folder.
 4.  **Launch Privox**. It will detect the local file and skip the download.
 
-## Building the Executable
+### Building the Executable
 
-To create a standalone `.exe` file for easy distribution:
+To create a standalone `.exe` file (the "Installer"):
 
-1.  Run the build script:
+1.  Run the Pixi build task:
 
     ```bash
-    python build_app.py
+    pixi run build
     ```
 
-    _Alternatively, double-click `scripts/build_windows.bat`._
-
 2.  The output executable will be located in `dist/Privox.exe`.
+
+### How it works
+
+Privox uses a **Bootstrap** architecture. The `.exe` you build is a lightweight launcher that:
+
+1.  Provides a GUI to select an installation path.
+2.  Self-extracts into that path.
+3.  Downloads **Pixi** and sets up the heavy AI environment locally on the user's machine.
+4.  Downloads the **AI Models** (Llama 3 & Whisper).
+
+This ensures the initial download is small (~12MB) while providing a robust, isolated environment for the user.
 
 ### Advanced: CPU-Only Build
 

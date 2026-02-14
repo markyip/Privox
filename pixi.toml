@@ -1,0 +1,42 @@
+[workspace]
+name = "privox"
+version = "0.1.0"
+description = "Privox AI Assistant"
+authors = ["Mark"]
+channels = ["conda-forge", "pytorch", "nvidia"]
+platforms = ["win-64"]
+
+[tasks]
+start = "python src/voice_input.py"
+build = "python build_app.py"
+
+[system-requirements]
+cuda = "12"
+
+[dependencies]
+python = ">=3.10,<3.13" # Support Python 3.10-3.12
+# Switch to unpinned channels to let conda-forge align versions (fixes Py3.12 libcublas conflict)
+pytorch = { version = "==2.5.1", channel = "pytorch" }
+pytorch-cuda = { version = "12.4.*", channel = "pytorch" }
+torchaudio = { version = "==2.5.1", channel = "pytorch" }
+torchvision = { version = "*", channel = "pytorch" }
+cuda-toolkit = { version = "12.4.*", channel = "nvidia" }
+cudnn = { version = "9.*", channel = "nvidia" }
+pip = "*"
+cmake = "*"
+ninja = "*"
+numpy = "<2.0.0" 
+pywin32 = "*"
+pyinstaller = "*"
+
+
+[pypi-dependencies]
+sounddevice = "*"
+pynput = "*"
+pystray = "*"
+pillow = "*"
+pyperclip = "*"
+huggingface_hub = "*"
+faster-whisper = "*"
+colorama = "*"
+requests = "*"

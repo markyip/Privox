@@ -1,3 +1,24 @@
+# Privox v1.1.0 - GPU & Reliability Update
+
+This update focuses on making Privox more robust with a new dependency management system (Pixi), reliable GPU acceleration, and improved installation safety checks.
+
+## New in v1.1.0
+
+### 🚀 Full GPU Orchestration
+- **Explicit CUDA Targeting**: Migration to Pixi with dedicated `pytorch` and `nvidia` channels ensures the correct GPU-enabled binaries are prioritized.
+- **Improved Llama Offloading**: Assertive GPU layering (forced 33+ layers) for Llama 3.2 3B ensures maximum performance.
+- **Dynamic GPU Repair**: The installer now detects "CPU-only" LLM engines and automatically attempts a background repair using CUDA 12.4 binary wheels.
+
+### 🛡️ Installation Safety
+- **Disk Space Verification**: The installer now verifies at least **15GB of free space** before proceeding to ensure large AI models (13GB+) can be fully downloaded.
+- **Environment Isolation**: Complete migration to **Pixi** provides a fully isolated, portable Python environment that doesn't interfere with your system's global Python.
+
+### 🐛 Bug Fixes & Diagnostics
+- **Detailed Diagnostics**: Added Torch path and CUDA status reporting to startup logs to help with GPU troubleshooting.
+- **Exit Confimration Logic**: Unified the exit process to be faster and more reliable.
+
+---
+
 # Privox v1.0.0 - Initial Release
 
 Privox is a private, local-first voice input assistant for Windows that transcribes your speech and intelligently refines it using state-of-the-art AI models.

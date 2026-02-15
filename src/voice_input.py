@@ -259,17 +259,17 @@ class GrammarChecker:
                 try:
                     hf_hub_download(repo_id=GRAMMAR_REPO, filename=GRAMMAR_FILE, local_files_only=True)
                 except Exception:
-                # Ensure we download to the local models folder
-                local_dir = os.path.join(BASE_DIR, "models")
-                if not os.path.exists(local_dir):
-                    os.makedirs(local_dir, exist_ok=True)
-                
-                model_path = hf_hub_download(
-                    repo_id=GRAMMAR_REPO, 
-                    filename=GRAMMAR_FILE,
-                    local_dir=local_dir,
-                    local_dir_use_symlinks=False
-                )
+                    # Ensure we download to the local models folder
+                    local_dir = os.path.join(BASE_DIR, "models")
+                    if not os.path.exists(local_dir):
+                        os.makedirs(local_dir, exist_ok=True)
+                    
+                    model_path = hf_hub_download(
+                        repo_id=GRAMMAR_REPO, 
+                        filename=GRAMMAR_FILE,
+                        local_dir=local_dir,
+                        local_dir_use_symlinks=False
+                    )
             except Exception as e:
                 log_print(f"\nError downloading model: {e}")
                 self.loading_error = str(e)
@@ -348,17 +348,14 @@ class GrammarChecker:
                     system_prompt = self.dictation_prompt.replace("{dict}", dict_prompt)
                 else:
                     system_prompt = (
-                        "You are an expert editor specializing in Hong Kong style 'Kongish' (mixed Cantonese and English). "
-                        "Your goal is to make the input text clean and readable while strictly preserving the natural, informal Cantonese flavor. "
-                        "Do NOT convert Cantonese into formal written Chinese. Do NOT over-edit oral Cantonese expressions."
+                        "You are a professional writing assistant. Your goal is to refine the provided transcript into clean, professional, and grammatically correct text. "
                         "\n\nCRITICAL RULES:"
-                        "\n1. FIX ENGLISH: Correct grammar and spelling within English parts."
-                        "\n2. FIX TYPOS: Correct obvious Cantonese homophone typos."
-                        "\n3. PUNCTUATION: Use appropriate punctuation (，、。？！) to make thoughts clear."
-                        "\n4. KONGISH BALANCE: Keep the original mix of Cantonese and English exactly as provided."
-                        "\n5. SEQUENCE: Strictly preserve the original word order and sequence. Do NOT rearrange phrases."
-                        "\n6. NO CONVERSATION: Output ONLY the corrected text. No explanations."
-                        "\n7. Maintain the speaker's original tone and informal flow."
+                        "\n1. FIX GRAMMAR: Correct English grammar and spelling errors."
+                        "\n2. IMPROVE FLOW: Make the text more readable while preserving the original meaning."
+                        "\n3. PUNCTUATION: Use appropriate punctuation to make thoughts clear."
+                        "\n4. NO HALLUCINATION: Do not add information that was not in the original transcript."
+                        "\n5. NO CONVERSATION: Output ONLY the corrected text. No explanations."
+                        "\n6. Maintain the speaker's original tone and intent."
                         f"{dict_prompt}"
                     )
                 user_content = f"Input Text: {text}\n\nCorrected Text:"

@@ -17,17 +17,17 @@ This document tracks planned features, experimental ideas, and pending improveme
 - [ ] **Multi-Model Support**: Quick toggle between different LLM sizes (e.g., 1B for speed, 8B for high-quality writing).
 - [ ] **Offline Knowledge Base**: Local RAG (Retrieval-Augmented Generation) for searching previous voice notes.
 
-## 🛠️ Technical Improvements
-
-- [ ] **Model Compression**: Explore GGUF quantization (Q2_K, Q3_K) to reduce VRAM usage for lower-end GPUs.
+- [x] **Path Resolution Fix**: Unified all paths to use `BASE_DIR`, ensuring portability across custom install directories.
 - [ ] **Binary Installer (MSI/EXE)**: Create a more standard Windows installer package (Inno Setup or WiX).
 - [ ] **Plugin System**: Allow users to add custom modules for specific transcription tasks.
 - [ ] **Mac/Linux Support**: Port the bootstrap and audio logic to other platforms.
 
-## 🏮 Cantonese & Kongish Focus
+## 🌐 Language & Dictation Focus
+
+- [x] **General Language Support**: Optimized prompts for standard English and multilingual dictation (fixing grammar, spelling, and flow).
+- [ ] **Cantonese & Kongish (Future)**: Re-integrate specialized Cantonese handling when switching back to ultra-low latency or fine-tuned models.
 
 - [x] **SenseVoiceSmall Integration**: Implemented as an alternative backend for ultra-low latency. Toggle via `config.json`.
-- [ ] **Fine-tuning Project**: See [FINETUNING_GUIDE.md](file:///d:/Development/Privox/FINETUNING_GUIDE.md) and [training_data_sample.jsonl](file:///d:/Development/Privox/training_data_sample.jsonl).
 - [ ] **Long Sentence Optimization**: Research and improve handling of long Cantonese sentences (currently prone to context drift vs. English).
 - [ ] **Cantonese SLM**: Fine-tune a Small Language Model (SLM) specifically on Hong Kong chat data.
 - [ ] **Traditional Chinese Punctuation Refinement**: Further tune the prompt for HK-style punctuation (e.g., using 「」 instead of "").

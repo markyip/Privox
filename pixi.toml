@@ -1,6 +1,6 @@
 [workspace]
 name = "privox"
-version = "0.1.0"
+version = "0.1.1"
 description = "Privox AI Assistant"
 authors = ["Mark"]
 channels = ["conda-forge", "pytorch", "nvidia"]
@@ -43,4 +43,4 @@ funasr = "*"
 modelscope = "*"
 scipy = "*"
 colorama = "*"
-requests = "*"
+customtkinter = "*"

@@ -14,6 +14,7 @@ import json
 import re
 import gc
 import concurrent.futures
+import subprocess
 if sys.platform == 'win32':
     import winreg
     import ctypes
@@ -197,8 +198,8 @@ SPEECH_PAD_MS = 500
 
 # Models
 # Models
-WHISPER_SIZE = "large-v3-turbo-cantonese" # Optimized for Hong Kong Code-switching
-WHISPER_REPO = "JackyHoCL/whisper-large-v3-turbo-cantonese-yue-english-ct2"
+WHISPER_SIZE = "distil-large-v3" 
+WHISPER_REPO = "Systran/faster-distil-whisper-large-v3"
 ASR_BACKEND = "whisper" # Default: whisper or sensevoice
 
 # Llama 3.2 3B Instruct
@@ -234,12 +235,14 @@ class SoundManager:
 
 
 class GrammarChecker:
-    def __init__(self, custom_dictionary=None, dictation_prompt=None, command_prompt=None):
+    def __init__(self, custom_dictionary=None, dictation_prompt=None, command_prompt=None, character=None, tone=None):
         self.model = None
         self.custom_dictionary = custom_dictionary or []
         self.loading_error = None
         self.dictation_prompt = dictation_prompt
         self.command_prompt = command_prompt
+        self.character = character or "Writing Assistant"
+        self.tone = tone or "Natural"
         self.icon = None # Placeholder
 
     def load_model(self):
@@ -259,11 +262,17 @@ class GrammarChecker:
                 try:
                     hf_hub_download(repo_id=GRAMMAR_REPO, filename=GRAMMAR_FILE, local_files_only=True)
                 except Exception:
-                    log_print("Grammar Model not found locally. Downloading... (This may take time)")
-                    if self.icon:
-                        self.icon.notify("Downloading Grammar Model (2GB)... Please wait.", "Privox Setup")
-                
-                model_path = hf_hub_download(repo_id=GRAMMAR_REPO, filename=GRAMMAR_FILE)
+                    # Ensure we download to the local models folder
+                    local_dir = os.path.join(BASE_DIR, "models")
+                    if not os.path.exists(local_dir):
+                        os.makedirs(local_dir, exist_ok=True)
+                    
+                    model_path = hf_hub_download(
+                        repo_id=GRAMMAR_REPO, 
+                        filename=GRAMMAR_FILE,
+                        local_dir=local_dir,
+                        local_dir_use_symlinks=False
+                    )
             except Exception as e:
                 log_print(f"\nError downloading model: {e}")
                 self.loading_error = str(e)
@@ -322,9 +331,16 @@ class GrammarChecker:
                  ctypes.windll.user32.MessageBoxW(0, f"Error loading Grammar Model (Llama):\n\n{e}\n\nCheck logs for details.", "Privox Model Error", 0x10)
 
     def correct(self, text, is_command=False):
-        if not self.model or not text.strip():
+        # 1. Pre-processing Guardrail: Skip LLM for very short or empty inputs
+        # (Unless it's a known keyword in the custom dictionary)
+        clean_text = text.strip()
+        if not self.model or not clean_text:
             return text
             
+        if len(clean_text) < 4 and clean_text.lower() not in [d.lower() for d in self.custom_dictionary]:
+            log_print(f" [Short Input Skip - Mirroring: '{clean_text}']")
+            return text
+
         try:
             dict_str = ", ".join(self.custom_dictionary)
             dict_prompt = f"\nHints: {dict_str}" if dict_str else ""
@@ -337,22 +353,21 @@ class GrammarChecker:
                 )
                 user_content = text
             else:
-                # Cleanup Mode (English Only)
-                if self.dictation_prompt:
+                if self.dictation_prompt and self.dictation_prompt.strip() and not self.dictation_prompt.startswith("#"):
                     system_prompt = self.dictation_prompt.replace("{dict}", dict_prompt)
                 else:
                     system_prompt = (
-                        "You are an expert editor specializing in Hong Kong style 'Kongish' (mixed Cantonese and English). "
-                        "Your goal is to make the input text clean and readable while strictly preserving the natural, informal Cantonese flavor. "
-                        "Do NOT convert Cantonese into formal written Chinese. Do NOT over-edit oral Cantonese expressions."
+                        f"You are a professional {self.character}. Your goal is to refine the provided transcript into clean, professional, and grammatically correct text. "
+                        f"\n\nTONE: {self.tone}"
                         "\n\nCRITICAL RULES:"
-                        "\n1. FIX ENGLISH: Correct grammar and spelling within English parts."
-                        "\n2. FIX TYPOS: Correct obvious Cantonese homophone typos."
-                        "\n3. PUNCTUATION: Use appropriate punctuation (，、。？！) to make thoughts clear."
-                        "\n4. KONGISH BALANCE: Keep the original mix of Cantonese and English exactly as provided."
-                        "\n5. SEQUENCE: Strictly preserve the original word order and sequence. Do NOT rearrange phrases."
-                        "\n6. NO CONVERSATION: Output ONLY the corrected text. No explanations."
-                        "\n7. Maintain the speaker's original tone and informal flow."
+                        "\n1. FIX GRAMMAR: Correct English grammar and spelling errors."
+                        "\n2. IMPROVE FLOW: Make the text more readable while preserving the original meaning."
+                        "\n3. PUNCTUATION: Use appropriate punctuation to make thoughts clear."
+                        "\n4. NO HALLUCINATION: Do not add information that was not in the original transcript."
+                        "\n5. REMOVE FILLERS: Remove unnecessary filler words and disfluencies (e.g., 'uh', 'um', 'yeah', 'right', 'ah', 'oh') unless essential to the intent."
+                        "\n6. NO CONVERSATION: Output ONLY the corrected text. Never offer help or engage in chat."
+                        "\n7. IF UNCLEAR: If the input is too short or consists only of noise/fillers, output the input EXACTLY as provided without any explanation."
+                        "\n8. Maintain the speaker's original intent."
                         f"{dict_prompt}"
                     )
                 user_content = f"Input Text: {text}\n\nCorrected Text:"
@@ -440,6 +455,7 @@ class VoiceInputApp:
         
         # Hotkey support
         self.hotkey = keyboard.Key.f8 # Default key
+        self.settings_process = None
 
         # Start loading threads
         threading.Thread(target=self.initial_load, daemon=True).start()
@@ -457,6 +473,12 @@ class VoiceInputApp:
         # 1. Load VAD Model (Silero)
         log_print("Loading Silero VAD...", end="", flush=True)
         try:
+            # Force Torch Hub to use the local models folder for VAD
+            hub_dir = os.path.join(BASE_DIR, "models", "hub")
+            if not os.path.exists(hub_dir):
+                os.makedirs(hub_dir, exist_ok=True)
+            torch.hub.set_dir(hub_dir)
+            
             self.vad_model, utils = torch.hub.load(repo_or_dir='snakers4/silero-vad',
                                                   model='silero_vad',
                                                   force_reload=False,
@@ -574,12 +596,8 @@ class VoiceInputApp:
 
     def load_config(self):
         try:
-            if getattr(sys, 'frozen', False):
-                base_path = os.path.dirname(sys.executable)
-            else:
-                base_path = os.getcwd()
-                
-            config_path = os.path.join(base_path, "config.json")
+            # Always resolve config.json relative to the installation BASE_DIR
+            config_path = os.path.join(BASE_DIR, "config.json")
             
             if os.path.exists(config_path):
                 with open(config_path, "r") as f:
@@ -592,6 +610,14 @@ class VoiceInputApp:
                     self.vram_timeout = config.get("vram_timeout", 60)
                     self.dictation_prompt = config.get("dictation_prompt", None)
                     self.command_prompt = config.get("command_prompt", None)
+                    self.character = config.get("character", "Writing Assistant")
+                    self.tone = config.get("tone", "Natural")
+                    
+                    if hasattr(self, 'grammar_checker'):
+                        self.grammar_checker.custom_dictionary = self.custom_dictionary
+                        self.grammar_checker.dictation_prompt = self.dictation_prompt
+                        self.grammar_checker.character = self.character
+                        self.grammar_checker.tone = self.tone
                     
                     # Model overrides
                     # Model overrides
@@ -1029,7 +1055,35 @@ class VoiceInputApp:
                 log_print(f"Loop Error: {e}")
                 time.sleep(1)
 
+    def show_settings_gui(self, icon, item):
+        if self.settings_process and self.settings_process.poll() is None:
+            # Already running
+            return
+            
+        gui_path = resource_path("src/gui_settings.py")
+        if not getattr(sys, 'frozen', False):
+            # In Dev mode, we might need absolute path
+            gui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gui_settings.py")
+
+        log_print(f"Launching Settings GUI: {gui_path}")
+        try:
+            cmd = [sys.executable, gui_path]
+            self.settings_process = subprocess.Popen(cmd, 
+                                                     creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0)
+            
+            def watch_process():
+                self.settings_process.wait()
+                log_print("Settings GUI closed. Reloading config...")
+                self.load_config()
+                
+            threading.Thread(target=watch_process, daemon=True).start()
+        except Exception as e:
+            log_print(f"Failed to launch Settings GUI: {e}")
+
     def exit_action(self, icon, item):
+        if self.settings_process:
+            try: self.settings_process.terminate()
+            except: pass
         icon.visible = False
         icon.stop() 
         os._exit(0)
@@ -1102,6 +1156,8 @@ class VoiceInputApp:
 
         # Setup Tray Menu
         menu = pystray.Menu(
+            pystray.MenuItem('Settings...', self.show_settings_gui),
+            pystray.MenuItem('Reconnect Audio', self.reconnect_action),
             pystray.MenuItem('Run at Startup', self.toggle_startup, checked=self.check_startup_status),
             pystray.MenuItem('Exit', self.exit_action)
         )

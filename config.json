@@ -1,13 +1,13 @@
 {
-  "asr_backend": "sensevoice",
+  "asr_backend": "whisper",
   "hotkey": "f8",
   "sound_enabled": true,
   "vram_timeout": 60,
-  "whisper_model": "large-v3-turbo-cantonese",
-  "whisper_repo": "JackyHoCL/whisper-large-v3-turbo-cantonese-yue-english-ct2",
+  "whisper_model": "distil-large-v3",
+  "whisper_repo": "Systran/faster-distil-whisper-large-v3",
   "grammar_repo": "bartowski/Llama-3.2-3B-Instruct-GGUF",
   "grammar_file": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
-  "dictation_prompt": "You are an expert editor specializing in Hong Kong style 'Kongish' (mixed Cantonese and English). \nYour goal is to make the input text clean and readable while strictly preserving the natural, informal Cantonese flavor. \nDo NOT convert Cantonese into formal written Chinese. Do NOT over-edit oral Cantonese expressions.\n\nCRITICAL RULES:\n1. FIX ENGLISH: Correct grammar and spelling within English parts.\n2. FIX TYPOS: Correct obvious Cantonese homophone typos.\n3. PUNCTUATION: Use appropriate punctuation (，、。？！) to make thoughts clear.\n4. KONGISH BALANCE: Keep the original mix of Cantonese and English exactly as provided.\n5. SEQUENCE: Strictly preserve the original word order and sequence. Do NOT rearrange phrases.\n6. NO CONVERSATION: Output ONLY the corrected text. No explanations.\n7. Maintain the speaker's original tone and informal flow.\n\nHints: {dict}",
+  "dictation_prompt": "You are a professional writing assistant. Your goal is to refine the provided transcript into clean, professional, and grammatically correct text. \n\nCRITICAL RULES:\n1. FIX GRAMMAR: Correct English grammar and spelling errors.\n2. IMPROVE FLOW: Make the text more readable while preserving the original meaning.\n3. PUNCTUATION: Use appropriate punctuation to make thoughts clear.\n4. NO HALLUCINATION: Do not add information that was not in the original transcript.\n5. REMOVE FILLERS: Remove unnecessary filler words and disfluencies (e.g., 'uh', 'um', 'yeah', 'right', 'ah', 'oh') unless essential to the intent.\n6. NO CONVERSATION: Output ONLY the corrected text. Never offer help or engage in chat.\n7. IF UNCLEAR: If the input is too short or consists only of noise/fillers, output the input EXACTLY as provided without any explanation.\n8. Maintain the speaker's original tone and intent.\n\nHints: {dict}",
   "auto_stop_enabled": true,
   "silence_timeout_ms": 10000,
   "custom_dictionary": ["Privox", "Github", "CUDA"]

@@ -11,6 +11,10 @@ from tkinter import ttk, messagebox, filedialog
 import ctypes
 import zipfile
 import urllib.request
+from packaging import version
+
+# --- Versioning ---
+APP_VERSION = "0.1.1" 
 
 # Disable Symlinks for Windows (Fixes WinError 1314)
 os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
@@ -118,6 +122,15 @@ class InstallerGUI(tk.Tk):
                     return os.path.normpath(install_dir)
         except: pass
         return None
+
+    def get_installed_version(self):
+        try:
+            key_path = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Privox"
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path) as key:
+                ver, _ = winreg.QueryValueEx(key, "DisplayVersion")
+                return ver
+        except: pass
+        return "0.0.0"
 
     def create_pages(self):
         # --- Welcome Page ---
@@ -528,7 +541,7 @@ def register_uninstaller(install_dir, exe_path):
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path) as key:
             winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, "Privox")
             winreg.SetValueEx(key, "DisplayIcon", 0, winreg.REG_SZ, icon_path)
-            winreg.SetValueEx(key, "DisplayVersion", 0, winreg.REG_SZ, "1.0.0")
+            winreg.SetValueEx(key, "DisplayVersion", 0, winreg.REG_SZ, APP_VERSION)
             winreg.SetValueEx(key, "UninstallString", 0, winreg.REG_SZ, f"\"{exe_path}\" --uninstall")
             winreg.SetValueEx(key, "Publisher", 0, winreg.REG_SZ, "Privox")
             winreg.SetValueEx(key, "InstallLocation", 0, winreg.REG_SZ, install_dir)
@@ -603,17 +616,6 @@ def main():
     if "--uninstall" in sys.argv:
         uninstall_app()
 
-    # Mutex Check
-    mutex_handle = is_app_running()
-    if not mutex_handle:
-        if "--run" in sys.argv:
-            sys.exit(0) # Silent exit if run mode
-        else:
-            # If we are double-clicked but running, maybe bring to front?
-            # For now just exit/alert
-            messagebox.showinfo("Privox", "Another instance of Privox is already running.")
-            sys.exit(0)
-
     # Determine if we are in an installed state
     # Robust check: Are the local project files (Pixi, TOML) next to us?
     exe_dir = os.path.dirname(os.path.normpath(sys.executable))
@@ -622,18 +624,49 @@ def main():
     
     is_installed = os.path.exists(local_pixi) and os.path.exists(local_toml)
 
-    if is_installed or "--run" in sys.argv:
+    # --- Version Logic ---
+    gui_temp = InstallerGUI()
+    installed_ver = gui_temp.get_installed_version()
+    gui_temp.destroy() # Temporary instance to read registry
+
+    if is_installed:
+        # Check Mutex only if we are running the installed version
+        mutex_handle = is_app_running()
+        if not mutex_handle:
+            if "--run" in sys.argv:
+                sys.exit(0)
+            else:
+                messagebox.showinfo("Privox", "Another instance of Privox is already running.")
+                sys.exit(0)
+
         # Launch Main App via Pixi
-        if os.path.exists(local_pixi):
-            log_info(f"Launching App via Pixi: {local_pixi} run start")
-            subprocess.Popen([local_pixi, "run", "start"], cwd=exe_dir, creationflags=subprocess.CREATE_NO_WINDOW)
-            sys.exit(0)
-        else:
-            # Installation damaged or manual run flag used without install
-            # Default to GUI setup
-            pass
+        log_info(f"Launching App via Pixi: {local_pixi} run start")
+        subprocess.Popen([local_pixi, "run", "start"], cwd=exe_dir, creationflags=subprocess.CREATE_NO_WINDOW)
+        sys.exit(0)
+    
+    # --- Installer Mode / Update Logic ---
+    if installed_ver != "0.0.0":
+        try:
+            cur_v = version.parse(APP_VERSION)
+            ins_v = version.parse(installed_ver)
             
-    # Installer Mode
+            if cur_v > ins_v:
+                if messagebox.askyesno("Privox Update", f"A newer version of Privox ({APP_VERSION}) is available.\nInstalled: {installed_ver}\n\nWould you like to update?"):
+                    pass # Proceed to Installer GUI
+                else:
+                    sys.exit(0)
+            elif cur_v < ins_v:
+                messagebox.showwarning("Privox", f"A newer version ({installed_ver}) is already installed.\nThis installer is version {APP_VERSION}.\n\nOperation cancelled.")
+                sys.exit(0)
+            else:
+                # Same version but not in the install folder
+                # This could be duplicate thread handling
+                messagebox.showinfo("Privox", f"Privox {APP_VERSION} is already installed and up to date.")
+                sys.exit(0)
+        except Exception as ve:
+            log_info(f"Version comparison error: {ve}")
+
+    # Start Installer GUI
     app = InstallerGUI()
     app.mainloop()
             

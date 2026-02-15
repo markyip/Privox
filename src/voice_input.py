@@ -197,8 +197,8 @@ SPEECH_PAD_MS = 500
 
 # Models
 # Models
-WHISPER_SIZE = "large-v3-turbo-cantonese" # Optimized for Hong Kong Code-switching
-WHISPER_REPO = "JackyHoCL/whisper-large-v3-turbo-cantonese-yue-english-ct2"
+WHISPER_SIZE = "distil-large-v3" 
+WHISPER_REPO = "Systran/faster-distil-whisper-large-v3"
 ASR_BACKEND = "whisper" # Default: whisper or sensevoice
 
 # Llama 3.2 3B Instruct
@@ -259,11 +259,17 @@ class GrammarChecker:
                 try:
                     hf_hub_download(repo_id=GRAMMAR_REPO, filename=GRAMMAR_FILE, local_files_only=True)
                 except Exception:
-                    log_print("Grammar Model not found locally. Downloading... (This may take time)")
-                    if self.icon:
-                        self.icon.notify("Downloading Grammar Model (2GB)... Please wait.", "Privox Setup")
+                # Ensure we download to the local models folder
+                local_dir = os.path.join(BASE_DIR, "models")
+                if not os.path.exists(local_dir):
+                    os.makedirs(local_dir, exist_ok=True)
                 
-                model_path = hf_hub_download(repo_id=GRAMMAR_REPO, filename=GRAMMAR_FILE)
+                model_path = hf_hub_download(
+                    repo_id=GRAMMAR_REPO, 
+                    filename=GRAMMAR_FILE,
+                    local_dir=local_dir,
+                    local_dir_use_symlinks=False
+                )
             except Exception as e:
                 log_print(f"\nError downloading model: {e}")
                 self.loading_error = str(e)
@@ -457,6 +463,12 @@ class VoiceInputApp:
         # 1. Load VAD Model (Silero)
         log_print("Loading Silero VAD...", end="", flush=True)
         try:
+            # Force Torch Hub to use the local models folder for VAD
+            hub_dir = os.path.join(BASE_DIR, "models", "hub")
+            if not os.path.exists(hub_dir):
+                os.makedirs(hub_dir, exist_ok=True)
+            torch.hub.set_dir(hub_dir)
+            
             self.vad_model, utils = torch.hub.load(repo_or_dir='snakers4/silero-vad',
                                                   model='silero_vad',
                                                   force_reload=False,
@@ -574,12 +586,8 @@ class VoiceInputApp:
 
     def load_config(self):
         try:
-            if getattr(sys, 'frozen', False):
-                base_path = os.path.dirname(sys.executable)
-            else:
-                base_path = os.getcwd()
-                
-            config_path = os.path.join(base_path, "config.json")
+            # Always resolve config.json relative to the installation BASE_DIR
+            config_path = os.path.join(BASE_DIR, "config.json")
             
             if os.path.exists(config_path):
                 with open(config_path, "r") as f:

@@ -11,11 +11,16 @@ def main():
     import site
     site.ENABLE_USER_SITE = False
     
-    target_base_dir = os.getcwd()
+    # Determine target_base_dir relative to the script location
+    # This ensures that even if called from elsewhere, we use the project root.
+    if getattr(sys, 'frozen', False):
+        target_base_dir = os.path.dirname(sys.executable)
+    else:
+        target_base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     
     # Load settings from config.json if it exists
-    whisper_model_name = "large-v3-turbo-cantonese" 
-    whisper_repo = "JackyHoCL/whisper-large-v3-turbo-cantonese-yue-english-ct2"
+    whisper_model_name = "distil-large-v3"
+    whisper_repo = "Systran/faster-distil-whisper-large-v3"
     grammar_file = "Llama-3.2-3B-Instruct-Q4_K_M.gguf"
     grammar_repo = "bartowski/Llama-3.2-3B-Instruct-GGUF"
     

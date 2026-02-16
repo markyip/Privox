@@ -11,7 +11,7 @@
 
 - **Smart Dictation**: Turn your speech into professional, ready-to-use text instantly.
 - **AI-Powered Grammar**: Automatically fixes spelling, grammar, and punctuation as you speak.
-- **Multilingual Support**: Works across English, Cantonese, Mandarin, Japanese, Korean, and many other languages.
+- **Multilingual Support**: Works across English, Mandarin, Japanese, Korean, and many other languages.
 - **One-Key Control**: Start and stop dictation with a single hotkey (Default: `F8`).
 - **Filler Word Removal**: Automatically cleans up "uh", "um", "ah", and other speech disfluencies.
 - **Auto-Silence Detection**: Automatically stops recording when you finish speaking.
@@ -48,6 +48,15 @@ Privox is ready to use "out of the box," but you can customize it by right-click
 
 - **Audio Issues**: If the mic isn't responding, use the **"Reconnect Audio"** option in the system tray menu.
 - **Accuracy**: You can add specific names or technical terms to the `custom_dictionary` in `config.json` to help the AI recognize them better.
+
+## 📄 License
+
+Privox is provided under the **PolyForm Noncommercial License 1.0.0**.
+
+- **Personal & Research Use**: Allowed and encouraged.
+- **Commercial Use**: Strictly prohibited. You may not sell, rent, or use this software for profit without explicit permission from the author.
+
+See the [LICENSE](LICENSE) file for the full terms.
 
 ---
 

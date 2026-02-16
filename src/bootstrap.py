@@ -411,13 +411,37 @@ def install_app_files(target_dir, log_callback=None):
             os.makedirs(target_dir)
             
         current_exe = sys.executable
-        if log_callback: log_callback(f"Terminating old instances...")
+        if log_callback: log_callback(f"Checking for running instances...")
         try:
             my_pid = os.getpid()
-            subprocess.run(["taskkill", "/F", "/IM", "Privox.exe", "/FI", f"PID ne {my_pid}"], 
-                           creationflags=subprocess.CREATE_NO_WINDOW, capture_output=True)
-            time.sleep(1.0) 
-        except: pass
+            
+            # First, try to terminate any Python processes running the app
+            # (These are spawned by pixi run start)
+            try:
+                if log_callback: log_callback("Terminating app processes...")
+                subprocess.run(
+                    ["taskkill", "/F", "/IM", "python.exe", "/T"],
+                    creationflags=subprocess.CREATE_NO_WINDOW, 
+                    capture_output=True,
+                    timeout=5
+                )
+            except: pass
+            
+            # Then terminate any other Privox.exe instances (excluding this one)
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/IM", "Privox.exe", "/FI", f"PID ne {my_pid}"], 
+                    creationflags=subprocess.CREATE_NO_WINDOW, 
+                    capture_output=True,
+                    timeout=5
+                )
+            except: pass
+            
+            # Give processes time to terminate and release file locks
+            if log_callback: log_callback("Waiting for file locks to release...")
+            time.sleep(2.0)
+        except Exception as e:
+            if log_callback: log_callback(f"Termination warning: {e}")
         
         if log_callback: log_callback(f"Copying to {target_dir}...")
         
@@ -611,67 +635,162 @@ def uninstall_app():
         
     sys.exit(0)
 
+def launch_settings(install_dir):
+    """Launch the settings GUI."""
+    try:
+        settings_script = os.path.join(install_dir, "src", "gui_settings.py")
+        if not os.path.exists(settings_script):
+            messagebox.showerror("Error", f"Settings script not found at:\n{settings_script}")
+            return False
+        
+        # Find pixi executable
+        pixi_exe = os.path.join(install_dir, "_internal", "pixi", "pixi.exe")
+        if not os.path.exists(pixi_exe):
+            messagebox.showerror("Error", "Pixi runtime not found. Please reinstall.")
+            return False
+        
+        # Launch settings via pixi
+        subprocess.Popen(
+            [pixi_exe, "run", "python", "src/gui_settings.py"],
+            cwd=install_dir,
+            creationflags=subprocess.CREATE_NO_WINDOW
+        )
+        return True
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to launch settings:\n{e}")
+        return False
+
+def launch_app(install_dir):
+    """Launch the main app in background."""
+    try:
+        # Find pixi executable
+        pixi_exe = os.path.join(install_dir, "_internal", "pixi", "pixi.exe")
+        if not os.path.exists(pixi_exe):
+            messagebox.showerror("Error", "Pixi runtime not found. Please reinstall.")
+            return False
+        
+        # Launch app via pixi run start
+        subprocess.Popen(
+            [pixi_exe, "run", "start"],
+            cwd=install_dir,
+            creationflags=subprocess.CREATE_NO_WINDOW
+        )
+        return True
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to launch app:\n{e}")
+        return False
+
+
+
 def main():
     # Handle Uninstall Flag
     if "--uninstall" in sys.argv:
         uninstall_app()
 
-    # Determine if we are in an installed state
-    # Robust check: Are the local project files (Pixi, TOML) next to us?
-    exe_dir = os.path.dirname(os.path.normpath(sys.executable))
-    local_pixi = os.path.join(exe_dir, "_internal", "pixi", "pixi.exe")
-    local_toml = os.path.join(exe_dir, "pixi.toml")
-    
-    is_installed = os.path.exists(local_pixi) and os.path.exists(local_toml)
+    # Handle Windows Startup Auto-Launch
+    if "--autostart" in sys.argv:
+        # Silently launch the installed app without dialogs
+        gui_temp = InstallerGUI()
+        install_location = gui_temp.get_existing_install_path()
+        gui_temp.destroy()
+        
+        if install_location and os.path.exists(install_location):
+            # Launch the installed app silently
+            pixi_exe = os.path.join(install_location, "_internal", "pixi", "pixi.exe")
+            if os.path.exists(pixi_exe):
+                try:
+                    subprocess.Popen(
+                        [pixi_exe, "run", "start"],
+                        cwd=install_location,
+                        creationflags=subprocess.CREATE_NO_WINDOW
+                    )
+                except:
+                    pass  # Silently fail
+        sys.exit(0)
 
-    # --- Version Logic ---
+    # --- Check Registry for Installation Status ---
     gui_temp = InstallerGUI()
     installed_ver = gui_temp.get_installed_version()
-    gui_temp.destroy() # Temporary instance to read registry
-
-    if is_installed:
-        # Check Mutex only if we are running the installed version
-        mutex_handle = is_app_running()
-        if not mutex_handle:
-            if "--run" in sys.argv:
-                sys.exit(0)
-            else:
-                messagebox.showinfo("Privox", "Another instance of Privox is already running.")
-                sys.exit(0)
-
-        # Launch Main App via Pixi
-        log_info(f"Launching App via Pixi: {local_pixi} run start")
-        subprocess.Popen([local_pixi, "run", "start"], cwd=exe_dir, creationflags=subprocess.CREATE_NO_WINDOW)
-        sys.exit(0)
+    install_location = gui_temp.get_existing_install_path()
+    gui_temp.destroy()
     
-    # --- Installer Mode / Update Logic (Disabled per User Request) ---
-    """
-    if installed_ver != "0.0.0":
+    is_installed = installed_ver != "0.0.0" and install_location and os.path.exists(install_location)
+    
+    # Verify installation has required files
+    if is_installed:
+        pixi_exe = os.path.join(install_location, "_internal", "pixi", "pixi.exe")
+        pixi_toml = os.path.join(install_location, "pixi.toml")
+        if not (os.path.exists(pixi_exe) and os.path.exists(pixi_toml)):
+            is_installed = False
+    
+    if is_installed:
+        pass  # Installation detected
+        
+        # Check if app is currently running
+        mutex_handle = is_app_running()
+        app_is_running = mutex_handle is None
+        
+        # Handle --run flag (launched by installer after successful installation)
+        if "--run" in sys.argv:
+            # Only launch if app is not already running
+            if not app_is_running:
+                launch_app(install_location)
+            sys.exit(0)
+        
+        # Compare versions
         try:
             cur_v = version.parse(APP_VERSION)
             ins_v = version.parse(installed_ver)
             
-            if cur_v > ins_v:
-                if messagebox.askyesno("Privox Update", f"A newer version of Privox ({APP_VERSION}) is available.\nInstalled: {installed_ver}\n\nWould you like to update?"):
-                    pass # Proceed to Installer GUI
+            if cur_v == ins_v:
+                # Same version - launch app or open settings
+                if app_is_running:
+                    launch_settings(install_location)
                 else:
+                    launch_app(install_location)
+                sys.exit(0)
+                
+            elif cur_v > ins_v:
+                # Newer version - run installer
+                pass  # Newer version available
+                if messagebox.askyesno(
+                    "Privox Update", 
+                    f"A newer version of Privox ({APP_VERSION}) is available.\n"
+                    f"Installed: {installed_ver}\n\n"
+                    f"Would you like to update?"
+                ):
+                    pass  # Proceed to installer GUI below
+                else:
+                    # User declined update - launch the currently installed version
+                    if app_is_running:
+                        launch_settings(install_location)
+                    else:
+                        launch_app(install_location)
                     sys.exit(0)
-            elif cur_v < ins_v:
-                messagebox.showwarning("Privox", f"A newer version ({installed_ver}) is already installed.\nThis installer is version {APP_VERSION}.\n\nOperation cancelled.")
+                    
+            else:  # cur_v < ins_v
+                # Older version - notify and launch
+                messagebox.showinfo(
+                    "Privox Version Notice",
+                    f"A newer version ({installed_ver}) is already installed.\n"
+                    f"This installer is version {APP_VERSION}.\n\n"
+                    f"Launching the installed version..."
+                )
+                if app_is_running:
+                    launch_settings(install_location)
+                else:
+                    launch_app(install_location)
                 sys.exit(0)
-            else:
-                # Same version but not in the install folder
-                # This could be duplicate thread handling
-                messagebox.showinfo("Privox", f"Privox {APP_VERSION} is already installed and up to date.")
-                sys.exit(0)
+                
         except Exception as ve:
-            log_info(f"Version comparison error: {ve}")
-    """
-
-    # Start Installer GUI
+            pass  # Version comparison error
+            # If version comparison fails, default to showing installer
+    
+    # Not installed or user chose to update - Start Installer GUI
+    pass  # Starting installer GUI
     app = InstallerGUI()
     app.mainloop()
-            
+
 
 if __name__ == "__main__":
     main()

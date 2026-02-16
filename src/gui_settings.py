@@ -103,12 +103,14 @@ class SettingsGUI(ctk.CTk):
             with open(self.prefs_path, "r", encoding="utf-8") as f:
                 self.prefs = json.load(f)
         
-        # Ensure custom_dictionary exists in prefs
-        if "custom_dictionary" not in self.prefs:
-            self.prefs["custom_dictionary"] = []
-        
         # Unified dictionary for GUI binding
         self.config = {**self.tech_config, **self.prefs}
+        
+        # Load custom_dictionary from config if not in prefs (backwards compatibility)
+        if "custom_dictionary" not in self.prefs and "custom_dictionary" in self.config:
+            self.prefs["custom_dictionary"] = self.config["custom_dictionary"]
+        elif "custom_dictionary" not in self.prefs:
+            self.prefs["custom_dictionary"] = []
         
         # Ensure libraries exist
         self.asr_library = self.tech_config.get("asr_library", [])
@@ -143,8 +145,7 @@ class SettingsGUI(ctk.CTk):
         self.prefs["tone"] = self.tone_dropdown.get()
         self.prefs["custom_prompts"] = self.custom_prompts
         
-        # Update Dictionary - use self.prefs directly
-        self.prefs["custom_dictionary"] = self.prefs.get("custom_dictionary", [])
+        # Dictionary is already managed by add_dict_word() and remove_dict_word()
 
         # Update Timeouts (with clamping and minimum values)
         try:
@@ -175,11 +176,13 @@ class SettingsGUI(ctk.CTk):
     def set_startup(self, enabled):
         key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
         app_name = "Privox"
-        exe_path = sys.executable 
+        exe_path = sys.executable
         try:
             key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS)
             if enabled:
-                winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, exe_path)
+                # Add --autostart flag so it silently launches at Windows startup
+                startup_command = f'"{exe_path}" --autostart'
+                winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, startup_command)
             else:
                 try: winreg.DeleteValue(key, app_name)
                 except FileNotFoundError: pass
@@ -469,8 +472,9 @@ class SettingsGUI(ctk.CTk):
         self.silence_entry = ctk.CTkEntry(st_frame, width=120, fg_color="#1a1a1a", border_color="#333333", validate="key", validatecommand=vcmd)
         self.silence_entry.pack(anchor="w", pady=5)
         
-        # Load from config (stored as ms, show as seconds)
-        s_ms = self.config.get("silence_timeout_ms", 10000)
+        # Load from prefs (stored as ms, show as seconds)
+        # Use self.prefs instead of self.config to preserve tab-switching changes
+        s_ms = self.prefs.get("silence_timeout_ms", self.config.get("silence_timeout_ms", 10000))
         self.silence_entry.insert(0, str(int(s_ms / 1000)))
 
     def validate_int(self, p):

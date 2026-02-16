@@ -15,6 +15,8 @@ import re
 import gc
 import concurrent.futures
 import subprocess
+from datetime import datetime, timedelta
+from huggingface_hub import HfApi
 if sys.platform == 'win32':
     import winreg
     import ctypes
@@ -234,12 +236,67 @@ class SoundManager:
             threading.Thread(target=self._play, args=(400, 500), daemon=True).start()
 
 
+# --- Prompt Template Libraries (Linguistic Lens v2) ---
+
+CHARACTER_LENSES = {
+    "Writing Assistant": (
+        "Focus on clarity, grammar, and flow. Use professional yet accessible vocabulary. "
+        "Resolve ambiguities as a general senior editor would."
+    ),
+    "Code Expert": (
+        "Focus on Software Engineering jargon. Do not simplify technical abbreviations (API, SDK, PR, VRAM). "
+        "Preserve camelCase, PascalCase, or snake_case formatting. Prioritize logic-based corrections."
+    ),
+    "Philosopher": (
+        "Focus on intellectual and ontological vocabulary. Maintain complex sentence structures. "
+        "Do not simplify metaphysical or academic terms. Prioritize depth of nuance."
+    ),
+    "Executive Secretary": (
+        "Focus on extreme formality and business etiquette. Use polite, indirect phrasing. "
+        "Organize thoughts into clear, actionable business communication."
+    ),
+    "Personal Buddy": (
+        "Focus on conversational, low-friction vocabulary. Tolerant of slang and informal grammar. "
+        "Prioritize making the text sound like a natural, relaxed voice."
+    ),
+    "Custom": "" # User provides absolute persona definition
+}
+
+TONE_OVERLAYS = {
+    "Professional": (
+        "Style: Formal. Replace casual words with professional alternatives. Use complex, well-structured sentences. "
+        "Objective: Sound authoritative and polished."
+    ),
+    "Natural": (
+        "Style: Conversational. Maintain the speaker's original cadence. Fix only obvious errors. "
+        "Objective: Sound like a clear version of the original speaker."
+    ),
+    "Polite": (
+        "Style: Courteous. Soften direct statements. Use honorifics/politeness where contextually appropriate. "
+        "Objective: Sound respectful and considerate."
+    ),
+    "Casual": (
+        "Style: Relaxed. Keep contractions (don't, can't). Use simpler, direct vocabulary. "
+        "Objective: Sound friendly and approachable."
+    ),
+    "Aggressive": (
+        "Style: Direct and forceful. Use punchy, active verbs. Minimize hedge words (e.g., 'maybe', 'think'). "
+        "Objective: Sound decisive and high-energy."
+    ),
+    "Concise": (
+        "Style: Surgical brevity. Delete all filler and redundant phrases. Merge fragments into single punchy statements. "
+        "Objective: Maximum information with minimum words."
+    ),
+    "Custom": "" # User provides absolute tone/style definition
+}
+
 class GrammarChecker:
-    def __init__(self, custom_dictionary=None, dictation_prompt=None, command_prompt=None, character=None, tone=None):
+    def __init__(self, refiner_profile=None, custom_dictionary=None, custom_prompts=None, command_prompt=None, character=None, tone=None):
         self.model = None
+        self.profile = refiner_profile or {}
         self.custom_dictionary = custom_dictionary or []
+        self.custom_prompts = custom_prompts or {}
         self.loading_error = None
-        self.dictation_prompt = dictation_prompt
         self.command_prompt = command_prompt
         self.character = character or "Writing Assistant"
         self.tone = tone or "Natural"
@@ -249,35 +306,45 @@ class GrammarChecker:
         if self.model:
             return
 
+        repo_id = self.profile.get("repo_id", GRAMMAR_REPO)
+        file_name = self.profile.get("file_name", GRAMMAR_FILE)
+
         # 1. Check Local "models" folder (Offline Mode)
-        local_model_path = os.path.join(BASE_DIR, "models", GRAMMAR_FILE)
+        local_model_path = os.path.join(BASE_DIR, "models", file_name)
         if os.path.exists(local_model_path):
             log_print(f"Found local model: {local_model_path}")
             model_path = local_model_path
         else:
-            # 2. Check/Download from Hugging Face
-            log_print(f"Loading Grammar Model ({GRAMMAR_REPO})...", end="", flush=True)
             try:
-                # Check if model exists in cache (approximate check)
+                # 2. Check/Download from Hugging Face
+                log_print(f"Checking Hugging Face for Refiner Model ({repo_id})...")
+                
+                # First try to get it from cache or defined local dir
                 try:
-                    hf_hub_download(repo_id=GRAMMAR_REPO, filename=GRAMMAR_FILE, local_files_only=True)
+                    model_path = hf_hub_download(
+                        repo_id=repo_id, 
+                        filename=file_name, 
+                        local_files_only=True
+                    )
+                    log_print(f"Found in Hugging Face cache: {model_path}")
                 except Exception:
-                    # Ensure we download to the local models folder
+                    log_print(f"Model not in cache. Downloading {file_name} from {repo_id}...")
                     local_dir = os.path.join(BASE_DIR, "models")
                     if not os.path.exists(local_dir):
                         os.makedirs(local_dir, exist_ok=True)
                     
                     model_path = hf_hub_download(
-                        repo_id=GRAMMAR_REPO, 
-                        filename=GRAMMAR_FILE,
+                        repo_id=repo_id, 
+                        filename=file_name,
                         local_dir=local_dir,
                         local_dir_use_symlinks=False
                     )
+                    log_print(f"Download complete: {model_path}")
             except Exception as e:
-                log_print(f"\nError downloading model: {e}")
-                self.loading_error = str(e)
+                log_print(f"\nCRITICAL: Failed to download/locate model: {e}")
+                self.loading_error = f"Download Failed: {e}"
                 if self.icon:
-                     self.icon.notify("Error: Cloud not download model. Check internet or place in 'models' folder.", "Privox Error")
+                     self.icon.notify(f"Error: Could not download refiner ({file_name}). Check internet or place in 'models' folder.", "Privox Error")
                 return
 
         try:
@@ -330,6 +397,51 @@ class GrammarChecker:
             if sys.platform == 'win32':
                  ctypes.windll.user32.MessageBoxW(0, f"Error loading Grammar Model (Llama):\n\n{e}\n\nCheck logs for details.", "Privox Model Error", 0x10)
 
+    def get_effective_prompt(self):
+        """Constructs a composite prompt with hidden overrides.
+        Layer 1: Core Safety/Format (Hidden)
+        Layer 2: User Instructions (Visible in GUI)
+        Layer 3: Late-Binding Overrides (Hidden, conditional)
+        """
+        key = f"{self.character}|{self.tone}"
+        user_text = self.custom_prompts.get(key, "").strip()
+        
+        # Layer 1: Core System Directives
+        prompt = (
+            "REFINE TRANSCRIPT: Provide a clean, accurate version of the ASR input.\n"
+            "STRICT RULES:\n"
+            "1. RAW OUTPUT: No intros, no chat. No 'Here is the result'.\n"
+            "2. NO HALLUCINATION: Preserve original intent. Correct phonetic errors using context.\n"
+            "3. CLEAN FILLERS: Remove disfluencies (uh, um).\n"
+            "4. NO CONVERSATION: Never answer questions or offer help.\n"
+        )
+        
+        dict_str = ", ".join(self.custom_dictionary)
+        if dict_str:
+            prompt += f"Specific Jargon/Hints: {dict_str}\n"
+
+        # Layer 2: User-Edited Instructions
+        if user_text:
+            prompt += f"\n### ADDITIONAL USER INSTRUCTIONS ###\n{user_text}\n"
+
+        # Layer 3: Late-Binding Overrides (Ensures Dropdown Priority)
+        # We append these LAST so they win any conflicts in the LLM's attention.
+        overrides = ""
+        if self.character != "Custom":
+            lens = CHARACTER_LENSES.get(self.character, "")
+            if lens:
+                overrides += f"\n[STRICT IDENTITY OVERRIDE]: {lens}"
+        
+        if self.tone != "Custom":
+            overlay = TONE_OVERLAYS.get(self.tone, "")
+            if overlay:
+                overrides += f"\n[STRICT STYLE OVERRIDE]: {overlay}"
+        
+        if overrides:
+            prompt += f"\n### SYSTEM OVERRIDES (HIGHEST PRIORITY) ###{overrides}\n"
+
+        return prompt
+
     def correct(self, text, is_command=False):
         # 1. Pre-processing Guardrail: Skip LLM for very short or empty inputs
         # (Unless it's a known keyword in the custom dictionary)
@@ -342,8 +454,7 @@ class GrammarChecker:
             return text
 
         try:
-            dict_str = ", ".join(self.custom_dictionary)
-            dict_prompt = f"\nHints: {dict_str}" if dict_str else ""
+            prompt_type = self.profile.get("prompt_type", "llama")
 
             if is_command:
                 # Agent Mode
@@ -353,40 +464,28 @@ class GrammarChecker:
                 )
                 user_content = text
             else:
-                if self.dictation_prompt and self.dictation_prompt.strip() and not self.dictation_prompt.startswith("#"):
-                    system_prompt = self.dictation_prompt.replace("{dict}", dict_prompt)
-                else:
-                    system_prompt = (
-                        f"You are a professional {self.character}. Your goal is to refine the provided transcript into clean, professional, and grammatically correct text. "
-                        f"\n\nTONE: {self.tone}"
-                        "\n\nCRITICAL RULES:"
-                        "\n1. FIX GRAMMAR: Correct English grammar and spelling errors."
-                        "\n2. IMPROVE FLOW: Make the text more readable while preserving the original meaning."
-                        "\n3. PUNCTUATION: Use appropriate punctuation to make thoughts clear."
-                        "\n4. NO HALLUCINATION: Do not add information that was not in the original transcript."
-                        "\n5. REMOVE FILLERS: Remove unnecessary filler words and disfluencies (e.g., 'uh', 'um', 'yeah', 'right', 'ah', 'oh') unless essential to the intent."
-                        "\n6. NO CONVERSATION: Output ONLY the corrected text. Never offer help or engage in chat."
-                        "\n7. IF UNCLEAR: If the input is too short or consists only of noise/fillers, output the input EXACTLY as provided without any explanation."
-                        "\n8. Maintain the speaker's original intent."
-                        f"{dict_prompt}"
-                    )
+                system_prompt = self.get_effective_prompt()
                 user_content = f"Input Text: {text}\n\nCorrected Text:"
 
-            # Llama 3 Prompt Format
-            # <|start_header_id|>system<|end_header_id|>\n\n...<|eot_id|>
-            # <|start_header_id|>user<|end_header_id|>\n\n...<|eot_id|>
-            # <|start_header_id|>assistant<|end_header_id|>\n\n
-            
-            prompt = (
-                f"<|start_header_id|>system<|end_header_id|>\n\n{system_prompt}<|eot_id|>"
-                f"<|start_header_id|>user<|end_header_id|>\n\n{user_content}<|eot_id|>"
-                "<|start_header_id|>assistant<|end_header_id|>\n\n"
-            )
+            # Format based on model type
+            if prompt_type == "t5":
+                # CoEdit / T5 style: simple instruction + input
+                action = "Polish" if self.tone != "Natural" else "Fix grammar"
+                prompt = f"{action}: {text}"
+                stop_tokens = ["\n"]
+            else:
+                # Llama 3 / Chat style
+                prompt = (
+                    f"<|start_header_id|>system<|end_header_id|>\n\n{system_prompt}<|eot_id|>"
+                    f"<|start_header_id|>user<|end_header_id|>\n\n{user_content}<|eot_id|>"
+                    "<|start_header_id|>assistant<|end_header_id|>\n\n"
+                )
+                stop_tokens = ["<|eot_id|>"]
             
             output = self.model(
                 prompt, 
                 max_tokens=1024,
-                stop=["<|eot_id|>"], 
+                stop=stop_tokens, 
                 echo=False,
                 temperature=0.3,
             )
@@ -413,6 +512,9 @@ class VoiceInputApp:
         self.auto_stop_enabled = True
         self.silence_timeout_ms = 10000
         self.custom_dictionary = []
+        self.custom_prompts = {}
+        self.character = "Writing Assistant"
+        self.tone = "Natural"
         self.dictation_prompt = None
         self.command_prompt = None
         self.load_config()
@@ -434,9 +536,11 @@ class VoiceInputApp:
         
         # Initialize Placeholders
         self.grammar_checker = GrammarChecker(
-            self.custom_dictionary, 
-            dictation_prompt=self.dictation_prompt, 
-            command_prompt=self.command_prompt
+            custom_dictionary=self.custom_dictionary, 
+            custom_prompts=self.custom_prompts,
+            command_prompt=self.command_prompt,
+            character=self.character,
+            tone=self.tone
         )
         self.grammar_checker.icon = None # Will assign later
         self.vad_model = None
@@ -456,6 +560,9 @@ class VoiceInputApp:
         # Hotkey support
         self.hotkey = keyboard.Key.f8 # Default key
         self.settings_process = None
+        
+        # Set initial state to show loading spinner
+        self.update_status("INITIALIZING")
 
         # Start loading threads
         threading.Thread(target=self.initial_load, daemon=True).start()
@@ -594,64 +701,251 @@ class VoiceInputApp:
             self.update_status("SLEEP") # Trigger flat line animation
             log_print("Models Unloaded. VRAM released.")
 
-    def load_config(self):
+    def track_model_usage(self, model_name):
+        """Update last_used timestamp for the given model in hidden prefs."""
         try:
-            # Always resolve config.json relative to the installation BASE_DIR
-            config_path = os.path.join(BASE_DIR, "config.json")
-            
-            if os.path.exists(config_path):
-                with open(config_path, "r") as f:
-                    config = json.load(f)
-                    hotkey_str = config.get("hotkey", "f8").lower()
-                    self.sound_enabled = config.get("sound_enabled", True)
-                    self.auto_stop_enabled = config.get("auto_stop_enabled", True)
-                    self.silence_timeout_ms = config.get("silence_timeout_ms", 10000)
-                    self.custom_dictionary = config.get("custom_dictionary", [])
-                    self.vram_timeout = config.get("vram_timeout", 60)
-                    self.dictation_prompt = config.get("dictation_prompt", None)
-                    self.command_prompt = config.get("command_prompt", None)
-                    self.character = config.get("character", "Writing Assistant")
-                    self.tone = config.get("tone", "Natural")
-                    
-                    if hasattr(self, 'grammar_checker'):
-                        self.grammar_checker.custom_dictionary = self.custom_dictionary
-                        self.grammar_checker.dictation_prompt = self.dictation_prompt
-                        self.grammar_checker.character = self.character
-                        self.grammar_checker.tone = self.tone
-                    
-                    # Model overrides
-                    # Model overrides
-                    global WHISPER_SIZE, WHISPER_REPO, GRAMMAR_REPO, GRAMMAR_FILE, ASR_BACKEND
-                    old_whisper = WHISPER_SIZE
-                    WHISPER_SIZE = config.get("whisper_model", WHISPER_SIZE)
-                    WHISPER_REPO = config.get("whisper_repo", WHISPER_REPO)
-                    GRAMMAR_REPO = config.get("grammar_repo", GRAMMAR_REPO)
-                    GRAMMAR_FILE = config.get("grammar_file", GRAMMAR_FILE)
-                    ASR_BACKEND = config.get("asr_backend", "whisper")
-                    
-                    # Verify model folder exists if overridden
-                    if WHISPER_SIZE != old_whisper:
-                        model_path = os.path.join(BASE_DIR, "models", f"whisper-{WHISPER_SIZE}")
-                        if not os.path.exists(model_path):
-                            log_print(f"WARNING: Configured model '{WHISPER_SIZE}' not found at {model_path}. Transcription may fail.")
-                    
-                    # Simple hotkey support (single key only)
-                    self.hotkey = keyboard.Key.f8
-                    if hotkey_str in keyboard.Key.__members__:
-                        self.hotkey = keyboard.Key[hotkey_str]
-                    elif len(hotkey_str) == 1:
-                        self.hotkey = keyboard.KeyCode.from_char(hotkey_str)
-                    else:
-                        if hotkey_str.upper() in keyboard.Key.__members__:
-                            self.hotkey = keyboard.Key[hotkey_str.upper()]
-                        else:
-                            log_print(f"Unknown hotkey: {hotkey_str}. Using F8.")
-                    
-                    log_print(f"Loaded Config - Hotkey: {hotkey_str}, Sound: {self.sound_enabled}, Timeout: {self.vram_timeout}s, Model: {WHISPER_SIZE}, Backend: {ASR_BACKEND}")
-            else:
-                log_print(f"config.json not found at {config_path}, using defaults")
+            prefs_path = os.path.join(BASE_DIR, ".user_prefs.json")
+            if os.path.exists(prefs_path):
+                with open(prefs_path, "r", encoding="utf-8") as f:
+                    prefs = json.load(f)
+                
+                stats = prefs.get("model_usage_stats", {})
+                stats[model_name] = datetime.now().isoformat()
+                prefs["model_usage_stats"] = stats
+                
+                with open(prefs_path, "w", encoding="utf-8") as f:
+                    json.dump(prefs, f, indent=4)
         except Exception as e:
-            log_print(f"Error loading config: {e}. Using default.")
+            log_print(f"Error tracking usage: {e}")
+
+    def load_config(self):
+        """Unified configuration loader with split protection and migration."""
+        try:
+            config_path = os.path.join(BASE_DIR, "config.json")
+            prefs_path = os.path.join(BASE_DIR, ".user_prefs.json")
+            
+            # --- 1. Load Technical Config (Static/Public) ---
+            config = {}
+            if os.path.exists(config_path):
+                with open(config_path, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+            
+            # --- 2. Load User Preferences (Hidden/Private) ---
+            prefs = {}
+            if os.path.exists(prefs_path):
+                with open(prefs_path, "r", encoding="utf-8") as f:
+                    prefs = json.load(f)
+
+            # --- 3. Migration Logic (Move settings from config -> prefs) ---
+            pref_keys = [
+                "hotkey", "sound_enabled", "vram_timeout", "character", "tone", 
+                "custom_prompts", "auto_stop_enabled", "silence_timeout_ms", 
+                "custom_dictionary", "current_refiner", "whisper_model"
+            ]
+            
+            migrated = False
+            for key in pref_keys:
+                if key in config:
+                    # Move to prefs if not already there (prefer existing prefs)
+                    if key not in prefs:
+                        prefs[key] = config[key]
+                    del config[key]
+                    migrated = True
+
+            if migrated:
+                log_print("Migrating user settings to hidden .user_prefs.json...")
+                with open(prefs_path, "w", encoding="utf-8") as f:
+                    json.dump(prefs, f, indent=4)
+                with open(config_path, "w", encoding="utf-8") as f:
+                    # Keep formatted technical config
+                    json.dump(config, f, indent=4)
+
+            # --- 4. Apply Settings ---
+            hotkey_str = prefs.get("hotkey", "f8").lower()
+            self.sound_enabled = prefs.get("sound_enabled", True)
+            self.auto_stop_enabled = prefs.get("auto_stop_enabled", True)
+            self.silence_timeout_ms = prefs.get("silence_timeout_ms", 10000)
+            self.custom_dictionary = prefs.get("custom_dictionary", [])
+            self.vram_timeout = prefs.get("vram_timeout", 60)
+            self.character = prefs.get("character", "Writing Assistant")
+            self.tone = prefs.get("tone", "Natural")
+            self.custom_prompts = prefs.get("custom_prompts", {})
+            self.current_refiner = prefs.get("current_refiner", "English Specialist (CoEdit)")
+            
+            # Library Loading (Default if missing)
+            self.asr_library = config.get("asr_library", [
+                {"name": "Premium (Distil Large v3)", "repo": "Systran/faster-distil-whisper-large-v3", "description": "Fast & High Quality"},
+                {"name": "Standard (Whisper Medium)", "repo": "Systran/faster-whisper-medium", "description": "Balanced performance"},
+                {"name": "Multilingual (SenseVoice)", "repo": "FunAudioLLM/SenseVoiceSmall", "description": "Best for mixed languages"},
+                {"name": "Cantonese Turbo", "repo": "ylpeter/faster-whisper-large-v3-turbo-cantonese-16", "description": "High-speed Cantonese transcription"},
+                {"name": "Cantonese High-Res", "repo": "XA9/faster-whisper-large-v2-cantonese-1", "description": "Accurate dedicated Cantonese model"}
+            ])
+            self.llm_library = config.get("llm_library", [
+                {
+                    "name": "English Specialist (CoEdit)", 
+                    "repo": "nvhf/coedit-large-Q6_K-GGUF", 
+                    "file": "coedit-large-q6_k.gguf", 
+                    "type": "t5",
+                    "description": "Premium English refiner. 60x more efficient."
+                },
+                {
+                    "name": "Standard (Llama 3.2)", 
+                    "repo": "bartowski/Llama-3.2-3B-Instruct-GGUF", 
+                    "file": "Llama-3.2-3B-Instruct-Q4_K_M.gguf", 
+                    "type": "llama",
+                    "description": "General purpose balanced refiner."
+                },
+                {
+                    "name": "Multilingual (Qwen 2.5)", 
+                    "repo": "bartowski/Qwen2.5-3B-Instruct-GGUF", 
+                    "file": "Qwen2.5-3B-Instruct-Q4_K_M.gguf", 
+                    "type": "llama",
+                    "description": "Best for Chinese/English mix."
+                }
+            ])
+
+            # Filter libraries
+            self.asr_library = [m for m in self.asr_library if self.verify_model(m, "asr")]
+            self.llm_library = [m for m in self.llm_library if self.verify_model(m, "llm")]
+
+            # Sync Current Profile from Library
+            profile = {}
+            for p in self.llm_library:
+                if p["name"] == self.current_refiner:
+                    profile = {
+                        "repo_id": p["repo"],
+                        "file_name": p["file"],
+                        "prompt_type": p["type"],
+                        "description": p.get("description", "")
+                    }
+                    self.track_model_usage(p["name"])
+                    break
+            
+            if hasattr(self, 'grammar_checker'):
+                self.grammar_checker.profile = profile
+                self.grammar_checker.character = self.character
+                self.grammar_checker.tone = self.tone
+                self.grammar_checker.custom_prompts = self.custom_prompts
+                self.grammar_checker.custom_dictionary = self.custom_dictionary
+            
+            # ASR Model resolution
+            global WHISPER_SIZE, WHISPER_REPO, ASR_BACKEND
+            old_whisper = WHISPER_SIZE
+            active_asr = prefs.get("whisper_model", "Premium (Distil Large v3)")
+            
+            # Find in library
+            WHISPER_REPO = "Systran/faster-distil-whisper-large-v3" # Defaults
+            WHISPER_SIZE = "distil-large-v3"
+
+            for asr in self.asr_library:
+                if asr["name"] == active_asr:
+                    WHISPER_REPO = asr["repo"]
+                    WHISPER_SIZE = asr["name"]
+                    self.track_model_usage(asr["name"])
+                    break
+
+            ASR_BACKEND = "whisper"
+            
+            # Run cleanup on startup if enabled
+            cleanup_days = prefs.get("model_cleanup_days", 7)
+            if cleanup_days > 0:
+                self.cleanup_stale_models(cleanup_days)
+
+        except Exception as e:
+            log_print(f"Error loading config: {e}")
+            traceback.print_exc()
+
+    def verify_model(self, model_data, model_type):
+        """Verifies if a model repository or local path exists."""
+        repo = model_data.get("repo")
+        local_path = model_data.get("local_path")
+        
+        # 1. Check local path if provided
+        if local_path:
+            full_path = os.path.join(BASE_DIR, local_path)
+            if os.path.isdir(full_path):
+                # Basic signature check
+                if model_type == "asr" and os.path.exists(os.path.join(full_path, "model.bin")):
+                    return True
+                if model_type == "llm" and any(f.endswith(".gguf") for f in os.listdir(full_path)):
+                    return True
+            return False
+
+        # 2. Check HuggingFace Repo (Fast head request)
+        if repo:
+            try:
+                # We use a cached check if possible to avoid hitting HF on every startup
+                # For now, a simple check is fine. In production we might skip this unless config changed.
+                api = HfApi()
+                api.repo_info(repo_id=repo)
+                return True
+            except:
+                log_print(f"Verification Failed for model: {repo}")
+                return False
+        
+        return False
+
+    def cleanup_stale_models(self, days):
+        """Deletes models that haven't been used in X days."""
+        try:
+            prefs_path = os.path.join(BASE_DIR, ".user_prefs.json")
+            if not os.path.exists(prefs_path): return
+            
+            with open(prefs_path, "r", encoding="utf-8") as f:
+                prefs = json.load(f)
+            
+            stats = prefs.get("model_usage_stats", {})
+            threshold = datetime.now() - timedelta(days=days)
+            
+            # Collect all models currently in libraries to avoid deleting active ones
+            active_repos = [m.get("repo") for m in self.asr_library + self.llm_library if m.get("repo")]
+            
+            models_dir = os.path.join(BASE_DIR, "models")
+            if not os.path.exists(models_dir): return
+            
+            for item in os.listdir(models_dir):
+                item_path = os.path.join(models_dir, item)
+                # This is a bit tricky as folder names might not match repo IDs perfectly
+                # But we can check usage stats for common patterns
+                
+                # Check if this item is "stale" based on usage stats
+                is_used_recently = False
+                for model_key, last_used_iso in stats.items():
+                    last_used = datetime.fromisoformat(last_used_iso)
+                    if last_used > threshold:
+                        # If the folder name is part of the repo/model name, it's "used"
+                        if item.lower() in model_key.lower() or model_key.lower() in item.lower():
+                            is_used_recently = True
+                            break
+                
+                # Never delete the currently active models
+                if item.lower() in WHISPER_SIZE.lower() or item.lower() in self.current_refiner.lower():
+                    is_used_recently = True
+
+                if not is_used_recently:
+                    log_print(f"Cleaning up stale model: {item} (Unused for {days}+ days)")
+                    import shutil
+                    if os.path.isdir(item_path):
+                        shutil.rmtree(item_path)
+                    else:
+                        os.remove(item_path)
+                        
+        except Exception as e:
+            log_print(f"Cleanup error: {e}")
+            
+            # Simple hotkey support
+            self.hotkey = keyboard.Key.f8
+            if hotkey_str in keyboard.Key.__members__:
+                self.hotkey = keyboard.Key[hotkey_str]
+            elif len(hotkey_str) == 1:
+                self.hotkey = keyboard.KeyCode.from_char(hotkey_str)
+            else:
+                if hotkey_str.upper() in keyboard.Key.__members__:
+                    self.hotkey = keyboard.Key[hotkey_str.upper()]
+
+        except Exception as e:
+            log_print(f"Error loading config: {e}")
+            traceback.print_exc()
 
 
 
@@ -673,6 +967,8 @@ class VoiceInputApp:
             self.icon.title = "Privox: Listening..."
         elif status == "PROCESSING":
             self.icon.title = "Privox: Processing..."
+        elif status == "DOWNLOADING":
+            self.icon.title = "Privox: Downloading Model..."
         elif status == "ERROR":
             self.icon.title = "Privox: Error/No Mic"
         elif status == "SLEEP":
@@ -703,8 +999,8 @@ class VoiceInputApp:
                     frame += 1
                     time.sleep(0.08) # 12fps
                     
-                elif self.ui_state == "PROCESSING":
-                    # Spinner Animation
+                elif self.ui_state in ["PROCESSING", "DOWNLOADING", "INITIALIZING"]:
+                    # Spinner Animation for processing, downloading, and initializing
                     new_icon = self.draw_spinner(frame, base_img)
                     frame += 1
                     time.sleep(0.08)
@@ -983,14 +1279,14 @@ class VoiceInputApp:
 
     def paste_text(self, text):
         try:
-            # original_clipboard = pyperclip.paste() # DISABLED: User wants to keep text for manual paste
+            original_clipboard = pyperclip.paste()
             pyperclip.copy(text)
             time.sleep(0.05) 
             with self.keyboard_controller.pressed(keyboard.Key.ctrl):
                 self.keyboard_controller.press('v')
                 self.keyboard_controller.release('v')
             time.sleep(0.2) 
-            # pyperclip.copy(original_clipboard) # DISABLED
+            pyperclip.copy(original_clipboard)
         except Exception as e:
             log_print(f"Paste Error: {e}")
             self.keyboard_controller.type(text)
@@ -1063,13 +1359,14 @@ class VoiceInputApp:
         gui_path = resource_path("src/gui_settings.py")
         if not getattr(sys, 'frozen', False):
             # In Dev mode, we might need absolute path
-            gui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gui_settings.py")
+            gui_path = os.path.join(BASE_DIR, "src", "gui_settings.py")
 
         log_print(f"Launching Settings GUI: {gui_path}")
         try:
-            cmd = [sys.executable, gui_path]
-            self.settings_process = subprocess.Popen(cmd, 
-                                                     creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0)
+            # Removed CREATE_NO_WINDOW and set cwd to BASE_DIR to ensure it finds config.json correctly
+            self.settings_process = subprocess.Popen([sys.executable, gui_path], 
+                                                     cwd=BASE_DIR,
+                                                     shell=False)
             
             def watch_process():
                 self.settings_process.wait()
@@ -1157,8 +1454,6 @@ class VoiceInputApp:
         # Setup Tray Menu
         menu = pystray.Menu(
             pystray.MenuItem('Settings...', self.show_settings_gui),
-            pystray.MenuItem('Reconnect Audio', self.reconnect_action),
-            pystray.MenuItem('Run at Startup', self.toggle_startup, checked=self.check_startup_status),
             pystray.MenuItem('Exit', self.exit_action)
         )
         

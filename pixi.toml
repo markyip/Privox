@@ -1,6 +1,6 @@
 [workspace]
 name = "privox"
-version = "0.1.1"
+version = "1.0"
 description = "Privox AI Assistant"
 authors = ["Mark"]
 channels = ["conda-forge", "pytorch", "nvidia"]

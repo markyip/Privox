@@ -14,7 +14,7 @@ import urllib.request
 from packaging import version
 
 # --- Versioning ---
-APP_VERSION = "0.1.1" 
+APP_VERSION = "1.0"
 
 # Disable Symlinks for Windows (Fixes WinError 1314)
 os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
@@ -480,7 +480,7 @@ def install_app_files(target_dir, log_callback=None):
         src_dir = os.path.join(target_dir, "src")
         if not os.path.exists(src_dir): os.makedirs(src_dir)
         
-        for script in ["voice_input.py", "download_models.py"]:
+        for script in ["voice_input.py", "download_models.py", "gui_settings.py"]:
             script_src = os.path.join(EXE_DIR, "src", script)
             if not os.path.exists(script_src) and getattr(sys, 'frozen', False):
                  script_src = os.path.join(sys._MEIPASS, "src", script)
@@ -644,7 +644,8 @@ def main():
         subprocess.Popen([local_pixi, "run", "start"], cwd=exe_dir, creationflags=subprocess.CREATE_NO_WINDOW)
         sys.exit(0)
     
-    # --- Installer Mode / Update Logic ---
+    # --- Installer Mode / Update Logic (Disabled per User Request) ---
+    """
     if installed_ver != "0.0.0":
         try:
             cur_v = version.parse(APP_VERSION)
@@ -665,6 +666,7 @@ def main():
                 sys.exit(0)
         except Exception as ve:
             log_info(f"Version comparison error: {ve}")
+    """
 
     # Start Installer GUI
     app = InstallerGUI()

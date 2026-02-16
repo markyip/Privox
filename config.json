@@ -7,8 +7,86 @@
   "whisper_repo": "Systran/faster-distil-whisper-large-v3",
   "grammar_repo": "bartowski/Llama-3.2-3B-Instruct-GGUF",
   "grammar_file": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
-  "dictation_prompt": "You are a professional writing assistant. Your goal is to refine the provided transcript into clean, professional, and grammatically correct text. \n\nCRITICAL RULES:\n1. FIX GRAMMAR: Correct English grammar and spelling errors.\n2. IMPROVE FLOW: Make the text more readable while preserving the original meaning.\n3. PUNCTUATION: Use appropriate punctuation to make thoughts clear.\n4. NO HALLUCINATION: Do not add information that was not in the original transcript.\n5. REMOVE FILLERS: Remove unnecessary filler words and disfluencies (e.g., 'uh', 'um', 'yeah', 'right', 'ah', 'oh') unless essential to the intent.\n6. NO CONVERSATION: Output ONLY the corrected text. Never offer help or engage in chat.\n7. IF UNCLEAR: If the input is too short or consists only of noise/fillers, output the input EXACTLY as provided without any explanation.\n8. Maintain the speaker's original tone and intent.\n\nHints: {dict}",
+  "character": "Writing Assistant",
+  "tone": "Natural",
+  "custom_prompts": {
+    "Writing Assistant|Natural": "You are a professional writing assistant. Your goal is to refine the provided transcript into clean, professional, and grammatically correct text. \n\nCRITICAL RULES:\n1. FIX GRAMMAR: Correct English grammar and spelling errors.\n2. IMPROVE FLOW: Make the text more readable while preserving the original meaning.\n3. PUNCTUATION: Use appropriate punctuation to make thoughts clear.\n4. NO HALLUCINATION: Do not add information that was not in the original transcript.\n5. REMOVE FILLERS: Remove unnecessary filler words and disfluencies (e.g., 'uh', 'um', 'yeah', 'right', 'ah', 'oh') unless essential to the intent.\n6. NO CONVERSATION: Output ONLY the corrected text. Never offer help or engage in chat.\n7. IF UNCLEAR: If the input is too short or consists only of noise/fillers, output the input EXACTLY as provided without any explanation.\n8. Maintain the speaker's original tone and intent.\n\nHints: {dict}"
+  },
+  "current_refiner": "Standard (Llama 3.2)",
+  "refiner_profiles": {
+    "English Specialist (CoEdit)": {
+      "repo_id": "nvhf/coedit-large-Q6_K-GGUF",
+      "file_name": "coedit-large-q6_k.gguf",
+      "prompt_type": "t5",
+      "description": "Premium English refiner. 60x more efficient. No chat glitches."
+    },
+    "Multilingual (Qwen 2.5)": {
+      "repo_id": "bartowski/Qwen2.5-3B-Instruct-GGUF",
+      "file_name": "Qwen2.5-3B-Instruct-Q4_K_M.gguf",
+      "prompt_type": "llama",
+      "description": "Best for Chinese/English mix. High instruction obedience."
+    },
+    "Standard (Llama 3.2)": {
+      "repo_id": "bartowski/Llama-3.2-3B-Instruct-GGUF",
+      "file_name": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+      "prompt_type": "llama",
+      "description": "General purpose balanced refiner."
+    }
+  },
   "auto_stop_enabled": true,
   "silence_timeout_ms": 10000,
-  "custom_dictionary": ["Privox", "Github", "CUDA"]
+  "custom_dictionary": ["Privox", "Github", "CUDA"],
+  "asr_library": [
+    {
+      "name": "Premium (Distil Large v3)",
+      "backend": "whisper",
+      "whisper_model": "distil-large-v3",
+      "whisper_repo": "Systran/faster-distil-whisper-large-v3",
+      "description": "Best accuracy. Faster inference with distilled architecture."
+    },
+    {
+      "name": "Standard (Whisper Large v3)",
+      "backend": "whisper",
+      "whisper_model": "large-v3",
+      "whisper_repo": "openai/whisper-large-v3",
+      "description": "OpenAI's flagship model. High accuracy across languages."
+    },
+    {
+      "name": "Balanced (Medium)",
+      "backend": "whisper",
+      "whisper_model": "medium",
+      "whisper_repo": "openai/whisper-medium",
+      "description": "Good balance of speed and accuracy."
+    },
+    {
+      "name": "Fast (Small)",
+      "backend": "whisper",
+      "whisper_model": "small",
+      "whisper_repo": "openai/whisper-small",
+      "description": "Quick processing with decent accuracy."
+    }
+  ],
+  "llm_library": [
+    {
+      "name": "English Specialist (CoEdit)",
+      "repo_id": "nvhf/coedit-large-Q6_K-GGUF",
+      "file_name": "coedit-large-q6_k.gguf",
+      "prompt_type": "t5",
+      "description": "Premium English refiner. 60x more efficient. No chat glitches."
+    },
+    {
+      "name": "Multilingual (Qwen 2.5)",
+      "repo_id": "bartowski/Qwen2.5-3B-Instruct-GGUF",
+      "file_name": "Qwen2.5-3B-Instruct-Q4_K_M.gguf",
+      "prompt_type": "llama",
+      "description": "Best for Chinese/English mix. High instruction obedience."
+    },
+    {
+      "name": "Standard (Llama 3.2)",
+      "repo_id": "bartowski/Llama-3.2-3B-Instruct-GGUF",
+      "file_name": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+      "prompt_type": "llama",
+      "description": "General purpose balanced refiner."
+    }
+  ]
 }

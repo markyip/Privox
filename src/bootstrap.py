@@ -640,10 +640,11 @@ def install_app_files(target_dir, log_cb):
             dst = os.path.join(target_dir, folder)
             if os.path.exists(src):
                 log_cb(f"Syncing {folder}...")
-                if os.path.exists(dst): 
-                    try: shutil.rmtree(dst)
-                    except: pass
-                shutil.copytree(src, dst)
+                # use dirs_exist_ok=True to merge/overwrite files but keep existing user files
+                try:
+                    shutil.copytree(src, dst, dirs_exist_ok=True)
+                except Exception as e:
+                    log_cb(f"Warning syncing {folder}: {e}")
         
         create_shortcut(target_exe, target_dir)
         return True

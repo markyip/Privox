@@ -36,7 +36,8 @@
 Privox is ready to use "out of the box," but you can customize it by right-clicking the **Privox icon** in your system tray:
 
 - **Run at Startup**: Let Privox be ready as soon as you turn on your computer.
-- **Advanced Tweaks**: Edit the `config.json` file in your install folder to change hotkeys, models, or your custom dictionary.
+- **Settings Dashboard**: Access the full graphical settings menu to change models, hotkeys, and prompts without touching any files.
+- **Advanced Tweaks**: For power users, the `config.json` file is still available for manual overrides.
 
 ## 🖥️ System Requirements
 

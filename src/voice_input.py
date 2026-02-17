@@ -747,7 +747,8 @@ class VoiceInputApp:
             pref_keys = [
                 "hotkey", "sound_enabled", "vram_timeout", "character", "tone", 
                 "custom_prompts", "auto_stop_enabled", "silence_timeout_ms", 
-                "custom_dictionary", "current_refiner", "whisper_model"
+                "custom_dictionary", "current_refiner", "whisper_model",
+                "asr_library", "llm_library"
             ]
             
             migrated = False
@@ -786,13 +787,15 @@ class VoiceInputApp:
             self.custom_prompts = prefs.get("custom_prompts", {})
             self.current_refiner = prefs.get("current_refiner", "Llama 3.2 3B Instruct")
             
-            # Library Loading (Default if missing)
-            self.asr_library = config.get("asr_library", [
+            # Library Loading (Prefer User Prefs > Config > Default)
+            self.asr_library = prefs.get("asr_library", config.get("asr_library", [
                 {"name": "Distil-Whisper Large v3 (English)", "whisper_repo": "Systran/faster-distil-whisper-large-v3", "description": "Fast & High Quality. Best accuracy with distilled architecture."},
                 {"name": "OpenAI Whisper Small", "whisper_repo": "openai/whisper-small", "description": "Quick processing for low-resource environments."},
-                {"name": "Whisper Large v3 Turbo (Cantonese)", "whisper_repo": "ylpeter/faster-whisper-large-v3-turbo-cantonese-16", "description": "High-speed Cantonese transcription. Reduced hallucination."}
-            ])
-            self.llm_library = config.get("llm_library", [
+                {"name": "Whisper Large v3 Turbo (Cantonese)", "whisper_repo": "ylpeter/faster-whisper-large-v3-turbo-cantonese-16", "description": "High-speed Cantonese transcription. Reduced hallucination."},
+                {"name": "Whisper Large v2 (Hindi)", "whisper_repo": "collabora/faster-whisper-large-v2-hindi", "description": "Fine-tuned for Hindi. Optimized for mixed-code (Hinglish)."},
+                {"name": "Whisper Large v3 Turbo (Multilingual)", "whisper_repo": "deepdml/faster-whisper-large-v3-turbo-ct2", "description": "State-of-the-art multilingual model. Excellent for Singlish, Arabic, and diverse accents."}
+            ]))
+            self.llm_library = prefs.get("llm_library", config.get("llm_library", [
                 {
                     "name": "CoEdit Large (T5)", 
                     "repo_id": "nvhf/coedit-large-Q6_K-GGUF", 
@@ -807,7 +810,7 @@ class VoiceInputApp:
                     "prompt_type": "llama",
                     "description": "General purpose balanced refiner for all languages."
                 }
-            ])
+            ]))
 
             # Filter libraries
             self.asr_library = [m for m in self.asr_library if self.verify_model(m, "asr")]

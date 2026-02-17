@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QGridLayout, QDialog, QComboBox, QCheckBox, QLayout, QSpacerItem
 )
 import ctypes
+import sounddevice as sd
 
 # --- DWM Helpers for Glassmorphism ---
 def apply_mica_or_acrylic(window, acrylic=True):
@@ -789,6 +790,47 @@ CRITICAL RULES:
         timeout_layout.addWidget(self.create_field("Auto-Stop (s)", self.stop_spin))
         timeout_layout.addStretch()
         layout.addLayout(timeout_layout)
+
+        # Input Source Display
+        input_frame = QFrame()
+        input_frame.setStyleSheet("""
+            QFrame {
+                background-color: rgba(255, 255, 255, 0.03);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 12px;
+            }
+        """)
+        input_layout = QHBoxLayout(input_frame)
+        input_layout.setContentsMargins(20, 16, 20, 16)
+        
+        input_lbl = QLabel("INPUT SOURCE")
+        input_lbl.setStyleSheet("font-weight: 800; color: rgba(255, 255, 255, 0.4); border: none; font-size: 11px; letter-spacing: 1px;")
+        
+        try:
+            device_info = sd.query_devices(kind='input')
+            device_name = device_info.get('name', 'Unknown Device')
+            # Determine connection type/channels
+            api = device_info.get('hostapi', 0)
+            channels = device_info.get('max_input_channels', 0)
+            status_text = f"{device_name} ({channels} Ch)"
+            status_color = "#4CAF50" # Green
+        except Exception:
+            status_text = "No Input Device Found"
+            status_color = "#FF5555" # Red
+
+        self.input_val = QLabel(status_text)
+        self.input_val.setStyleSheet(f"font-size: 14px; font-weight: 600; color: {status_color}; border: none;")
+        self.input_val.setWordWrap(True)
+        
+        input_info_layout = QVBoxLayout()
+        input_info_layout.setSpacing(4)
+        input_info_layout.addWidget(input_lbl)
+        input_info_layout.addWidget(self.input_val)
+        
+        input_layout.addLayout(input_info_layout)
+        # Optional: Add a Refresh button later?
+        
+        layout.addWidget(input_frame)
 
         layout.addStretch()
 

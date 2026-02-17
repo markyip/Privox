@@ -21,6 +21,7 @@ PyInstaller.__main__.run([
     '--add-data=assets;assets',
     '--add-data=src/voice_input.py;src',
     '--add-data=src/download_models.py;src',
+    '--add-data=src/gui_settings.py;src',
     '--add-data=pixi.toml;.',
     # Add metadata to look more legitimate (optional but recommended)
     # '--version-file=version_info.txt', 

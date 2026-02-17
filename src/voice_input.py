@@ -136,7 +136,8 @@ if sys.platform == 'win32':
 try:
     log_print("Importing core utilities...")
     log_print(f"DEBUG: sys.path is: {sys.path}")
-
+    import wave
+    import traceback
     import sounddevice as sd
     import numpy as np
     from pynput import keyboard
@@ -406,14 +407,17 @@ class GrammarChecker:
         key = f"{self.character}|{self.tone}"
         user_text = self.custom_prompts.get(key, "").strip()
         
-        # Layer 1: Core System Directives
+        # Layer 1: Core System Directives (Global Critical Rules)
         prompt = (
-            "REFINE TRANSCRIPT: Provide a clean, accurate version of the ASR input.\n"
-            "STRICT RULES:\n"
-            "1. RAW OUTPUT: No intros, no chat. No 'Here is the result'.\n"
-            "2. NO HALLUCINATION: Preserve original intent. Correct phonetic errors using context.\n"
-            "3. CLEAN FILLERS: Remove disfluencies (uh, um).\n"
-            "4. NO CONVERSATION: Never answer questions or offer help.\n"
+            "REFINE TRANSCRIPT: Provide a clean, accurate version of the ASR input.\n\n"
+            "CRITICAL RULES:\n"
+            "1. FIX GRAMMAR: Correct grammar and spelling errors.\n"
+            "2. IMPROVE FLOW: Make text readable while preserving original meaning.\n"
+            "3. PUNCTUATION: Use appropriate punctuation for clarity.\n"
+            "4. NO HALLUCINATION: Do not add information not present in the original transcript.\n"
+            "5. REMOVE FILLERS: Delete unnecessary filler words (uh, um, yeah, etc.).\n"
+            "6. **ABSOLUTE NO CONVERSATION**: Output ONLY the corrected text. Never add commentary, greetings, or questions.\n"
+            "7. IF UNCLEAR: If the input consists purely of noise, mirror it exactly.\n"
         )
         
         dict_str = ", ".join(self.custom_dictionary)
@@ -558,7 +562,10 @@ class VoiceInputApp:
         self.pending_wakeup = False # Auto-start recording after loading?
         
         # Hotkey support
-        self.hotkey = keyboard.Key.f8 # Default key
+        self.hotkey_str = "f8"
+        self.target_mods = set() # e.g. {'ctrl', 'shift'}
+        self.target_key = "f8"
+        self.active_mods = set()
         self.settings_process = None
         
         # Set initial state to show loading spinner
@@ -761,7 +768,14 @@ class VoiceInputApp:
                     json.dump(config, f, indent=4)
 
             # --- 4. Apply Settings ---
-            hotkey_str = prefs.get("hotkey", "f8").lower()
+            self.hotkey_str = prefs.get("hotkey", "f8").lower()
+            
+            # Parse hotkey_str (e.g. "ctrl+shift+k")
+            parts = [p.strip() for p in self.hotkey_str.split('+')]
+            self.target_mods = set([p for p in parts if p in ["ctrl", "shift", "alt"]])
+            self.target_key = parts[-1] if parts else "f8"
+            log_print(f"Parsed Hotkey: Mods={self.target_mods}, Key={self.target_key}")
+
             self.sound_enabled = prefs.get("sound_enabled", True)
             self.auto_stop_enabled = prefs.get("auto_stop_enabled", True)
             self.silence_timeout_ms = prefs.get("silence_timeout_ms", 10000)
@@ -770,37 +784,28 @@ class VoiceInputApp:
             self.character = prefs.get("character", "Writing Assistant")
             self.tone = prefs.get("tone", "Natural")
             self.custom_prompts = prefs.get("custom_prompts", {})
-            self.current_refiner = prefs.get("current_refiner", "English Specialist (CoEdit)")
+            self.current_refiner = prefs.get("current_refiner", "Llama 3.2 3B Instruct")
             
             # Library Loading (Default if missing)
             self.asr_library = config.get("asr_library", [
-                {"name": "Premium (Distil Large v3)", "repo": "Systran/faster-distil-whisper-large-v3", "description": "Fast & High Quality"},
-                {"name": "Standard (Whisper Medium)", "repo": "Systran/faster-whisper-medium", "description": "Balanced performance"},
-                {"name": "Multilingual (SenseVoice)", "repo": "FunAudioLLM/SenseVoiceSmall", "description": "Best for mixed languages"},
-                {"name": "Cantonese Turbo", "repo": "ylpeter/faster-whisper-large-v3-turbo-cantonese-16", "description": "High-speed Cantonese transcription"},
-                {"name": "Cantonese High-Res", "repo": "XA9/faster-whisper-large-v2-cantonese-1", "description": "Accurate dedicated Cantonese model"}
+                {"name": "Distil-Whisper Large v3 (English)", "whisper_repo": "Systran/faster-distil-whisper-large-v3", "description": "Fast & High Quality. Best accuracy with distilled architecture."},
+                {"name": "OpenAI Whisper Small", "whisper_repo": "openai/whisper-small", "description": "Quick processing for low-resource environments."},
+                {"name": "Whisper Large v3 Turbo (Cantonese)", "whisper_repo": "ylpeter/faster-whisper-large-v3-turbo-cantonese-16", "description": "High-speed Cantonese transcription. Reduced hallucination."}
             ])
             self.llm_library = config.get("llm_library", [
                 {
-                    "name": "English Specialist (CoEdit)", 
-                    "repo": "nvhf/coedit-large-Q6_K-GGUF", 
-                    "file": "coedit-large-q6_k.gguf", 
-                    "type": "t5",
-                    "description": "Premium English refiner. 60x more efficient."
+                    "name": "CoEdit Large (T5)", 
+                    "repo_id": "nvhf/coedit-large-Q6_K-GGUF", 
+                    "file_name": "coedit-large-q6_k.gguf", 
+                    "prompt_type": "t5",
+                    "description": "Premium English refiner. 60x more efficient than LLMs."
                 },
                 {
-                    "name": "Standard (Llama 3.2)", 
-                    "repo": "bartowski/Llama-3.2-3B-Instruct-GGUF", 
-                    "file": "Llama-3.2-3B-Instruct-Q4_K_M.gguf", 
-                    "type": "llama",
-                    "description": "General purpose balanced refiner."
-                },
-                {
-                    "name": "Multilingual (Qwen 2.5)", 
-                    "repo": "bartowski/Qwen2.5-3B-Instruct-GGUF", 
-                    "file": "Qwen2.5-3B-Instruct-Q4_K_M.gguf", 
-                    "type": "llama",
-                    "description": "Best for Chinese/English mix."
+                    "name": "Llama 3.2 3B Instruct", 
+                    "repo_id": "bartowski/Llama-3.2-3B-Instruct-GGUF", 
+                    "file_name": "Llama-3.2-3B-Instruct-Q4_K_M.gguf", 
+                    "prompt_type": "llama",
+                    "description": "General purpose balanced refiner for all languages."
                 }
             ])
 
@@ -813,9 +818,9 @@ class VoiceInputApp:
             for p in self.llm_library:
                 if p["name"] == self.current_refiner:
                     profile = {
-                        "repo_id": p["repo"],
-                        "file_name": p["file"],
-                        "prompt_type": p["type"],
+                        "repo_id": p.get("repo_id"),
+                        "file_name": p.get("file_name"),
+                        "prompt_type": p.get("prompt_type"),
                         "description": p.get("description", "")
                     }
                     self.track_model_usage(p["name"])
@@ -831,7 +836,7 @@ class VoiceInputApp:
             # ASR Model resolution
             global WHISPER_SIZE, WHISPER_REPO, ASR_BACKEND
             old_whisper = WHISPER_SIZE
-            active_asr = prefs.get("whisper_model", "Premium (Distil Large v3)")
+            active_asr = prefs.get("whisper_model", "Distil-Whisper Large v3 (English)")
             
             # Find in library
             WHISPER_REPO = "Systran/faster-distil-whisper-large-v3" # Defaults
@@ -839,8 +844,9 @@ class VoiceInputApp:
 
             for asr in self.asr_library:
                 if asr["name"] == active_asr:
-                    WHISPER_REPO = asr["repo"]
-                    WHISPER_SIZE = asr["name"]
+                    # Sync with library technical names
+                    WHISPER_REPO = asr.get("whisper_repo") or asr.get("repo")
+                    WHISPER_SIZE = asr.get("whisper_model") or asr.get("name")
                     self.track_model_usage(asr["name"])
                     break
 
@@ -1114,31 +1120,60 @@ class VoiceInputApp:
             self.q.put(indata.copy())
 
     def on_press(self, key):
-        if key == self.hotkey:
-            # Wake up detection
-            if not self.heavy_models_loaded:
-                log_print("Wake up detected. Pre-loading models...")
-                self.pending_wakeup = True # Auto-start recording when ready
-                threading.Thread(target=self.load_heavy_models, daemon=True).start()
+        """Standard keyboard listener callback."""
+        # 1. Track Modifiers
+        mod_map = {
+            keyboard.Key.ctrl: "ctrl", keyboard.Key.ctrl_l: "ctrl", keyboard.Key.ctrl_r: "ctrl",
+            keyboard.Key.shift: "shift", keyboard.Key.shift_l: "shift", keyboard.Key.shift_r: "shift",
+            keyboard.Key.alt: "alt", keyboard.Key.alt_l: "alt", keyboard.Key.alt_gr: "alt"
+        }
+        
+        if key in mod_map:
+            val = mod_map[key]
+            self.active_mods.add(val)
+            # If the modifier itself is the target key (e.g. just Ctrl+Shift), don't return
+            if val != self.target_key:
                 return
 
-            if not self.vad_model or self.asr_model is None:
-                log_print("Ignored Hotkey: Models not fully loaded.")
-                self.sound_manager.play_error()
-                return
+        # 2. Key Normalization
+        key_name = ""
+        if isinstance(key, keyboard.Key):
+            key_name = key.name
+        elif hasattr(key, 'char') and key.char:
+            key_name = key.char.lower()
+        elif hasattr(key, 'vk'):
+            # Handle virtual keys (important for some mouse remappings)
+            # VK codes: F1=0x70 ... F12=0x7B, F13=0x7C ... F24=0x87. Space=0x20, Enter=0x0D
+            vk_map = {
+                0x70: "f1", 0x71: "f2", 0x72: "f3", 0x73: "f4",
+                0x74: "f5", 0x75: "f6", 0x76: "f7", 0x77: "f8",
+                0x78: "f9", 0x79: "f10", 0x7A: "f11", 0x7B: "f12",
+                0x7C: "f13", 0x7D: "f14", 0x7E: "f15", 0x7F: "f16",
+                0x80: "f17", 0x81: "f18", 0x82: "f19", 0x83: "f20",
+                0x84: "f21", 0x85: "f22", 0x86: "f23", 0x87: "f24",
+                0x20: "space", 0x0D: "enter", 0x09: "tab", 0x1B: "esc",
+                0x21: "page_up", 0x22: "page_down", 0x23: "end", 0x24: "home",
+                0x2D: "insert", 0x2E: "delete"
+            }
+            key_name = vk_map.get(key.vk, str(key.vk))
 
-            if not self.mic_active:
-                log_print("Ignored Hotkey: No Microphone Active")
-                self.sound_manager.play_error()
-                return
-                
-            if not self.is_listening:
-                self.start_listening()
-            else:
-                self.stop_listening()
+        # 3. Check Match
+        if key_name == self.target_key:
+            # Check if active modifiers match EXACTLY what is required
+            if self.active_mods == self.target_mods:
+                self.toggle_hotkey()
 
     def on_release(self, key):
-        pass
+        """Untrack modifiers."""
+        mod_map = {
+            keyboard.Key.ctrl: "ctrl", keyboard.Key.ctrl_l: "ctrl", keyboard.Key.ctrl_r: "ctrl",
+            keyboard.Key.shift: "shift", keyboard.Key.shift_l: "shift", keyboard.Key.shift_r: "shift",
+            keyboard.Key.alt: "alt", keyboard.Key.alt_l: "alt", keyboard.Key.alt_gr: "alt"
+        }
+        if key in mod_map:
+            val = mod_map[key]
+            if val in self.active_mods:
+                self.active_mods.remove(val)
 
     def start_listening(self):
         self.last_activity_time = time.time()
@@ -1223,8 +1258,6 @@ class VoiceInputApp:
                 segments, info = self.asr_model.transcribe(
                     audio_data.astype(np.float32), 
                     beam_size=5,
-                    language="yue", # Force Cantonese + English support
-                    initial_prompt="這是一段廣東話同英文混合嘅錄音。It contains Cantonese and English mixed together.",
                     vad_filter=True,
                     vad_parameters=dict(min_silence_duration_ms=500)
                 )
@@ -1431,6 +1464,30 @@ class VoiceInputApp:
         except Exception:
             return False
 
+    def toggle_hotkey(self):
+        """Toggle recording triggered by hotkey (manual listener)."""
+        # Wake up detection
+        if not self.heavy_models_loaded:
+            log_print("Wake up detected. Pre-loading models...")
+            self.pending_wakeup = True # Auto-start recording when ready
+            threading.Thread(target=self.load_heavy_models, daemon=True).start()
+            return
+
+        if not self.vad_model or self.asr_model is None:
+            log_print("Ignored Hotkey: Models not fully loaded.")
+            self.sound_manager.play_error()
+            return
+
+        if not self.mic_active:
+            log_print("Ignored Hotkey: No Microphone Active")
+            self.sound_manager.play_error()
+            return
+            
+        if not self.is_listening:
+            self.start_listening()
+        else:
+            self.stop_listening()
+
     def run(self):
         # Single Instance Mutex Check (Windows)
         self.mutex_handle = None
@@ -1470,7 +1527,8 @@ class VoiceInputApp:
         threading.Thread(target=self.processing_loop, daemon=True).start()
         threading.Thread(target=self.animation_loop, daemon=True).start()
         
-        # Start Keyboard Listener
+        # Start Keyboard Listener (Manual Listener for better compatibility)
+        log_print("Starting Keyboard Listener...")
         self.keyboard_listener = keyboard.Listener(on_press=self.on_press, on_release=self.on_release)
         self.keyboard_listener.start()
         

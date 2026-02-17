@@ -28,7 +28,7 @@ ninja = "*"
 numpy = "<2.0.0" 
 pywin32 = "*"
 pyinstaller = "*"
-setuptools = "*"
+setuptools = "==69.5.1"
 
 
 [pypi-dependencies]
@@ -44,3 +44,5 @@ modelscope = "*"
 scipy = "*"
 colorama = "*"
 customtkinter = "*"
+diskcache = "*"
+pyside6 = "==6.8.1"

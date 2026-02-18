@@ -652,19 +652,33 @@ def install_app_files(target_dir, log_cb):
         log_cb(f"Install error: {e}")
         return False
 
-def create_shortcut(target_exe, target_dir):
     try:
         app_name = "Privox"
         icon_path = os.path.join(target_dir, "assets", "icon.ico")
+        
+        # 1. Start Menu Shortcut
         start_menu = os.path.join(os.environ['APPDATA'], 'Microsoft', 'Windows', 'Start Menu', 'Programs')
         if not os.path.exists(start_menu): os.makedirs(start_menu)
-        shortcut_path = os.path.join(start_menu, f"{app_name}.lnk")
+        start_menu_link = os.path.join(start_menu, f"{app_name}.lnk")
+        create_lnk(target_exe, target_dir, icon_path, start_menu_link)
+        
+        # 2. Startup Folder Shortcut (Auto-Launch)
+        startup_folder = os.path.join(os.environ['APPDATA'], 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup')
+        if not os.path.exists(startup_folder): os.makedirs(startup_folder)
+        startup_link = os.path.join(startup_folder, f"{app_name}.lnk")
+        create_lnk(target_exe, target_dir, icon_path, startup_link)
+
+    except Exception as e:
+        print(f"Shortcut creation failed: {e}")
+
+def create_lnk(target_exe, target_dir, icon_path, lnk_path):
+    try:
         # Added --run flag to shortcut TargetPath
-        vbs_script = f'Set oWS = WScript.CreateObject("WScript.Shell")\nsLinkFile = "{shortcut_path}"\nSet oLink = oWS.CreateShortcut(sLinkFile)\noLink.TargetPath = "{target_exe} --run"\noLink.WorkingDirectory = "{target_dir}"\noLink.IconLocation = "{icon_path},0"\noLink.Save'
-        vbs_file = os.path.join(os.environ['TEMP'], f"mkshortcut_{os.getpid()}.vbs")
+        vbs_script = f'Set oWS = WScript.CreateObject("WScript.Shell")\nsLinkFile = "{lnk_path}"\nSet oLink = oWS.CreateShortcut(sLinkFile)\noLink.TargetPath = "{target_exe} --run"\noLink.WorkingDirectory = "{target_dir}"\noLink.IconLocation = "{icon_path},0"\noLink.Save'
+        vbs_file = os.path.join(os.environ['TEMP'], f"mkshortcut_{os.getpid()}_{hash(lnk_path)}.vbs")
         with open(vbs_file, "w") as f: f.write(vbs_script)
         subprocess.call(["cscript", "//nologo", vbs_file], creationflags=subprocess.CREATE_NO_WINDOW)
-        os.remove(vbs_file)
+        if os.path.exists(vbs_file): os.remove(vbs_file)
     except: pass
 
 def apply_mica_or_acrylic(window, acrylic=True):

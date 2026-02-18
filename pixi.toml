@@ -29,6 +29,7 @@ numpy = "<2.0.0"
 pywin32 = "*"
 pyinstaller = "*"
 setuptools = "==69.5.1"
+llama-cpp-python = "*"
 
 
 [pypi-dependencies]
@@ -46,3 +47,4 @@ colorama = "*"
 customtkinter = "*"
 diskcache = "*"
 pyside6 = "==6.8.1"
+

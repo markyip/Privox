@@ -861,10 +861,7 @@ CRITICAL RULES:
     def init_general_tab(self):
         layout = QVBoxLayout(self.tab_general)
         layout.setSpacing(20)
-        
-        header = QLabel("GENERAL SETTINGS")
-        header.setStyleSheet("font-size: 18px; font-weight: bold;")
-        layout.addWidget(header)
+        layout.setContentsMargins(0, 0, 0, 0)
         
         # Hotkey Frame
         hk_frame = QFrame()
@@ -1034,10 +1031,7 @@ CRITICAL RULES:
     def init_dict_tab(self):
         layout = QVBoxLayout(self.tab_dict)
         layout.setSpacing(20)
-        
-        header = QLabel("CUSTOM DICTIONARY")
-        header.setStyleSheet("font-size: 18px; font-weight: bold;")
-        layout.addWidget(header)
+        layout.setContentsMargins(0, 0, 0, 0)
         
         sub = QLabel("Enhance AI accuracy for specific names, terms, or brands.")
         sub.setStyleSheet("color: #aaaaaa;")

@@ -525,8 +525,8 @@ class InstallerGUI(QMainWindow):
             res = QMessageBox.question(self, "Cancel Installation", "Are you sure you want to stop the installation?", QMessageBox.Yes | QMessageBox.No)
             if res == QMessageBox.Yes:
                 self.worker.stop()
-                self.btn_cancel.setEnabled(False)
-                self.btn_cancel.setText("STOPPING...")
+                # Close immediately to feel responsive
+                self.close()
         else:
             self.close()
 
@@ -552,6 +552,9 @@ class InstallerGUI(QMainWindow):
                 self.btn_next.clicked.connect(self.launch_app)
             self.btn_cancel.hide()
         else:
+            if hasattr(self, 'worker') and self.worker.cancelled:
+                self.close()
+                return
             QMessageBox.critical(self, "Error", "Installation failed. Check logs.")
             self.btn_next.setText("Failed")
             self.btn_next.setEnabled(False)

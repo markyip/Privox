@@ -791,6 +791,8 @@ CRITICAL RULES:
         self.char_count_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.3); font-size: 11px; margin-top: 4px;")
         self.char_count_lbl.setAlignment(Qt.AlignRight)
         layout.addWidget(self.char_count_lbl)
+        
+        layout.addStretch()
 
     def create_group(self, title, fields):
         group = QFrame()
@@ -1014,6 +1016,7 @@ CRITICAL RULES:
         input_layout.addWidget(btn_refresh)
         
         layout.addWidget(input_frame)
+        layout.addStretch()
         
     def refresh_input_source(self):
         try:
@@ -1110,6 +1113,7 @@ CRITICAL RULES:
         """)
         
         layout.addWidget(self.dict_scroll)
+        layout.addStretch()
 
     def on_prompt_change(self):
         """Handle persona or tone change. Save current prompt and load new one."""

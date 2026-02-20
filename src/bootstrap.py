@@ -697,13 +697,15 @@ def register_uninstaller(install_dir, exe_path):
         install_date = time.strftime("%Y%m%d")
         
         uninst_path = os.path.join(install_dir, "uninstall.bat")
+        # Use PowerShell to launch the batch file hidden to avoid initial console flicker
+        silent_cmd = f'powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -Command "& \'{uninst_path}\'"'
         
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path) as key:
             winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, "Privox")
             winreg.SetValueEx(key, "DisplayIcon", 0, winreg.REG_SZ, icon_path)
             winreg.SetValueEx(key, "DisplayVersion", 0, winreg.REG_SZ, APP_VERSION)
-            winreg.SetValueEx(key, "UninstallString", 0, winreg.REG_SZ, f'"{uninst_path}"')
-            winreg.SetValueEx(key, "QuietUninstallString", 0, winreg.REG_SZ, f'"{uninst_path}" /S')
+            winreg.SetValueEx(key, "UninstallString", 0, winreg.REG_SZ, silent_cmd)
+            winreg.SetValueEx(key, "QuietUninstallString", 0, winreg.REG_SZ, silent_cmd)
             winreg.SetValueEx(key, "InstallLocation", 0, winreg.REG_SZ, install_dir)
             winreg.SetValueEx(key, "Publisher", 0, winreg.REG_SZ, "Privox Team")
             winreg.SetValueEx(key, "InstallDate", 0, winreg.REG_SZ, install_date)

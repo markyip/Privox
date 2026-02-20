@@ -62,14 +62,30 @@ def main():
             log("SenseVoiceSmall model present.")
 
     # 0. Install Llama-cpp-python with CUDA support
-    # Only attempt to fix if import COMPLETELY fails.
-    # We assume if it imports, the user (or previous run) set it up correctly.
-    # Re-installing every time causes hangs/delays.
+    # We check for version AND CUDA support. 0.2.24 (common in conda) is too old for Llama 3.2.
+    needs_llama_install = False
     try:
         import llama_cpp
-        log(f"llama-cpp-python found (Version: {getattr(llama_cpp, '__version__', 'Unknown')})")
+        version = getattr(llama_cpp, '__version__', '0.0.0')
+        sys_info = str(llama_cpp.llama_print_system_info())
+        has_cuda = "CUDA = 1" in sys_info
+        
+        log(f"Found llama-cpp-python v{version} (CUDA: {has_cuda})")
+        
+        # Llama 3.1/3.2 needs 0.2.90+ or 0.3.x
+        v_parts = [int(p) for p in version.split('.') if p.isdigit()]
+        if v_parts < [0, 2, 90]:
+            log("Version is too old for Llama 3.2. Forcing update...")
+            needs_llama_install = True
+        elif not has_cuda:
+            log("CUDA support missing in llama-cpp-python. Forcing update...")
+            needs_llama_install = True
+            
     except ImportError:
-        log("llama-cpp-python missing. Attempting auto-install (CUDA 12.4)...")
+        log("llama-cpp-python missing. Attempting install...")
+        needs_llama_install = True
+
+    if needs_llama_install:
         import subprocess
         try:
             # Environment isolation
@@ -77,17 +93,20 @@ def main():
             env["PYTHONNOUSERSITE"] = "1"
             
             # Use the "cu124" wheel index for CUDA 12.4
+            # 0.3.4 is a stable version with good Llama 3.2 support
+            log("Installing llama-cpp-python binary wheel (CUDA 12.4)...")
             subprocess.check_call([
                 sys.executable, "-m", "pip", "install", 
                 "llama-cpp-python==0.3.4", 
                 "--extra-index-url", "https://abetlen.github.io/llama-cpp-python/whl/cu124",
                 "--no-cache-dir",
+                "--force-reinstall",
                 "--only-binary=:all:",
                 "--no-deps"
             ], env=env)
             log("llama-cpp-python binary wheel installed successfully.")
         except subprocess.CalledProcessError as e:
-            log(f"CRITICAL: Failed to install llama-cpp-python (No binary wheel found?): {e}")
+            log(f"CRITICAL: Failed to install llama-cpp-python: {e}")
             pass
             
     try:

@@ -403,10 +403,11 @@ class GrammarChecker:
             
             log_print(f"Done. (GPU Acceleration: {'ENABLED' if is_gpu else 'DISABLED'})")
         except Exception as e:
-            log_print(f"\nError loading Grammar Model: {e}")
+            err_trace = traceback.format_exc()
+            log_print(f"\nError loading Grammar Model: {e}\n{err_trace}")
             self.loading_error = str(e)
             if sys.platform == 'win32':
-                 ctypes.windll.user32.MessageBoxW(0, f"Error loading Grammar Model (Llama):\n\n{e}\n\nCheck logs for details.", "Privox Model Error", 0x10)
+                 ctypes.windll.user32.MessageBoxW(0, f"Error loading Grammar Model (Llama):\n\n{e}\n\nTraceback:\n{err_trace[:500]}", "Privox Model Error", 0x10)
 
     def get_effective_prompt(self):
         """Constructs a composite prompt with hidden overrides.

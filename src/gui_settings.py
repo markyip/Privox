@@ -1573,19 +1573,8 @@ if __name__ == "__main__":
     
     # Load initial values now happens inside init_ui -> load_initial_state
     # window.load_initial_state() # Called internally
-
-    # Initialize descriptions
-    window.update_asr_desc(window.asr_combo.currentText())
-    window.update_llm_desc(window.llm_combo.currentText())
-
-    window.check_sound.setChecked(window.config.get("sound_enabled", True))
-    window.check_startup.setChecked(window.check_startup_status())
-    window.vram_spin.setText(str(window.config.get("vram_timeout", 60)))
     
-    # Auto-stop conversion display (ms to s)
-    stop_ms = window.config.get("silence_timeout_ms", 2000)
-    window.stop_spin.setText(str(int(stop_ms/1000)))
-    window.hk_val.setText(window.config.get("hotkey", "F8").upper())
+    # window.show() has all values ready from __init__
     
     # Initial prompt load
     window.on_prompt_change()

@@ -116,6 +116,7 @@ def main():
                 log("Installing llama-cpp-python (CPU-only)...")
             
             cmd += [
+                "--no-input",
                 "--no-cache-dir",
                 "--force-reinstall",
                 "--only-binary=:all:",

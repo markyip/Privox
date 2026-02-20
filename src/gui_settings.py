@@ -711,12 +711,14 @@ CRITICAL RULES:
             else:
                 print(f"DEBUG: Saved Refiner '{current_llm}' not found in library. Defaulting.")
         
-        # Initial ASR Config
-        current_asr = self.prefs.get("whisper_model", self.config.get("whisper_model"))
         if current_asr:
             idx = self.asr_combo.findText(current_asr)
             if idx >= 0:
                 self.asr_combo.setCurrentIndex(idx)
+
+        # Sync prefs to UI selection immediately to avoid false model-change detection on first save
+        self.prefs["whisper_model"] = self.asr_combo.currentText()
+        self.prefs["current_refiner"] = self.llm_combo.currentText()
 
         # Reset Dirty Flag after load
         self.is_dirty = False
@@ -1521,92 +1523,6 @@ CRITICAL RULES:
         else:
             QMessageBox.warning(self, "Update Failed", "Model update failed. Check logs.")
 
-    def handle_model_change_and_restart(self):
-        """
-        Updates models via download_models.py and prompts for restart.
-        """
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Updating Models")
-        dlg.setFixedSize(400, 150)
-        dlg.setWindowFlags(Qt.Dialog | Qt.CustomizeWindowHint | Qt.WindowTitleHint) # No close button
-        
-        layout = QVBoxLayout(dlg)
-        lbl = QLabel("Downloading/Verifying model files...\nPlease wait, this may take a few minutes.")
-        lbl.setWordWrap(True)
-        lbl.setStyleSheet("color: white; font-size: 13px;")
-        layout.addWidget(lbl)
-        
-        pbar = QProgressBar()
-        pbar.setRange(0, 0) # Indeterminate
-        pbar.setStyleSheet("""
-            QProgressBar {
-                background-color: rgba(255, 255, 255, 0.1);
-                border: none;
-                border-radius: 4px;
-                height: 6px;
-            }
-            QProgressBar::chunk {
-                background-color: #4CAF50;
-                border-radius: 4px;
-            }
-        """)
-        layout.addWidget(pbar)
-        
-        status_lbl = QLabel("Initializing...")
-        status_lbl.setStyleSheet("color: #888888; font-size: 11px;")
-        layout.addWidget(status_lbl)
-        
-        dlg.setStyleSheet("background-color: #1a1a1a; border: 1px solid #333;")
-        
-        # Worker Thread
-        import threading
-        # Ensure we can import download_models
-        try:
-            import download_models
-        except ImportError:
-            sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-            import download_models
-        
-        def run_update():
-            # Redirect log
-            original_log = download_models.log
-            def ui_log(msg):
-                print(msg) 
-            
-            download_models.log = ui_log
-            try:
-                download_models.main()
-                QTimer.singleShot(500, dlg.accept)
-            except Exception as e:
-                print(f"Update failed: {e}")
-                QTimer.singleShot(500, dlg.reject)
-            finally:
-                download_models.log = original_log
-
-        threading.Thread(target=run_update, daemon=True).start()
-        
-        res = dlg.exec()
-        
-        if res == QDialog.Accepted:
-            # Prompt Restart
-            restart = QMessageBox.question(
-                self, 
-                "Restart Required", 
-                "Models updated successfully.\nPrivox needs to restart to apply changes.\n\nRestart now?",
-                QMessageBox.Yes | QMessageBox.No
-            )
-            
-            if restart == QMessageBox.Yes:
-                # Launch new instance
-                if getattr(sys, "frozen", False):
-                    subprocess.Popen([sys.executable])
-                else:
-                    # Dev mode
-                    subprocess.Popen([sys.executable] + sys.argv)
-                
-                QApplication.quit()
-        else:
-            QMessageBox.warning(self, "Update Failed", "Model update failed. Check logs.")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

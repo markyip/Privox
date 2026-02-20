@@ -73,7 +73,7 @@ class ModernComboBox(QComboBox):
             QComboBox {{
                 background-color: rgba(255, 255, 255, 0.05);
                 border: 1px solid rgba(255, 255, 255, 0.1);
-                border-radius: 6px;
+                border-radius: 8px;
                 padding: 1px 18px 1px 15px;
                 color: #ffffff;
                 font-size: 13px;
@@ -417,30 +417,24 @@ CRITICAL RULES:
             QPushButton#sidebar_btn {
                 background-color: transparent;
                 border: none;
-                border-left: 4px solid transparent;
                 color: #888888;
                 text-align: left;
-                padding-left: 20px;
+                padding-left: 24px;
                 font-size: 14px;
                 font-weight: 500;
                 height: 50px;
                 outline: none;
                 border-radius: 8px;
             }
-            QPushButton#sidebar_btn:hover {
-                background-color: rgba(255, 255, 255, 0.05);
-                color: #ffffff;
-            }
             QPushButton#sidebar_btn[active="true"] {
                 color: #ffffff;
                 background-color: rgba(255, 255, 255, 0.08);
                 font-weight: 700;
-                border-left: 4px solid #ffffff;
             }
             QLineEdit {
                 background-color: rgba(255, 255, 255, 0.05);
                 border: 1px solid rgba(255, 255, 255, 0.1);
-                border-radius: 6px;
+                border-radius: 8px;
                 padding: 10px;
                 color: #ffffff;
                 font-size: 13px;
@@ -504,8 +498,8 @@ CRITICAL RULES:
         central_widget = QWidget()
         central_widget.setObjectName("central_widget")
         self.setCentralWidget(central_widget)
-        # Apply smoky dark semi-transparent background to central widget (0.92 opacity for thick "smoky" look)
-        central_widget.setStyleSheet("QWidget#central_widget { background-color: rgba(18, 18, 18, 0.92); border-radius: 12px; border: 1px solid rgba(255, 255, 255, 0.1); }")
+        # Apply professional deep background with nearly solid opacity
+        central_widget.setStyleSheet("QWidget#central_widget { background-color: rgba(18, 18, 18, 0.98); border-radius: 12px; border: 1px solid rgba(255, 255, 255, 0.1); }")
         
         main_v_layout = QVBoxLayout(central_widget)
         main_v_layout.setContentsMargins(0, 0, 0, 0)
@@ -543,8 +537,8 @@ CRITICAL RULES:
 
         # --- Sidebar ---
         self.sidebar = QWidget()
-        self.sidebar.setFixedWidth(240) # Slightly wider for Swiss spacing
-        self.sidebar.setStyleSheet("background-color: rgba(20, 20, 20, 0.4); border-right: 1px solid rgba(255, 255, 255, 0.1);")
+        self.sidebar.setFixedWidth(240)
+        self.sidebar.setStyleSheet("background-color: transparent; border-right: 1px solid rgba(255, 255, 255, 0.1);")
         sidebar_layout = QVBoxLayout(self.sidebar)
         sidebar_layout.setContentsMargins(0, 40, 0, 10)
         sidebar_layout.setSpacing(2)
@@ -557,6 +551,14 @@ CRITICAL RULES:
         for btn in self.sidebar_buttons:
             btn.setObjectName("sidebar_btn")
             btn.setCursor(Qt.PointingHandCursor)
+            # Add a small vertical indicator pill on the left
+            indicator = QFrame(btn)
+            indicator.setObjectName("indicator")
+            indicator.setFixedSize(3, 22)
+            indicator.setStyleSheet("QFrame#indicator { background-color: #ffffff; border-radius: 1.5px; }")
+            indicator.move(10, 14) # Precise alignment
+            indicator.setVisible(False)
+            setattr(btn, "nav_indicator", indicator)
             sidebar_layout.addWidget(btn)
         
         self.btn_models.clicked.connect(lambda: self.switch_tab(0))
@@ -573,7 +575,7 @@ CRITICAL RULES:
 
         # --- Content Area ---
         content_container = QWidget()
-        content_container.setStyleSheet("background-color: rgba(10, 10, 10, 0.2);")
+        content_container.setStyleSheet("background-color: transparent;")
         content_layout = QVBoxLayout(content_container)
         content_layout.setContentsMargins(40, 30, 40, 30) # Reduced from 48
         
@@ -711,7 +713,10 @@ CRITICAL RULES:
     def switch_tab(self, index):
         self.stack.setCurrentIndex(index)
         for i, btn in enumerate(self.sidebar_buttons):
-            btn.setProperty("active", i == index)
+            is_active = (i == index)
+            btn.setProperty("active", is_active)
+            if hasattr(btn, "nav_indicator"):
+                btn.nav_indicator.setVisible(is_active)
             btn.style().unpolish(btn)
             btn.style().polish(btn)
 
@@ -789,7 +794,7 @@ CRITICAL RULES:
         vbox.setSpacing(6) # Significantly reduced from 16
         
         header = QLabel(title)
-        header.setStyleSheet("font-weight: 800; color: #ffffff; border: none; font-size: 11px; letter-spacing: 1px; text-transform: uppercase;")
+        header.setStyleSheet("font-weight: 800; color: rgba(255, 255, 255, 0.6); border: none; font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase;")
         vbox.addWidget(header)
         
         for label_text, widget in fields:
@@ -1080,7 +1085,7 @@ CRITICAL RULES:
             QScrollArea {
                 background-color: rgba(255, 255, 255, 0.02);
                 border: 1px solid rgba(255, 255, 255, 0.05);
-                border-radius: 12px;
+                border-radius: 8px;
             }
             QScrollBar:vertical {
                 width: 8px;
@@ -1357,7 +1362,7 @@ CRITICAL RULES:
         
         for word in self.prefs.get("custom_dictionary", []):
             item_frame = QFrame()
-            item_frame.setStyleSheet("background-color: #222222; border-radius: 4px; padding: 5px;")
+            item_frame.setStyleSheet("background-color: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 6px; padding: 5px;")
             item_layout = QHBoxLayout(item_frame)
             item_layout.setContentsMargins(10, 5, 10, 5)
             

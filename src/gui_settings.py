@@ -439,7 +439,8 @@ CRITICAL RULES:
             }
             QPushButton#sidebar_btn[active="true"] {
                 color: #ffffff;
-                background-color: rgba(255, 255, 255, 0.08);
+                background-color: rgba(255, 255, 255, 0.12);
+                border: 1px solid rgba(255, 255, 255, 0.1);
                 font-weight: 700;
             }
             QLineEdit {
@@ -565,9 +566,9 @@ CRITICAL RULES:
             # Add a small vertical indicator pill on the left
             indicator = QFrame(btn)
             indicator.setObjectName("indicator")
-            indicator.setFixedSize(3, 22)
-            indicator.setStyleSheet("QFrame#indicator { background-color: #ffffff; border-radius: 1.5px; }")
-            indicator.move(10, 14) # Precise alignment
+            indicator.setFixedSize(4, 24)
+            indicator.setStyleSheet("QFrame#indicator { background-color: #ffffff; border-radius: 2px; }")
+            indicator.move(10, 13) # Precise alignment
             indicator.setVisible(False)
             setattr(btn, "nav_indicator", indicator)
             sidebar_layout.addWidget(btn)

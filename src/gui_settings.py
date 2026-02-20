@@ -293,6 +293,10 @@ class SettingsGUI(QMainWindow):
             {"name": "Distil-Whisper Large v3 (English)", "whisper_repo": "Systran/faster-distil-whisper-large-v3", "description": "Fast & High Quality. Best accuracy with distilled architecture."},
             {"name": "OpenAI Whisper Small", "whisper_repo": "openai/whisper-small", "description": "Quick processing for low-resource environments."},
             {"name": "Whisper Large v3 Turbo (Cantonese)", "whisper_repo": "ylpeter/faster-whisper-large-v3-turbo-cantonese-16", "description": "High-speed Cantonese transcription. Reduced hallucination."},
+            {"name": "Whisper Large v3 Turbo (Korean)", "whisper_repo": "ghost613/faster-whisper-large-v3-turbo-korean", "description": "High-performance Korean transcription. Optimized for speed and accuracy."},
+            {"name": "Whisper Large v3 Turbo (German)", "whisper_repo": "aseifert/faster-whisper-large-v3-turbo-german", "description": "Precision German recognition. Handles technical and colloquial speech."},
+            {"name": "Whisper Large v3 Turbo (French)", "whisper_repo": "Mathos34400/whisper-large-v3-turbo-french-v6", "description": "State-of-the-art French transcription with anti-overfitting optimization."},
+            {"name": "Whisper Large v3 Turbo (Japanese)", "whisper_repo": "XA9/faster-whisper-large-v3-ja", "description": "Superior Japanese performance with CTranslate2 optimization."},
             {"name": "Whisper Large v2 (Hindi)", "whisper_repo": "collabora/faster-whisper-large-v2-hindi", "description": "Fine-tuned for Hindi. Optimized for mixed-code (Hinglish)."},
             {"name": "Whisper Large v3 Turbo (Multilingual)", "whisper_repo": "deepdml/faster-whisper-large-v3-turbo-ct2", "description": "State-of-the-art multilingual model. Excellent for Singlish, Arabic, and diverse accents."}
         ]))
@@ -311,6 +315,13 @@ class SettingsGUI(QMainWindow):
                 "file_name": "Llama-3.2-3B-Instruct-Q4_K_M.gguf", 
                 "prompt_type": "llama",
                 "description": "General purpose balanced refiner for all languages."
+            },
+            {
+                "name": "Multilingual (Qwen 2.5 3B)", 
+                "repo_id": "bartowski/Qwen2.5-3B-Instruct-GGUF", 
+                "file_name": "Qwen2.5-3B-Instruct-Q4_K_M.gguf", 
+                "prompt_type": "llama",
+                "description": "Best for mixed languages and high instruction obedience."
             }
         ]))
 
@@ -810,7 +821,7 @@ CRITICAL RULES:
         container = QWidget()
         vbox = QVBoxLayout(container)
         vbox.setContentsMargins(0, 0, 0, 0)
-        vbox.setSpacing(6) # Reduced from 8
+        vbox.setSpacing(4) # Standardized for Phase 2
         lbl = QLabel(label)
         lbl.setStyleSheet("color: rgba(255, 255, 255, 0.4); font-size: 11px; font-weight: 700; text-transform: uppercase;")
         vbox.addWidget(lbl)
@@ -860,7 +871,7 @@ CRITICAL RULES:
 
     def init_general_tab(self):
         layout = QVBoxLayout(self.tab_general)
-        layout.setSpacing(20)
+        layout.setSpacing(12) # Reduced from 20 for Phase 2
         layout.setContentsMargins(0, 0, 0, 0)
         
         # Hotkey Frame
@@ -873,7 +884,7 @@ CRITICAL RULES:
             }
         """)
         hk_layout = QHBoxLayout(hk_frame)
-        hk_layout.setContentsMargins(24, 24, 24, 24)
+        hk_layout.setContentsMargins(20, 16, 20, 16) # Reduced from 24
         
         hk_info = QVBoxLayout()
         hk_title = QLabel("RECORDING HOTKEY")
@@ -920,7 +931,7 @@ CRITICAL RULES:
         self.check_startup = QCheckBox("Launch Privox at Startup")
         
         for chk in [self.check_sound, self.check_startup]:
-            chk.setStyleSheet("QCheckBox::indicator { width: 40px; height: 20px; } padding: 10px;")
+            chk.setStyleSheet("QCheckBox::indicator { width: 40px; height: 20px; } padding: 4px;")
             layout.addWidget(chk)
             
         self.check_startup.clicked.connect(self.toggle_startup)

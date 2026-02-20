@@ -22,11 +22,11 @@ import json
 from PySide6.QtGui import QColor, QPainter, QFont, QIcon, QAction, QLinearGradient, QBrush, QPen
 from PySide6.QtCore import Qt, QSize, QPropertyAnimation, QEasingCurve, QPoint, Signal, QRect, QParallelAnimationGroup, Property, QTimer
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-    QPushButton, QLabel, QFrame, QStackedWidget, QLineEdit, 
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QPushButton, QLabel, QFrame, QStackedWidget, QLineEdit,
     QScrollArea, QGraphicsDropShadowEffect, QSizePolicy, QPlainTextEdit,
     QGridLayout, QDialog, QComboBox, QCheckBox, QLayout, QSpacerItem,
-    QMessageBox, QProgressBar, QSpinBox
+    QMessageBox, QProgressBar, QSpinBox, QButtonGroup
 )
 import ctypes
 import sounddevice as sd
@@ -64,24 +64,26 @@ class ModernComboBox(QComboBox):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setCursor(Qt.PointingHandCursor)
-        self.setFixedHeight(40)
+        self.setFixedHeight(48)
+        self.setFocusPolicy(Qt.StrongFocus)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        
-        # We use QSS to handle the arrow state via :on and :off pseudo-states
-        # Swiss Style Typography & Glass UI
+
         self.setStyleSheet(f"""
             QComboBox {{
-                background-color: rgba(255, 255, 255, 0.05);
-                border: 1px solid rgba(255, 255, 255, 0.1);
+                background-color: rgba(255, 255, 255, 0.06);
+                border: 1px solid rgba(255, 255, 255, 0.22);
                 border-radius: 8px;
                 padding: 1px 18px 1px 15px;
                 color: #ffffff;
-                font-size: 13px;
+                font-size: 15px;
                 font-weight: 500;
             }}
             QComboBox:hover {{
-                background-color: rgba(255, 255, 255, 0.08);
-                border: 1px solid rgba(255, 255, 255, 0.2);
+                background-color: rgba(255, 255, 255, 0.09);
+                border: 1px solid rgba(255, 255, 255, 0.35);
+            }}
+            QComboBox:focus {{
+                border: 2px solid #8ab4f8;
             }}
             QComboBox::drop-down {{
                 subcontrol-origin: padding;
@@ -99,14 +101,129 @@ class ModernComboBox(QComboBox):
             }}
             QComboBox QAbstractItemView {{
                 background-color: #1a1a1a;
-                border: 1px solid rgba(255, 255, 255, 0.1);
-                selection-background-color: rgba(255, 255, 255, 0.1);
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                selection-background-color: rgba(255, 255, 255, 0.12);
                 color: #ffffff;
                 outline: none;
                 padding: 10px;
                 border-radius: 8px;
+                font-size: 15px;
             }}
         """)
+
+
+class AccessibleToggleGroup(QWidget):
+    """Radio-style toggle button group — keyboard navigable, screen-reader friendly.
+
+    Features:
+    - Grid layout (configurable columns) for easy visual scanning
+    - Exclusive selection via QButtonGroup
+    - Arrow-key (Left/Right/Up/Down) navigation between options
+    - Each button announces its label and role to screen readers via accessibleName
+    - Visible 3px focus ring on the focused button
+    """
+    selectionChanged = Signal(str)
+
+    CHECKED_STYLE = """
+        QPushButton {
+            background-color: #ffffff;
+            color: #000000;
+            border: 2px solid #ffffff;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 700;
+            padding: 10px 16px;
+            min-height: 44px;
+        }
+    """
+    UNCHECKED_STYLE = """
+        QPushButton {
+            background-color: transparent;
+            color: #cccccc;
+            border: 1px solid rgba(255, 255, 255, 0.28);
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            padding: 10px 16px;
+            min-height: 44px;
+        }
+        QPushButton:hover {
+            background-color: rgba(255, 255, 255, 0.09);
+            border: 1px solid rgba(255, 255, 255, 0.5);
+            color: #ffffff;
+        }
+        QPushButton:focus {
+            border: 3px solid #8ab4f8;
+            color: #ffffff;
+        }
+    """
+
+    def __init__(self, options, accessible_label="", columns=3, parent=None):
+        super().__init__(parent)
+        self._buttons = []
+        self._group = QButtonGroup(self)
+        self._group.setExclusive(True)
+        self.setFocusPolicy(Qt.NoFocus)  # Container is not focusable; individual buttons are
+
+        grid = QGridLayout(self)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(10)
+
+        for i, option in enumerate(options):
+            btn = QPushButton(option)
+            btn.setCheckable(True)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setFocusPolicy(Qt.TabFocus)
+            # Screen reader: announce the group label + option name + role
+            btn.setAccessibleName(f"{accessible_label}: {option}")
+            btn.setAccessibleDescription(f"Select {option}")
+            btn.setStyleSheet(self.UNCHECKED_STYLE)
+            btn.clicked.connect(lambda checked, idx=i: self._select(idx))
+            self._group.addButton(btn, i)
+            self._buttons.append(btn)
+            grid.addWidget(btn, i // columns, i % columns)
+
+        # Select first by default
+        if self._buttons:
+            self._select(0)
+
+    def _select(self, idx):
+        for i, btn in enumerate(self._buttons):
+            is_active = (i == idx)
+            btn.setChecked(is_active)
+            btn.setStyleSheet(self.CHECKED_STYLE if is_active else self.UNCHECKED_STYLE)
+        self.selectionChanged.emit(self._buttons[idx].text())
+
+    def currentText(self):
+        btn = self._group.checkedButton()
+        return btn.text() if btn else (self._buttons[0].text() if self._buttons else "")
+
+    def setCurrentText(self, text):
+        for idx, btn in enumerate(self._buttons):
+            is_match = btn.text() == text
+            btn.setChecked(is_match)
+            btn.setStyleSheet(self.CHECKED_STYLE if is_match else self.UNCHECKED_STYLE)
+
+    def keyPressEvent(self, event):
+        """Arrow keys cycle through options; re-emits selectionChanged."""
+        current = self._group.checkedButton()
+        if not current:
+            super().keyPressEvent(event)
+            return
+        idx = self._buttons.index(current)
+        if event.key() in (Qt.Key_Right, Qt.Key_Down):
+            next_idx = (idx + 1) % len(self._buttons)
+            self._select(next_idx)
+            self._buttons[next_idx].setChecked(True)
+            self._buttons[next_idx].setFocus()
+        elif event.key() in (Qt.Key_Left, Qt.Key_Up):
+            prev_idx = (idx - 1) % len(self._buttons)
+            self._select(prev_idx)
+            self._buttons[prev_idx].setChecked(True)
+            self._buttons[prev_idx].setFocus()
+        else:
+            super().keyPressEvent(event)
+
 
 class ModernConfirmDialog(QDialog):
     def __init__(self, parent=None, title="Confirm", message="Save changes?"):
@@ -405,18 +522,18 @@ CRITICAL RULES:
         self.setAttribute(Qt.WA_TranslucentBackground)
         
         # Dark Palette
-        # SWISS STYLE + GLASSMORPHISM THEME
+        # ACCESSIBILITY THEME: High contrast, large targets, strong focus rings, Atkinson Hyperlegible
         self.setStyleSheet("""
             QMainWindow {
                 background: transparent;
             }
             QWidget {
                 color: #ffffff;
-                font-family: 'Inter', 'Segoe UI Variable Text', 'Segoe UI', Arial;
+                font-family: 'Atkinson Hyperlegible', 'Verdana', 'Segoe UI Variable Text', 'Segoe UI', Arial;
             }
             QLabel {
-                font-size: 13px;
-                color: #e0e0e0;
+                font-size: 15px;
+                color: #f0f0f0;
             }
             QLabel#header_text {
                 font-size: 28px;
@@ -428,41 +545,49 @@ CRITICAL RULES:
             QPushButton#sidebar_btn {
                 background-color: transparent;
                 border: none;
-                color: #888888;
+                color: #aaaaaa;
                 text-align: left;
                 padding-left: 24px;
-                font-size: 14px;
+                font-size: 15px;
                 font-weight: 500;
-                height: 50px;
+                min-height: 52px;
                 outline: none;
                 border-radius: 8px;
             }
             QPushButton#sidebar_btn[active="true"] {
                 color: #ffffff;
                 background-color: rgba(255, 255, 255, 0.12);
-                border: 1px solid rgba(255, 255, 255, 0.1);
+                border: 1px solid rgba(255, 255, 255, 0.15);
                 font-weight: 700;
             }
+            QPushButton#sidebar_btn:focus {
+                outline: 3px solid #8ab4f8;
+                outline-offset: 2px;
+            }
             QLineEdit {
-                background-color: rgba(255, 255, 255, 0.05);
-                border: 1px solid rgba(255, 255, 255, 0.1);
-                border-radius: 8px;
-                padding: 10px;
-                color: #ffffff;
-                font-size: 13px;
-            }
-            QLineEdit:focus {
-                border: 1px solid rgba(255, 255, 255, 0.3);
-                background-color: rgba(255, 255, 255, 0.08);
-            }
-            QPlainTextEdit {
-                background-color: rgba(0, 0, 0, 0.2);
-                border: 1px solid rgba(255, 255, 255, 0.1);
+                background-color: rgba(255, 255, 255, 0.06);
+                border: 1px solid rgba(255, 255, 255, 0.22);
                 border-radius: 8px;
                 padding: 12px;
-                color: #cccccc;
-                font-size: 13px;
+                color: #ffffff;
+                font-size: 15px;
+                min-height: 48px;
+            }
+            QLineEdit:focus {
+                border: 2px solid rgba(255, 255, 255, 0.7);
+                background-color: rgba(255, 255, 255, 0.09);
+            }
+            QPlainTextEdit {
+                background-color: rgba(0, 0, 0, 0.25);
+                border: 1px solid rgba(255, 255, 255, 0.18);
+                border-radius: 8px;
+                padding: 14px;
+                color: #eeeeee;
+                font-size: 15px;
                 line-height: 150%;
+            }
+            QPlainTextEdit:focus {
+                border: 2px solid rgba(255, 255, 255, 0.55);
             }
             QScrollArea {
                 border: none;
@@ -471,17 +596,17 @@ CRITICAL RULES:
             QScrollBar:vertical {
                 border: none;
                 background: transparent;
-                width: 8px;
+                width: 10px;
                 margin: 0px;
             }
             QScrollBar::handle:vertical {
-                background: rgba(255, 255, 255, 0.1);
+                background: rgba(255, 255, 255, 0.2);
                 min-height: 30px;
-                border-radius: 4px;
+                border-radius: 5px;
                 margin: 2px;
             }
             QScrollBar::handle:vertical:hover {
-                background: rgba(255, 255, 255, 0.2);
+                background: rgba(255, 255, 255, 0.35);
             }
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
                 height: 0px;
@@ -490,50 +615,57 @@ CRITICAL RULES:
                 background: transparent;
             }
             QCheckBox {
-                spacing: 12px;
+                spacing: 14px;
                 font-weight: 500;
+                font-size: 15px;
+                min-height: 48px;
             }
             QCheckBox::indicator {
-                width: 18px;
-                height: 18px;
-                border-radius: 4px;
-                border: 1px solid rgba(255, 255, 255, 0.2);
-                background: rgba(255, 255, 255, 0.05);
+                width: 22px;
+                height: 22px;
+                border-radius: 5px;
+                border: 2px solid rgba(255, 255, 255, 0.35);
+                background: rgba(255, 255, 255, 0.06);
             }
             QCheckBox::indicator:checked {
                 background: #ffffff;
-                border: 1px solid #ffffff;
-                image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path fill='%23000000' d='M9.5 3L4.5 8 2.5 6'/></svg>");
+                border: 2px solid #ffffff;
+                image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 12 12'><path stroke='%23000000' stroke-width='2' fill='none' d='M2 6l3 3 5-5'/></svg>");
+            }
+            QCheckBox:focus {
+                outline: 3px solid #8ab4f8;
+                outline-offset: 2px;
             }
             QSpinBox {
-                background-color: rgba(255, 255, 255, 0.05);
-                border: 1px solid rgba(255, 255, 255, 0.1);
+                background-color: rgba(255, 255, 255, 0.06);
+                border: 1px solid rgba(255, 255, 255, 0.22);
                 border-radius: 8px;
-                padding: 1px 5px 1px 12px;
+                padding: 1px 5px 1px 14px;
                 color: #ffffff;
-                font-size: 13px;
-                min-height: 38px;
+                font-size: 15px;
+                min-height: 48px;
             }
             QSpinBox:focus {
-                border: 1px solid rgba(255, 255, 255, 0.3);
-                background-color: rgba(255, 255, 255, 0.08);
+                border: 2px solid rgba(255, 255, 255, 0.7);
+                background-color: rgba(255, 255, 255, 0.09);
             }
             QSpinBox::up-button, QSpinBox::down-button {
                 background: transparent;
                 border: none;
-                width: 24px;
+                width: 28px;
             }
             QSpinBox::up-arrow {
-                image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 12 12'><path fill='%23aaaaaa' d='M2 8l4-4 4 4z'/></svg>");
-                width: 10px;
-                height: 10px;
+                image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path fill='%23cccccc' d='M2 8l4-4 4 4z'/></svg>");
+                width: 12px;
+                height: 12px;
             }
             QSpinBox::down-arrow {
-                image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 12 12'><path fill='%23aaaaaa' d='M2 4l4 4 4-4z'/></svg>");
-                width: 10px;
-                height: 10px;
+                image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path fill='%23cccccc' d='M2 4l4 4 4-4z'/></svg>");
+                width: 12px;
+                height: 12px;
             }
         """)
+
 
         central_widget = QWidget()
         central_widget.setObjectName("central_widget")
@@ -685,52 +817,50 @@ CRITICAL RULES:
                 if combo.count() > 0:
                     combo.setCurrentIndex(0)
 
-        self.char_combo.blockSignals(True)
-        self.tone_combo.blockSignals(True)
         self.asr_combo.blockSignals(True)
         self.llm_combo.blockSignals(True)
-        
-        set_combo_safe(self.char_combo, self.config.get("character", "Writing Assistant"))
-        set_combo_safe(self.tone_combo, self.config.get("tone", "Natural"))
+
+        # Restore Persona & Tone (toggle groups don't need blockSignals — they emit on _select)
+        self.char_group.setCurrentText(self.config.get("character", "Writing Assistant"))
+        self.tone_group.setCurrentText(self.config.get("tone", "Natural"))
+
         set_combo_safe(self.asr_combo, self.config.get("whisper_model", "Distil-Whisper Large v3 (English)"))
         set_combo_safe(self.llm_combo, self.config.get("current_refiner", "Llama 3.2 3B Instruct"))
 
         # Initialize descriptions
         self.update_asr_desc(self.asr_combo.currentText())
         self.update_llm_desc(self.llm_combo.currentText())
-        
-        # Connect change signals now that initial load is done
-        self.char_combo.blockSignals(False)
-        self.tone_combo.blockSignals(False)
+
+        # Unblock and wire dirty signals
         self.asr_combo.blockSignals(False)
         self.llm_combo.blockSignals(False)
-        
+
         # Wire up dirty signals
-        self.char_combo.currentIndexChanged.connect(self.mark_dirty)
-        self.tone_combo.currentIndexChanged.connect(self.mark_dirty)
+        self.char_group.selectionChanged.connect(self.mark_dirty)
+        self.tone_group.selectionChanged.connect(self.mark_dirty)
         self.asr_combo.currentIndexChanged.connect(self.mark_dirty)
         self.llm_combo.currentIndexChanged.connect(self.mark_dirty)
-        self.check_sound.toggled.connect(self.mark_dirty)
         self.check_startup.toggled.connect(self.mark_dirty)
+        self.check_readback.toggled.connect(self.mark_dirty)
         self.vram_spin.valueChanged.connect(self.mark_dirty)
         self.stop_spin.valueChanged.connect(self.mark_dirty)
         self.prompt_editor.textChanged.connect(self.mark_dirty)
 
-        self.check_sound.setChecked(self.config.get("sound_enabled", True))
+        # Sound is always on; no checkbox to set
         self.check_startup.setChecked(self.check_startup_status())
+        self.check_readback.setChecked(self.config.get("readback_enabled", False))
         self.vram_spin.setValue(max(5, int(self.config.get("vram_timeout", 60))))
-        
+
         # Auto-stop conversion display (ms to s)
         stop_ms = self.config.get("silence_timeout_ms", 10000)
         self.stop_spin.setValue(max(5, int(stop_ms/1000)))
         self.hk_val.setText(self.config.get("hotkey", "F8").upper())
-        
+
         # Initial prompt load
         self.on_prompt_change()
         self.refresh_dict_list()
-        
-        # Initial Refiner Config
-        # Priority: User Prefs > Config > Default
+
+        # Priority: User Prefs > Config > Default for ASR / LLM
         current_llm = self.prefs.get("current_refiner", self.config.get("current_refiner"))
         if current_llm:
             idx = self.llm_combo.findText(current_llm)
@@ -738,21 +868,22 @@ CRITICAL RULES:
                 self.llm_combo.setCurrentIndex(idx)
             else:
                 print(f"DEBUG: Saved Refiner '{current_llm}' not found in library. Defaulting.")
-        
-        # Initial ASR Config
+
         current_asr = self.prefs.get("whisper_model", self.config.get("whisper_model"))
         if current_asr:
             idx = self.asr_combo.findText(current_asr)
             if idx >= 0:
                 self.asr_combo.setCurrentIndex(idx)
 
-        # Sync prefs to UI selection immediately to avoid false model-change detection on first save
+        # Sync prefs to UI selection to avoid false model-change detection on first save
         self.prefs["whisper_model"] = self.asr_combo.currentText()
         self.prefs["current_refiner"] = self.llm_combo.currentText()
 
         # Reset Dirty Flag after load
         self.is_dirty = False
         print(f"DEBUG: Initial Refiner: {current_llm}")
+
+
 
     def switch_tab(self, index):
         self.stack.setCurrentIndex(index)
@@ -775,56 +906,75 @@ CRITICAL RULES:
             ("REFINER (LLM) MODEL", self.create_llm_combo())
         ])
         
-        # Labels for dynamic info (Borderless/Minimalist)
+        # Labels for dynamic info
         self.asr_info = QLabel("")
-        self.asr_info.setStyleSheet("color: #888888; font-size: 11px; margin-top: 2px; border: none; background: transparent;")
+        self.asr_info.setStyleSheet("color: #aaaaaa; font-size: 13px; margin-top: 2px; border: none; background: transparent;")
         self.asr_info.setWordWrap(True)
+        self.asr_info.setAccessibleName("Voice-to-text model description")
         self.llm_info = QLabel("")
-        self.llm_info.setStyleSheet("color: #888888; font-size: 11px; margin-top: 2px; border: none; background: transparent;")
+        self.llm_info.setStyleSheet("color: #aaaaaa; font-size: 13px; margin-top: 2px; border: none; background: transparent;")
         self.llm_info.setWordWrap(True)
-        
+        self.llm_info.setAccessibleName("Refiner model description")
+
         # Add info labels to group layout
         ai_layout = ai_group.layout()
-        ai_layout.insertWidget(2, self.asr_info) # After ASR Label
-        ai_layout.insertWidget(5, self.llm_info) # After LLM Label (Label is pushed to 4)
-        
+        ai_layout.insertWidget(2, self.asr_info)
+        ai_layout.insertWidget(5, self.llm_info)
+
         layout.addWidget(ai_group)
 
-        # Persona Group
-        persona_layout = QHBoxLayout()
-        self.char_combo = ModernComboBox()
-        self.char_combo.addItems(["Writing Assistant", "Code Expert", "Executive Secretary", "Personal Buddy", "Custom"])
-        self.char_combo.currentTextChanged.connect(self.on_prompt_change)
-        
-        self.tone_combo = ModernComboBox()
-        self.tone_combo.addItems(["Professional", "Natural", "Polite", "Casual", "Aggressive", "Concise", "Custom"])
-        self.tone_combo.currentTextChanged.connect(self.on_prompt_change)
+        # ── PERSONA — radio toggle group (keyboard + screen reader friendly) ──
+        persona_lbl = QLabel("PERSONA")
+        persona_lbl.setStyleSheet("font-weight: 800; color: rgba(255,255,255,0.65); font-size: 13px; letter-spacing: 1.2px; border: none;")
+        persona_lbl.setAccessibleName("Persona selection")
+        layout.addWidget(persona_lbl)
 
-        persona_layout.addWidget(self.create_field("Persona", self.char_combo))
-        persona_layout.addWidget(self.create_field("Tone", self.tone_combo))
-        persona_layout.setSpacing(16)
-        layout.addLayout(persona_layout)
+        self.char_group = AccessibleToggleGroup(
+            ["Writing Assistant", "Code Expert", "Executive Secretary", "Personal Buddy", "Custom"],
+            accessible_label="Persona",
+            columns=3
+        )
+        self.char_group.selectionChanged.connect(self.on_prompt_change)
+        layout.addWidget(self.char_group)
+
+        # ── TONE — radio toggle group ──
+        tone_lbl = QLabel("TONE")
+        tone_lbl.setStyleSheet("font-weight: 800; color: rgba(255,255,255,0.65); font-size: 13px; letter-spacing: 1.2px; border: none; margin-top: 8px;")
+        tone_lbl.setAccessibleName("Tone selection")
+        layout.addWidget(tone_lbl)
+
+        self.tone_group = AccessibleToggleGroup(
+            ["Professional", "Natural", "Polite", "Casual", "Aggressive", "Concise", "Custom"],
+            accessible_label="Tone",
+            columns=4
+        )
+        self.tone_group.selectionChanged.connect(self.on_prompt_change)
+        layout.addWidget(self.tone_group)
 
         # Prompt Editor
         prompt_header = QLabel("CUSTOM INSTRUCTIONS")
-        prompt_header.setStyleSheet("font-size: 14px; font-weight: bold; color: #ffffff; margin-top: 5px;")
+        prompt_header.setStyleSheet("font-size: 14px; font-weight: bold; color: #ffffff; margin-top: 8px;")
+        prompt_header.setAccessibleName("Custom instructions label")
         layout.addWidget(prompt_header)
-        
+
         self.prompt_editor = QPlainTextEdit()
         self.prompt_editor.setPlaceholderText("Enter custom instructions here...")
+        self.prompt_editor.setAccessibleName("Custom instructions editor")
         self.prompt_editor.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        # Deep smoky look for editor
-        self.prompt_editor.setStyleSheet("QPlainTextEdit { background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.05); border-radius: 12px; padding: 12px; font-size: 14px; }")
+        self.prompt_editor.setStyleSheet("QPlainTextEdit { background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.12); border-radius: 12px; padding: 14px; font-size: 15px; }")
         self.prompt_editor.textChanged.connect(self.update_prompt_count)
-        layout.addWidget(self.prompt_editor, 1) # Give it stretch
-        
+        layout.addWidget(self.prompt_editor, 1)  # stretch
+
         # Character Counter
         self.char_count_lbl = QLabel("0 / 2000")
-        self.char_count_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.3); font-size: 11px; margin-top: 4px;")
+        self.char_count_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.45); font-size: 13px; margin-top: 4px;")
         self.char_count_lbl.setAlignment(Qt.AlignRight)
+        self.char_count_lbl.setAccessibleName("Character count for custom instructions")
         layout.addWidget(self.char_count_lbl)
-        
+
         layout.addStretch()
+
+
 
     def create_group(self, title, fields):
         group = QFrame()
@@ -836,29 +986,37 @@ CRITICAL RULES:
             }
         """)
         vbox = QVBoxLayout(group)
-        vbox.setContentsMargins(20, 16, 20, 16) # Reduced from 24
-        vbox.setSpacing(6) # Significantly reduced from 16
-        
+        vbox.setContentsMargins(20, 18, 20, 18)
+        vbox.setSpacing(8)
+
         header = QLabel(title)
-        header.setStyleSheet("font-weight: 800; color: rgba(255, 255, 255, 0.6); border: none; font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase;")
+        header.setStyleSheet("font-weight: 800; color: rgba(255, 255, 255, 0.65); border: none; font-size: 13px; letter-spacing: 1.5px;")
+        header.setAccessibleName(f"{title} section")
         vbox.addWidget(header)
-        
+
         for label_text, widget in fields:
             if label_text:
                 lbl = QLabel(label_text)
-                lbl.setStyleSheet("color: #888888; border: none; font-size: 11px;")
+                lbl.setStyleSheet("color: #aaaaaa; border: none; font-size: 13px; font-weight: 600;")
+                lbl.setAccessibleName(f"{label_text} label")
+                # Also set the widget's accessible name so screen readers link them
+                if hasattr(widget, 'setAccessibleName'):
+                    widget.setAccessibleName(label_text)
                 vbox.addWidget(lbl)
             vbox.addWidget(widget)
-            
+
         return group
 
     def create_field(self, label, widget):
         container = QWidget()
         vbox = QVBoxLayout(container)
         vbox.setContentsMargins(0, 0, 0, 0)
-        vbox.setSpacing(4) # Standardized for Phase 2
+        vbox.setSpacing(6)
         lbl = QLabel(label)
-        lbl.setStyleSheet("color: rgba(255, 255, 255, 0.4); font-size: 11px; font-weight: 700; text-transform: uppercase;")
+        lbl.setStyleSheet("color: rgba(255, 255, 255, 0.55); font-size: 13px; font-weight: 700; letter-spacing: 0.5px;")
+        lbl.setAccessibleName(f"{label} field label")
+        if hasattr(widget, 'setAccessibleName'):
+            widget.setAccessibleName(label)
         vbox.addWidget(lbl)
         vbox.addWidget(widget)
         return container
@@ -867,7 +1025,9 @@ CRITICAL RULES:
         self.asr_combo = ModernComboBox()
         for i, m in enumerate(self.asr_library):
             self.asr_combo.addItem(m["name"])
-            self.asr_combo.setItemData(i, m["name"], Qt.ToolTipRole) # Tooltip
+            self.asr_combo.setItemData(i, m["name"], Qt.ToolTipRole)
+        self.asr_combo.setAccessibleName("Voice-to-Text Model selector")
+        self.asr_combo.setAccessibleDescription("Select the speech recognition model to use for transcription")
         self.asr_combo.currentTextChanged.connect(self.update_asr_desc)
         return self.asr_combo
 
@@ -875,7 +1035,9 @@ CRITICAL RULES:
         self.llm_combo = ModernComboBox()
         for i, m in enumerate(self.llm_library):
             self.llm_combo.addItem(m["name"])
-            self.llm_combo.setItemData(i, m["name"], Qt.ToolTipRole) # Tooltip
+            self.llm_combo.setItemData(i, m["name"], Qt.ToolTipRole)
+        self.llm_combo.setAccessibleName("Refiner (LLM) Model selector")
+        self.llm_combo.setAccessibleDescription("Select the language model used to refine transcriptions")
         self.llm_combo.currentTextChanged.connect(self.update_llm_desc)
         return self.llm_combo
 
@@ -906,90 +1068,117 @@ CRITICAL RULES:
 
     def init_general_tab(self):
         layout = QVBoxLayout(self.tab_general)
-        layout.setSpacing(12) # Reduced from 20 for Phase 2
+        layout.setSpacing(16)
         layout.setContentsMargins(0, 0, 0, 0)
-        
-        # Hotkey Frame
+
+        # ── RECORDING HOTKEY ──
         hk_frame = QFrame()
         hk_frame.setStyleSheet("""
             QFrame {
                 background-color: transparent;
-                border: 1px solid rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.15);
                 border-radius: 12px;
             }
         """)
         hk_layout = QHBoxLayout(hk_frame)
-        hk_layout.setContentsMargins(20, 16, 20, 16) # Reduced from 24
-        
+        hk_layout.setContentsMargins(20, 18, 20, 18)
+
         hk_info = QVBoxLayout()
         hk_title = QLabel("RECORDING HOTKEY")
-        hk_title.setStyleSheet("font-weight: 800; color: rgba(255, 255, 255, 0.4); border: none; font-size: 11px; letter-spacing: 1px;")
+        hk_title.setStyleSheet("font-weight: 800; color: rgba(255, 255, 255, 0.6); border: none; font-size: 13px; letter-spacing: 1px;")
+        hk_title.setAccessibleName("Recording hotkey label")
+
         self.hk_val = QLabel("F8")
-        self.hk_val.setStyleSheet("font-size: 32px; font-weight: 900; color: #ffffff; border: none; letter-spacing: -1px;")
+        self.hk_val.setStyleSheet("font-size: 36px; font-weight: 900; color: #ffffff; border: none; letter-spacing: -1px;")
+        self.hk_val.setAccessibleName("Current recording hotkey")
         hk_info.addWidget(hk_title)
         hk_info.addWidget(self.hk_val)
-        
+
         hk_layout.addLayout(hk_info)
         hk_layout.addStretch()
-        
+
         btn_rec = QPushButton("RECORD NEW")
-        btn_rec.setFixedSize(140, 44)
+        btn_rec.setMinimumSize(160, 52)
         btn_rec.setCursor(Qt.PointingHandCursor)
+        btn_rec.setFocusPolicy(Qt.StrongFocus)
+        btn_rec.setAccessibleName("Record new hotkey button")
+        btn_rec.setAccessibleDescription("Press to start recording a new keyboard hotkey for voice input")
         btn_rec.setStyleSheet("""
             QPushButton {
                 background-color: #ffffff;
                 color: #000000;
-                border: 1px solid #ffffff;
-                border-radius: 6px;
+                border: 2px solid #ffffff;
+                border-radius: 8px;
                 font-weight: 800;
-                font-size: 12px;
+                font-size: 14px;
                 letter-spacing: 0.5px;
             }
             QPushButton:hover {
                 background-color: rgba(255, 255, 255, 0.85);
             }
+            QPushButton:focus {
+                border: 3px solid #8ab4f8;
+            }
             QPushButton#btn_rec[recording="true"] {
                 background-color: #ff3b30;
                 color: #ffffff;
-                border: 1px solid #ff3b30;
+                border: 2px solid #ff3b30;
             }
         """)
         btn_rec.setObjectName("btn_rec")
         btn_rec.clicked.connect(self.start_hotkey_record)
         self.btn_rec = btn_rec
         hk_layout.addWidget(btn_rec)
-        
+
         layout.addWidget(hk_frame)
 
-        # Switches
-        self.check_sound = QCheckBox("Play Sound Effects (Beeps)")
-        self.check_startup = QCheckBox("Launch Privox at Startup")
-        
-        for chk in [self.check_sound, self.check_startup]:
-            chk.setStyleSheet("QCheckBox::indicator { width: 40px; height: 20px; } padding: 4px;")
-            layout.addWidget(chk)
-            
-        self.check_startup.clicked.connect(self.toggle_startup)
+        # ── ACCESSIBILITY NOTE: sound always on ──
+        sound_note = QLabel("🔔  Audio feedback (beeps) is always enabled for accessibility.")
+        sound_note.setStyleSheet("color: #aaaaaa; font-size: 14px; border: none; padding: 4px 0;")
+        sound_note.setWordWrap(True)
+        sound_note.setAccessibleName("Audio feedback always on notice")
+        layout.addWidget(sound_note)
 
-        # Timeouts
+        # ── CHECKBOXES ──
+        self.check_startup = QCheckBox("Launch Privox at Startup")
+        self.check_startup.setFocusPolicy(Qt.StrongFocus)
+        self.check_startup.setAccessibleName("Launch at startup")
+        self.check_startup.setAccessibleDescription("Toggle whether Privox starts automatically when Windows starts")
+        self.check_startup.clicked.connect(self.toggle_startup)
+        layout.addWidget(self.check_startup)
+
+        self.check_readback = QCheckBox("Read back transcript after dictation (spoken confirmation)")
+        self.check_readback.setFocusPolicy(Qt.StrongFocus)
+        self.check_readback.setAccessibleName("Read back transcript")
+        self.check_readback.setAccessibleDescription("When enabled, Privox will speak the transcribed text aloud after dictation so you can confirm it")
+        layout.addWidget(self.check_readback)
+
+        # ── TIMEOUTS ──
         timeout_layout = QHBoxLayout()
         self.vram_spin = QSpinBox()
         self.vram_spin.setMinimum(5)
         self.vram_spin.setMaximum(3600)
-        self.vram_spin.setFixedWidth(80)
+        self.vram_spin.setMinimumWidth(100)
         self.vram_spin.setSuffix(" s")
+        self.vram_spin.setFocusPolicy(Qt.StrongFocus)
+        self.vram_spin.setAccessibleName("VRAM Saver timeout in seconds")
+        self.vram_spin.setAccessibleDescription("Number of seconds before unloading the AI model from VRAM to save memory. Minimum 5 seconds.")
         self.vram_spin.valueChanged.connect(self.mark_dirty)
 
         self.stop_spin = QSpinBox()
         self.stop_spin.setMinimum(5)
         self.stop_spin.setMaximum(30)
-        self.stop_spin.setFixedWidth(80)
+        self.stop_spin.setMinimumWidth(100)
         self.stop_spin.setSuffix(" s")
+        self.stop_spin.setFocusPolicy(Qt.StrongFocus)
+        self.stop_spin.setAccessibleName("Auto-stop silence timeout in seconds")
+        self.stop_spin.setAccessibleDescription("Number of seconds of silence after which recording stops automatically. Minimum 5 seconds.")
         self.stop_spin.valueChanged.connect(self.mark_dirty)
 
         timeout_layout.addWidget(self.create_field("VRAM Saver", self.vram_spin))
         timeout_layout.addWidget(self.create_field("Auto-Stop", self.stop_spin))
         timeout_layout.addStretch()
+
         layout.addLayout(timeout_layout)
 
         # Input Source Display
@@ -1154,29 +1343,28 @@ CRITICAL RULES:
 
     def on_prompt_change(self):
         """Handle persona or tone change. Save current prompt and load new one."""
-        char = self.char_combo.currentText()
-        tone = self.tone_combo.currentText()
+        char = self.char_group.currentText()
+        tone = self.tone_group.currentText()
         new_key = f"{char}|{tone}"
-        
+
         # Save current if edited
         current_text = self.prompt_editor.toPlainText().strip()
         if current_text:
             self.custom_prompts[self.last_prompt_key] = current_text
-            
+
         self.last_prompt_key = new_key
-        
+
         # Load new
         saved_prompt = self.custom_prompts.get(new_key)
         if not saved_prompt:
-            # Fallback to defaults if no user prompt saved
             default_text = self.DEFAULT_PROMPTS.get(new_key)
             if not default_text:
-                # Generate a generic prompt with CRITICAL_RULES if key is missing
-                default_text = f"Refine the provided transcript according to the {tone} tone and {character} persona.\n\n{self.CRITICAL_RULES}"
+                default_text = f"Refine the provided transcript according to the {tone} tone and {char} persona.\n\n{self.CRITICAL_RULES}"
             saved_prompt = default_text
-            
+
         self.prompt_editor.setPlainText(saved_prompt)
         self.update_prompt_count()
+
 
     def update_prompt_count(self):
         text = self.prompt_editor.toPlainText()
@@ -1195,21 +1383,24 @@ CRITICAL RULES:
         old_asr = self.prefs.get("whisper_model", "")
         old_llm = self.prefs.get("current_refiner", "")
 
-        # Update main prefs
-        self.prefs["character"] = self.char_combo.currentText()
-        self.prefs["tone"] = self.tone_combo.currentText()
+        # 2. Update main prefs from UI
+        self.prefs["character"] = self.char_group.currentText()
+        self.prefs["tone"] = self.tone_group.currentText()
         self.prefs["whisper_model"] = self.asr_combo.currentText()
         self.prefs["current_refiner"] = self.llm_combo.currentText()
-        self.prefs["sound_enabled"] = self.check_sound.isChecked()
-        self.prefs["auto_stop_enabled"] = True 
+        # Sound is always enabled in accessibility version
+        self.prefs["sound_enabled"] = True
+        self.prefs["readback_enabled"] = self.check_readback.isChecked()
+        self.prefs["auto_stop_enabled"] = True
         self.prefs["hotkey"] = self.hk_val.text().lower()
+
         # Capture current prompt edits before saving
-        char = self.char_combo.currentText()
-        tone = self.tone_combo.currentText()
+        char = self.char_group.currentText()
+        tone = self.tone_group.currentText()
         self.custom_prompts[f"{char}|{tone}"] = self.prompt_editor.toPlainText().strip()
-        
+
         self.prefs["custom_prompts"] = self.custom_prompts
-        
+
         # 3. Update Technical Config
         new_asr = self.asr_combo.currentText()
         new_llm = self.llm_combo.currentText()
@@ -1224,6 +1415,7 @@ CRITICAL RULES:
                 self.tech_config["grammar_repo"] = m.get("repo_id", "")
                 self.tech_config["grammar_file"] = m.get("file_name", "")
                 break
+
         
         try:
             self.prefs["vram_timeout"] = max(5, self.vram_spin.value())
@@ -1406,35 +1598,60 @@ CRITICAL RULES:
             item = self.dict_list_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        
+
         for word in self.prefs.get("custom_dictionary", []):
             item_frame = QFrame()
-            item_frame.setStyleSheet("background-color: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 6px; padding: 5px;")
+            item_frame.setStyleSheet(
+                "background-color: rgba(255, 255, 255, 0.05); "
+                "border: 1px solid rgba(255, 255, 255, 0.18); "
+                "border-radius: 8px;"
+            )
+            item_frame.setMinimumHeight(52)
             item_layout = QHBoxLayout(item_frame)
-            item_layout.setContentsMargins(10, 5, 10, 5)
-            
+            item_layout.setContentsMargins(16, 8, 12, 8)
+
             lbl = QLabel(word)
-            lbl.setStyleSheet("color: #dddddd; font-size: 13px; border: none;")
-            
+            lbl.setStyleSheet("color: #f0f0f0; font-size: 15px; border: none;")
+            lbl.setAccessibleName(f"Dictionary word: {word}")
+
             # Elide text if too long
             fm = lbl.fontMetrics()
-            elided_text = fm.elidedText(word, Qt.ElideRight, 280) # Approx width
+            elided_text = fm.elidedText(word, Qt.ElideRight, 300)
             lbl.setText(elided_text)
             if elided_text != word:
                 lbl.setToolTip(word)
-            btn_del = QPushButton("×")
-            btn_del.setFixedSize(24, 24)
+
+            btn_del = QPushButton("✕")
+            btn_del.setMinimumSize(36, 36)
             btn_del.setCursor(Qt.PointingHandCursor)
-            btn_del.setStyleSheet("color: #ff5555; background: transparent; font-size: 18px; border: none;")
+            btn_del.setFocusPolicy(Qt.TabFocus)
+            btn_del.setAccessibleName(f"Remove {word}")
+            btn_del.setAccessibleDescription(f"Remove the word {word} from the custom dictionary")
+            btn_del.setStyleSheet("""
+                QPushButton {
+                    color: #ff6b6b;
+                    background: transparent;
+                    font-size: 18px;
+                    border: none;
+                    border-radius: 6px;
+                }
+                QPushButton:hover {
+                    background: rgba(255, 80, 80, 0.15);
+                }
+                QPushButton:focus {
+                    border: 2px solid #ff6b6b;
+                }
+            """)
             btn_del.clicked.connect(lambda ch=None, w=word: self.remove_dict_word(w))
-            
+
             item_layout.addWidget(lbl)
             item_layout.addStretch()
             item_layout.addWidget(btn_del)
             self.dict_list_layout.addWidget(item_frame)
-        
+
         # Spacer to keep items at top
         self.dict_list_layout.addStretch()
+
 
     def toggle_startup(self):
         if sys.platform != 'win32': return
@@ -1564,22 +1781,16 @@ CRITICAL RULES:
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = SettingsGUI()
-    # Apply modern font
-    font = QFont("Inter", 10)
-    if font.exactMatch():
-        app.setFont(font)
-    else:
-        app.setFont(QFont("Segoe UI", 10))
-    
-    # Load initial values now happens inside init_ui -> load_initial_state
-    # window.load_initial_state() # Called internally
-    
-    # window.show() has all values ready from __init__
-    
-    # Initial prompt load
+    # Accessibility-first font stack. Atkinson Hyperlegible is designed for low-vision users.
+    font = QFont("Atkinson Hyperlegible", 11)
+    if not font.exactMatch():
+        font = QFont("Verdana", 11)
+    app.setFont(font)
+
+    # Initial prompt and dict load
     window.on_prompt_change()
     window.refresh_dict_list()
-    
+
     window.show()
     apply_mica_or_acrylic(window, acrylic=True)
     sys.exit(app.exec())

@@ -816,6 +816,8 @@ class VoiceInputApp:
             self.tone = prefs.get("tone", "Natural")
             self.custom_prompts = prefs.get("custom_prompts", {})
             self.current_refiner = prefs.get("current_refiner", "Llama 3.2 3B Instruct")
+            self.readback_enabled = prefs.get("readback_enabled", False)
+
             
             # Library Loading (Prefer User Prefs > Config > Default)
             self.asr_library = prefs.get("asr_library", config.get("asr_library", [
@@ -1359,15 +1361,33 @@ class VoiceInputApp:
             
             try:
                 self.paste_text(final_text)
+                # Read back the transcript aloud if the user has enabled it
+                if getattr(self, 'readback_enabled', False):
+                    threading.Thread(target=self.read_back, args=(final_text,), daemon=True).start()
             except Exception as e:
                 log_print(f"Typing Error: {e}")
                 self.sound_manager.play_error()
+
                 
         except Exception as e:
             log_print(f"ASR Error: {e}")
             self.sound_manager.play_error()
         finally:
             self.update_status("READY")
+
+    def read_back(self, text):
+        """Speak the transcript aloud via TTS (Windows SAPI / pyttsx3).
+        Runs in a daemon thread — will not block the main processing loop."""
+        try:
+            import pyttsx3
+            engine = pyttsx3.init()
+            # Slightly slower rate for clarity (default ~200 wpm)
+            engine.setProperty('rate', 160)
+            engine.say(text)
+            engine.runAndWait()
+            engine.stop()
+        except Exception as e:
+            log_print(f"[ReadBack] TTS error: {e}")
 
     def paste_text(self, text):
         try:

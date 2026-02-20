@@ -908,18 +908,21 @@ CRITICAL RULES:
         
         # Labels for dynamic info
         self.asr_info = QLabel("")
-        self.asr_info.setStyleSheet("color: #aaaaaa; font-size: 13px; margin-top: 2px; border: none; background: transparent;")
+        self.asr_info.setStyleSheet("color: #aaaaaa; font-size: 13px; margin-top: 2px; margin-bottom: 4px; border: none; background: transparent;")
         self.asr_info.setWordWrap(True)
         self.asr_info.setAccessibleName("Voice-to-text model description")
         self.llm_info = QLabel("")
-        self.llm_info.setStyleSheet("color: #aaaaaa; font-size: 13px; margin-top: 2px; border: none; background: transparent;")
+        self.llm_info.setStyleSheet("color: #aaaaaa; font-size: 13px; margin-top: 2px; margin-bottom: 4px; border: none; background: transparent;")
         self.llm_info.setWordWrap(True)
         self.llm_info.setAccessibleName("Refiner model description")
 
         # Add info labels to group layout
         ai_layout = ai_group.layout()
-        ai_layout.insertWidget(2, self.asr_info)
-        ai_layout.insertWidget(5, self.llm_info)
+        # insertWidget indices: 
+        # 0: Title, 1: ASR Label, 2: ASR Combo -> Insert ASR Info at 3
+        # 4: LLM Label, 5: LLM Combo -> Insert LLM Info at 6
+        ai_layout.insertWidget(3, self.asr_info)
+        ai_layout.insertWidget(6, self.llm_info)
 
         layout.addWidget(ai_group)
 
@@ -986,18 +989,18 @@ CRITICAL RULES:
             }
         """)
         vbox = QVBoxLayout(group)
-        vbox.setContentsMargins(20, 18, 20, 18)
-        vbox.setSpacing(8)
+        vbox.setContentsMargins(22, 20, 22, 20)
+        vbox.setSpacing(12)
 
         header = QLabel(title)
-        header.setStyleSheet("font-weight: 800; color: rgba(255, 255, 255, 0.65); border: none; font-size: 13px; letter-spacing: 1.5px;")
+        header.setStyleSheet("font-weight: 800; color: rgba(255, 255, 255, 0.65); border: none; font-size: 13px; letter-spacing: 1.5px; margin-bottom: 6px;")
         header.setAccessibleName(f"{title} section")
         vbox.addWidget(header)
 
         for label_text, widget in fields:
             if label_text:
                 lbl = QLabel(label_text)
-                lbl.setStyleSheet("color: #aaaaaa; border: none; font-size: 13px; font-weight: 600;")
+                lbl.setStyleSheet("color: #aaaaaa; border: none; font-size: 13px; font-weight: 600; margin-top: 4px;")
                 lbl.setAccessibleName(f"{label_text} label")
                 # Also set the widget's accessible name so screen readers link them
                 if hasattr(widget, 'setAccessibleName'):

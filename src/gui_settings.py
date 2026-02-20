@@ -1041,8 +1041,6 @@ CRITICAL RULES:
         self.input_val.setText(status_text)
         self.input_val.setStyleSheet(f"font-size: 14px; font-weight: 600; color: {status_color}; border: none;")
 
-        layout.addStretch()
-
     def init_dict_tab(self):
         layout = QVBoxLayout(self.tab_dict)
         layout.setSpacing(20)

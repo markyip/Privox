@@ -711,6 +711,8 @@ CRITICAL RULES:
             else:
                 print(f"DEBUG: Saved Refiner '{current_llm}' not found in library. Defaulting.")
         
+        # Initial ASR Config
+        current_asr = self.prefs.get("whisper_model", self.config.get("whisper_model"))
         if current_asr:
             idx = self.asr_combo.findText(current_asr)
             if idx >= 0:

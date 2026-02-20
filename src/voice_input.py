@@ -205,7 +205,6 @@ if sys.platform == "win32":
 SAMPLE_RATE = 16000
 BLOCK_SIZE = 512 
 VAD_THRESHOLD = 0.5 
-SILENCE_DURATION_MS = 2000
 MIN_SPEECH_DURATION_MS = 250
 SPEECH_PAD_MS = 500
 
@@ -532,7 +531,6 @@ class VoiceInputApp:
         self.tone = "Natural"
         self.dictation_prompt = None
         self.command_prompt = None
-        self.load_config()
         
         self.sound_manager = SoundManager(self.sound_enabled)
         
@@ -578,6 +576,9 @@ class VoiceInputApp:
         self.target_key = "f8"
         self.active_mods = set()
         self.settings_process = None
+        
+        # Load Config (FINAL STEP of init to prevent overwriting by defaults)
+        self.load_config()
         
         # Set initial state to show loading spinner
         self.update_status("INITIALIZING")

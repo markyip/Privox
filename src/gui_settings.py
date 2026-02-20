@@ -693,7 +693,7 @@ CRITICAL RULES:
         self.vram_spin.setText(str(self.config.get("vram_timeout", 60)))
         
         # Auto-stop conversion display (ms to s)
-        stop_ms = self.config.get("silence_timeout_ms", 2000)
+        stop_ms = self.config.get("silence_timeout_ms", 10000)
         self.stop_spin.setText(str(int(stop_ms/1000)))
         self.hk_val.setText(self.config.get("hotkey", "F8").upper())
         

@@ -262,13 +262,8 @@ class InstallerGUI(QMainWindow):
         self.btn_cancel.clicked.connect(self.close)
         self.btn_cancel.setCursor(Qt.PointingHandCursor)
         
-        self.btn_next = QPushButton("INSTALL" if self.mode == "install" else "UNINSTALL")
-        self.btn_next.setObjectName("btn_next")
-        self.btn_next.setFixedSize(140, 44) # Slightly wider for "INSTALLING..." text
-        self.btn_next.setCursor(Qt.PointingHandCursor)
-        # Direct style application to bypass QSS hierarchy issues
         self.btn_next.setStyleSheet("QPushButton#btn_next { background-color: #ffffff; color: #000000; border-radius: 6px; font-weight: 900; }")
-        self.btn_next.clicked.connect(self.start_install if self.mode == "install" else self.start_uninstall)
+        self.btn_next.clicked.connect(self.start_install)
         
         self.btn_cancel.clicked.disconnect()
         self.btn_cancel.clicked.connect(self.on_cancel_clicked)
@@ -541,15 +536,10 @@ class InstallerGUI(QMainWindow):
         self.thread.quit()
         if success:
             self.stack.setCurrentIndex(2)
-            if self.mode == "uninstall":
-                self.btn_next.setText("Close")
-                self.btn_next.clicked.disconnect()
-                self.btn_next.clicked.connect(self.close)
-            else:
-                self.btn_next.setText("Launch")
-                self.btn_next.setEnabled(True)
-                self.btn_next.clicked.disconnect()
-                self.btn_next.clicked.connect(self.launch_app)
+            self.btn_next.setText("Launch")
+            self.btn_next.setEnabled(True)
+            self.btn_next.clicked.disconnect()
+            self.btn_next.clicked.connect(self.launch_app)
             self.btn_cancel.hide()
         else:
             if hasattr(self, 'worker') and self.worker.cancelled:
@@ -566,131 +556,6 @@ class InstallerGUI(QMainWindow):
         if os.path.exists(target_exe):
             subprocess.Popen([target_exe, "--run"])
         self.close()
-
-    def start_uninstall(self):
-        self.stack.setCurrentIndex(1)
-        self.btn_next.setEnabled(False)
-        self.btn_next.setText("REMOVING...")
-        self.btn_next.setCursor(Qt.ArrowCursor)
-        self.btn_cancel.setEnabled(False)
-        
-        target_dir = self.path_edit.text()
-        
-        def run_uninstall():
-            try:
-                self.worker_uninstall(target_dir)
-                self.on_finished(True)
-            except Exception as e:
-                self.append_log(f"Error: {e}")
-                self.on_finished(False)
-                
-        threading.Thread(target=run_uninstall, daemon=True).start()
-
-    def worker_uninstall(self, target_dir):
-        # Debug logging to file
-        try:
-            with open(os.path.join(os.environ.get("TEMP", "."), "privox_uninstall_debug.txt"), "a") as f:
-                f.write(f"Starting Uninstall. Target: {target_dir}, PID: {os.getpid()}\n")
-        except: pass
-
-        # 1. Kill Processes (Exclude Self)
-        self.append_log("Terminating processes...")
-        try:
-            current_pid = os.getpid()
-            # Kill other running Privox instances but not this one
-            proc = subprocess.run(
-                ["taskkill", "/F", "/IM", "Privox.exe", "/FI", f"PID ne {current_pid}", "/T"], 
-                creationflags=subprocess.CREATE_NO_WINDOW, 
-                capture_output=True,
-                text=True
-            )
-            self.append_log(f"Taskkill: Code={proc.returncode}, Out={proc.stdout.strip()}, Err={proc.stderr.strip()}")
-            time.sleep(1.0)
-        except Exception as e:
-            self.append_log(f"Taskkill error: {e}")
-        self.update_progress(20)
-
-        # 2. Cleanup Registry
-        self.append_log("Cleaning up registry...")
-        try:
-            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Privox")
-        except: pass
-        self.update_progress(40)
-
-        # 3. Remove Shortcut
-        self.append_log("Removing shortcuts...")
-        try:
-            start_menu = os.path.join(os.environ['APPDATA'], 'Microsoft', 'Windows', 'Start Menu', 'Programs')
-            ln_path = os.path.join(start_menu, "Privox.lnk")
-            if os.path.exists(ln_path): os.remove(ln_path)
-        except: pass
-        self.update_progress(60)
-
-        # 4. Delete Files (Delayed)
-        self.append_log("Wiping application files...")
-        temp_dir = os.environ.get('TEMP', os.path.expanduser("~"))
-        
-        # Safety: Ensure temp_dir is NOT the target_dir (prevent self-locking)
-        if os.path.abspath(temp_dir) == os.path.abspath(target_dir):
-            temp_dir = os.path.join(os.environ.get('SystemRoot', 'C:\\Windows'), 'Temp')
-            
-        # Robust PowerShell script for cleanup (More reliable than batch)
-        ps_script = os.path.join(temp_dir, f"cleanup_privox_{os.getpid()}.ps1")
-        log_file = os.path.join(temp_dir, f"privox_cleanup_{os.getpid()}.log")
-        
-        with open(ps_script, "w") as f:
-            f.write(f"$ErrorActionPreference = 'SilentlyContinue'\n")
-            f.write(f"$log = '{log_file}'\n")
-            f.write(f"Add-Content $log 'Starting PowerShell Cleanup for PID {os.getpid()}'\n")
-            
-            # Phase 1: Wait for PID
-            f.write(f"$target_pid = {os.getpid()}\n")
-            f.write("count = 0\n")
-            f.write("while ((Get-Process -Id $target_pid -ErrorAction SilentlyContinue) -and ($count -lt 30)) {\n")
-            f.write("    Start-Sleep -Seconds 1\n")
-            f.write("    $count++\n")
-            f.write("}\n")
-            
-            # Phase 2: Force Kill specific Privox instances just in case
-            f.write("Get-Process -Name 'Privox' -ErrorAction SilentlyContinue | Stop-Process -Force\n")
-            f.write("Start-Sleep -Seconds 2\n")
-
-            # Phase 3: Retry Delete Loop (Rename Strategy)
-            f.write(f"$target_dir = '{target_dir}'\n")
-            f.write(f"$trash_dir = '{target_dir}_TRASH'\n")
-            
-            # Try to rename first (atomic unlock)
-            f.write("if (Test-Path $target_dir) {\n")
-            f.write("    Rename-Item -LiteralPath $target_dir -NewName $trash_dir -ErrorAction SilentlyContinue\n")
-            f.write("}\n")
-            
-            f.write(f"$del_target = if (Test-Path $trash_dir) {{ $trash_dir }} else {{ $target_dir }}\n")
-            
-            f.write("for ($i=1; $i -le 10; $i++) {\n")
-            f.write("    if (Test-Path $del_target) {\n")
-            f.write("        Add-Content $log \"Attempt $i to delete $del_target\"\n")
-            f.write("        Remove-Item -LiteralPath $del_target -Recurse -Force -ErrorAction SilentlyContinue\n")
-            f.write("        if (-not (Test-Path $del_target)) {\n")
-            f.write("            Add-Content $log 'Success'\n")
-            f.write("            break\n")
-            f.write("        }\n")
-            f.write("        Start-Sleep -Seconds 2\n")
-            f.write("    } else { break }\n")
-            f.write("}\n")
-            
-            # Self-delete (schedule)
-            f.write(f"Remove-Item '{ps_script}' -Force\n")
-
-        # Execute PowerShell hidden
-        # Execute PowerShell hidden
-        subprocess.Popen(
-            ["powershell", "-ExecutionPolicy", "Bypass", "-File", ps_script],
-            cwd=temp_dir,
-            creationflags=subprocess.CREATE_NO_WINDOW, # No window
-            close_fds=True
-        )
-        self.update_progress(100)
-        self.append_log("Uninstall complete.")
 
 # --- Helper Functions (Migrated from legacy bootstrap.py) ---
 
@@ -745,7 +610,7 @@ def install_app_files(target_dir, log_cb):
             shutil.copy2(current_exe, target_exe)
         
         # Copy Configs
-        for f in ["config.json", "pixi.toml", "pixi.lock"]:
+        for f in ["config.json", "pixi.toml", "pixi.lock", "uninstall.bat"]:
             src = os.path.join(EXE_DIR, f)
             if os.path.exists(src):
                 shutil.copy2(src, os.path.join(target_dir, f))
@@ -827,12 +692,14 @@ def register_uninstaller(install_dir, exe_path):
         icon_path = os.path.join(install_dir, "assets", "icon.ico")
         install_date = time.strftime("%Y%m%d")
         
+        uninst_path = os.path.join(install_dir, "uninstall.bat")
+        
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path) as key:
             winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, "Privox")
             winreg.SetValueEx(key, "DisplayIcon", 0, winreg.REG_SZ, icon_path)
             winreg.SetValueEx(key, "DisplayVersion", 0, winreg.REG_SZ, APP_VERSION)
-            winreg.SetValueEx(key, "UninstallString", 0, winreg.REG_SZ, f'"{exe_path}" --uninstall')
-            winreg.SetValueEx(key, "QuietUninstallString", 0, winreg.REG_SZ, f'"{exe_path}" --uninstall --quiet')
+            winreg.SetValueEx(key, "UninstallString", 0, winreg.REG_SZ, f'"{uninst_path}"')
+            winreg.SetValueEx(key, "QuietUninstallString", 0, winreg.REG_SZ, f'"{uninst_path}" /S')
             winreg.SetValueEx(key, "InstallLocation", 0, winreg.REG_SZ, install_dir)
             winreg.SetValueEx(key, "Publisher", 0, winreg.REG_SZ, "Privox Team")
             winreg.SetValueEx(key, "InstallDate", 0, winreg.REG_SZ, install_date)

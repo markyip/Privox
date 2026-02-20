@@ -1021,7 +1021,7 @@ CRITICAL RULES:
 
         self.input_val = QLabel(status_text)
         self.input_val.setStyleSheet(f"font-size: 14px; font-weight: 600; color: {status_color}; border: none;")
-        self.input_val.setWordWrap(True)
+        self.input_val.setWordWrap(False)
         
         input_info_layout = QVBoxLayout()
         input_info_layout.setSpacing(4)

@@ -25,10 +25,12 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QPushButton, QLabel, QFrame, QStackedWidget, QLineEdit, 
     QScrollArea, QGraphicsDropShadowEffect, QSizePolicy, QPlainTextEdit,
-    QGridLayout, QDialog, QComboBox, QCheckBox, QLayout, QSpacerItem
+    QGridLayout, QDialog, QComboBox, QCheckBox, QLayout, QSpacerItem,
+    QMessageBox, QProgressBar
 )
 import ctypes
 import sounddevice as sd
+import subprocess
 
 # --- DWM Helpers for Glassmorphism ---
 def apply_mica_or_acrylic(window, acrylic=True):
@@ -36,10 +38,11 @@ def apply_mica_or_acrylic(window, acrylic=True):
     try:
         hwnd = window.effectiveWinId().value()
         # DWMWA_SYSTEMBACKDROP_TYPE: 1=None, 2=Mica, 3=Acrylic (Tabbed), 4=MicaAlt
-        backdrop_type = ctypes.c_int(3 if acrylic else 2)
-        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 38, ctypes.byref(backdrop_type), 4)
+        # REMOVED ACRYLIC TO FIX ROUNDED CORNER ARTIFACTS
+        # backdrop_type = ctypes.c_int(3 if acrylic else 2)
+        # ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 38, ctypes.byref(backdrop_type), 4)
         
-        # Dark Mode Force
+        # Dark Mode Force (Keep this for consistency, though usually for titled windows)
         dark = ctypes.c_int(1)
         ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(dark), 4)
         
@@ -231,6 +234,7 @@ class SettingsGUI(QMainWindow):
         
         self.load_config()
         self.init_ui()
+        self.load_initial_state()
         
         # Set Window Icon
         try:
@@ -252,6 +256,15 @@ class SettingsGUI(QMainWindow):
         return os.path.join(base_path, relative_path)
         
     def load_config(self):
+        # Robust config path resolution
+        if not os.path.exists(self.config_path):
+            # Try finding it relative to this script (Project Root)
+            script_dir = os.path.dirname(os.path.abspath(__file__)) # src/
+            project_root = os.path.dirname(script_dir) # Project/
+            candidate = os.path.join(project_root, "config.json")
+            if os.path.exists(candidate):
+                self.config_path = candidate
+        
         self.config_path = os.path.abspath(self.config_path)
         base_dir = os.path.dirname(self.config_path)
         self.prefs_path = os.path.join(base_dir, ".user_prefs.json")
@@ -275,8 +288,32 @@ class SettingsGUI(QMainWindow):
         if "custom_dictionary" not in self.prefs:
             self.prefs["custom_dictionary"] = self.tech_config.get("custom_dictionary", [])
             
-        self.asr_library = self.tech_config.get("asr_library", [])
-        self.llm_library = self.tech_config.get("llm_library", [])
+        # Library Loading (Prefer User Prefs > Config > Default Fallback)
+        self.asr_library = self.prefs.get("asr_library", self.tech_config.get("asr_library", [
+            {"name": "Distil-Whisper Large v3 (English)", "whisper_repo": "Systran/faster-distil-whisper-large-v3", "description": "Fast & High Quality. Best accuracy with distilled architecture."},
+            {"name": "OpenAI Whisper Small", "whisper_repo": "openai/whisper-small", "description": "Quick processing for low-resource environments."},
+            {"name": "Whisper Large v3 Turbo (Cantonese)", "whisper_repo": "ylpeter/faster-whisper-large-v3-turbo-cantonese-16", "description": "High-speed Cantonese transcription. Reduced hallucination."},
+            {"name": "Whisper Large v2 (Hindi)", "whisper_repo": "collabora/faster-whisper-large-v2-hindi", "description": "Fine-tuned for Hindi. Optimized for mixed-code (Hinglish)."},
+            {"name": "Whisper Large v3 Turbo (Multilingual)", "whisper_repo": "deepdml/faster-whisper-large-v3-turbo-ct2", "description": "State-of-the-art multilingual model. Excellent for Singlish, Arabic, and diverse accents."}
+        ]))
+        
+        self.llm_library = self.prefs.get("llm_library", self.tech_config.get("llm_library", [
+            {
+                "name": "CoEdit Large (T5)", 
+                "repo_id": "nvhf/coedit-large-Q6_K-GGUF", 
+                "file_name": "coedit-large-q6_k.gguf", 
+                "prompt_type": "t5",
+                "description": "Premium English refiner. 60x more efficient than LLMs."
+            },
+            {
+                "name": "Llama 3.2 3B Instruct", 
+                "repo_id": "bartowski/Llama-3.2-3B-Instruct-GGUF", 
+                "file_name": "Llama-3.2-3B-Instruct-Q4_K_M.gguf", 
+                "prompt_type": "llama",
+                "description": "General purpose balanced refiner for all languages."
+            }
+        ]))
+
         self.custom_prompts = self.prefs.get("custom_prompts", self.tech_config.get("custom_prompts", {}))
         
         char = self.prefs.get("character", self.tech_config.get("character", "Writing Assistant"))
@@ -360,7 +397,7 @@ CRITICAL RULES:
         # SWISS STYLE + GLASSMORPHISM THEME
         self.setStyleSheet("""
             QMainWindow {
-                background-color: transparent;
+                background: transparent;
             }
             QWidget {
                 color: #ffffff;
@@ -380,14 +417,15 @@ CRITICAL RULES:
             QPushButton#sidebar_btn {
                 background-color: transparent;
                 border: none;
+                border-left: 4px solid transparent;
                 color: #888888;
                 text-align: left;
-                padding-left: 24px;
+                padding-left: 20px;
                 font-size: 14px;
                 font-weight: 500;
                 height: 50px;
                 outline: none;
-                border-radius: 0px;
+                border-radius: 8px;
             }
             QPushButton#sidebar_btn:hover {
                 background-color: rgba(255, 255, 255, 0.05);
@@ -502,7 +540,6 @@ CRITICAL RULES:
         main_layout = QHBoxLayout()
         main_v_layout.addLayout(main_layout)
         main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
 
         # --- Sidebar ---
         self.sidebar = QWidget()
@@ -561,6 +598,115 @@ CRITICAL RULES:
         main_layout.addWidget(content_container)
 
         self.switch_tab(0)
+
+    def mark_dirty(self):
+        self.is_dirty = True
+        
+    def closeEvent(self, event):
+        if self.is_dirty:
+            dlg = ModernConfirmDialog(self, "Unsaved Changes", "You have unsaved changes.")
+            res = dlg.exec()
+            if res == 1: # Save
+                self.save_config()
+                event.accept()
+            elif res == 2: # Discard
+                event.accept()
+            else: # Cancel
+                event.ignore()
+        else:
+            event.accept()
+
+    def load_initial_state(self):
+        # Load initial values from unified config (honors global defaults if no user prefs)
+        
+        # Helper to set combo text safely
+        def set_combo_safe(combo, text):
+            index = combo.findText(text)
+            if index >= 0:
+                combo.setCurrentIndex(index)
+            else:
+                # Fallback: try case-insensitive or partial match
+                for i in range(combo.count()):
+                    item_text = combo.itemText(i).lower()
+                    if text.lower() in item_text:
+                        combo.setCurrentIndex(i)
+                        return
+                
+                # Special fallback for Refiner: Prefer Llama over CoEdit if default fails
+                if combo == self.llm_combo:
+                    for i in range(combo.count()):
+                        if "llama" in combo.itemText(i).lower():
+                            combo.setCurrentIndex(i)
+                            return
+
+                # Default to index 0 if still not found
+                if combo.count() > 0:
+                    combo.setCurrentIndex(0)
+
+        self.char_combo.blockSignals(True)
+        self.tone_combo.blockSignals(True)
+        self.asr_combo.blockSignals(True)
+        self.llm_combo.blockSignals(True)
+        
+        set_combo_safe(self.char_combo, self.config.get("character", "Writing Assistant"))
+        set_combo_safe(self.tone_combo, self.config.get("tone", "Natural"))
+        set_combo_safe(self.asr_combo, self.config.get("whisper_model", "Distil-Whisper Large v3 (English)"))
+        set_combo_safe(self.llm_combo, self.config.get("current_refiner", "Llama 3.2 3B Instruct"))
+
+        # Initialize descriptions
+        self.update_asr_desc(self.asr_combo.currentText())
+        self.update_llm_desc(self.llm_combo.currentText())
+        
+        # Connect change signals now that initial load is done
+        self.char_combo.blockSignals(False)
+        self.tone_combo.blockSignals(False)
+        self.asr_combo.blockSignals(False)
+        self.llm_combo.blockSignals(False)
+        
+        # Wire up dirty signals
+        self.char_combo.currentIndexChanged.connect(self.mark_dirty)
+        self.tone_combo.currentIndexChanged.connect(self.mark_dirty)
+        self.asr_combo.currentIndexChanged.connect(self.mark_dirty)
+        self.llm_combo.currentIndexChanged.connect(self.mark_dirty)
+        self.check_sound.toggled.connect(self.mark_dirty)
+        self.check_startup.toggled.connect(self.mark_dirty)
+        self.vram_spin.textChanged.connect(self.mark_dirty)
+        self.stop_spin.textChanged.connect(self.mark_dirty)
+        self.prompt_editor.textChanged.connect(self.mark_dirty)
+
+        self.check_sound.setChecked(self.config.get("sound_enabled", True))
+        self.check_startup.setChecked(self.check_startup_status())
+        self.vram_spin.setText(str(self.config.get("vram_timeout", 60)))
+        
+        # Auto-stop conversion display (ms to s)
+        stop_ms = self.config.get("silence_timeout_ms", 2000)
+        self.stop_spin.setText(str(int(stop_ms/1000)))
+        self.hk_val.setText(self.config.get("hotkey", "F8").upper())
+        
+        # Initial prompt load
+        self.on_prompt_change()
+        self.refresh_dict_list()
+        
+        # Initial Refiner Config
+        # Priority: User Prefs > Config > Default
+        current_llm = self.prefs.get("current_refiner", self.config.get("current_refiner"))
+        if current_llm:
+            idx = self.llm_combo.findText(current_llm)
+            if idx >= 0:
+                self.llm_combo.setCurrentIndex(idx)
+            else:
+                print(f"DEBUG: Saved Refiner '{current_llm}' not found in library. Defaulting.")
+        
+        # Initial ASR Config
+        current_asr = self.prefs.get("whisper_model", self.config.get("whisper_model"))
+        if current_asr:
+            idx = self.asr_combo.findText(current_asr)
+            if idx >= 0:
+                self.asr_combo.setCurrentIndex(idx)
+
+        # Reset Dirty Flag after load
+        self.is_dirty = False
+        print(f"DEBUG: Initial Refiner: {current_llm}")
 
     def switch_tab(self, index):
         self.stack.setCurrentIndex(index)
@@ -633,7 +779,7 @@ CRITICAL RULES:
         group = QFrame()
         group.setStyleSheet("""
             QFrame {
-                background-color: rgba(255, 255, 255, 0.03);
+                background-color: transparent;
                 border: 1px solid rgba(255, 255, 255, 0.08);
                 border-radius: 12px;
             }
@@ -719,7 +865,7 @@ CRITICAL RULES:
         hk_frame = QFrame()
         hk_frame.setStyleSheet("""
             QFrame {
-                background-color: rgba(255, 255, 255, 0.03);
+                background-color: transparent;
                 border: 1px solid rgba(255, 255, 255, 0.08);
                 border-radius: 12px;
             }
@@ -795,7 +941,7 @@ CRITICAL RULES:
         input_frame = QFrame()
         input_frame.setStyleSheet("""
             QFrame {
-                background-color: rgba(255, 255, 255, 0.03);
+                background-color: transparent;
                 border: 1px solid rgba(255, 255, 255, 0.08);
                 border-radius: 12px;
             }
@@ -828,9 +974,55 @@ CRITICAL RULES:
         input_info_layout.addWidget(self.input_val)
         
         input_layout.addLayout(input_info_layout)
-        # Optional: Add a Refresh button later?
+        
+        # Refresh Button
+        btn_refresh = QPushButton("↻")
+        btn_refresh.setFixedSize(32, 32)
+        btn_refresh.setCursor(Qt.PointingHandCursor)
+        btn_refresh.setToolTip("Refresh Input Devices")
+        btn_refresh.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(255, 255, 255, 0.1);
+                color: #ffffff;
+                border-radius: 16px;
+                font-size: 18px;
+                font-weight: bold;
+                border: 1px solid rgba(255, 255, 255, 0.2);
+                padding-bottom: 3px;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 255, 255, 0.2);
+                border: 1px solid #ffffff;
+            }
+        """)
+        btn_refresh.clicked.connect(self.refresh_input_source)
+        input_layout.addStretch()
+        input_layout.addWidget(btn_refresh)
         
         layout.addWidget(input_frame)
+        
+    def refresh_input_source(self):
+        try:
+            # Re-query
+            device_info = sd.query_devices(kind='input')
+            device_name = device_info.get('name', 'Unknown Device')
+            api = device_info.get('hostapi', 0)
+            channels = device_info.get('max_input_channels', 0)
+            status_text = f"{device_name} ({channels} Ch)"
+            status_color = "#4CAF50" # Green
+            
+            # Animation effect
+            anim = QPropertyAnimation(self.input_val, b"styleSheet")
+            anim.setDuration(300)
+            self.input_val.setStyleSheet(f"font-size: 14px; font-weight: 600; color: #ffffff; border: none;")
+            QTimer.singleShot(200, lambda: self.input_val.setStyleSheet(f"font-size: 14px; font-weight: 600; color: {status_color}; border: none;"))
+            
+        except Exception:
+            status_text = "No Input Device Found"
+            status_color = "#FF5555" # Red
+            
+        self.input_val.setText(status_text)
+        self.input_val.setStyleSheet(f"font-size: 14px; font-weight: 600; color: {status_color}; border: none;")
 
         layout.addStretch()
 
@@ -925,7 +1117,11 @@ CRITICAL RULES:
         saved_prompt = self.custom_prompts.get(new_key)
         if not saved_prompt:
             # Fallback to defaults if no user prompt saved
-            saved_prompt = self.DEFAULT_PROMPTS.get(new_key, "Enter your instructions here...")
+            default_text = self.DEFAULT_PROMPTS.get(new_key)
+            if not default_text:
+                # Generate a generic prompt with CRITICAL_RULES if key is missing
+                default_text = f"Refine the provided transcript according to the {tone} tone and {character} persona.\n\n{self.CRITICAL_RULES}"
+            saved_prompt = default_text
             
         self.prompt_editor.setPlainText(saved_prompt)
         self.update_prompt_count()
@@ -943,19 +1139,39 @@ CRITICAL RULES:
             self.char_count_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.3); font-size: 11px; margin-top: 4px;")
 
     def save_config(self):
+        # 1. Capture old values from PREFS (the source of truth for UI state), not config
+        old_asr = self.prefs.get("whisper_model", "")
+        old_llm = self.prefs.get("current_refiner", "")
+
         # Update main prefs
         self.prefs["character"] = self.char_combo.currentText()
         self.prefs["tone"] = self.tone_combo.currentText()
         self.prefs["whisper_model"] = self.asr_combo.currentText()
         self.prefs["current_refiner"] = self.llm_combo.currentText()
         self.prefs["sound_enabled"] = self.check_sound.isChecked()
-        self.prefs["auto_stop_enabled"] = True # Force always on
+        self.prefs["auto_stop_enabled"] = True 
+        self.prefs["hotkey"] = self.hk_val.text().lower()
         # Capture current prompt edits before saving
         char = self.char_combo.currentText()
         tone = self.tone_combo.currentText()
         self.custom_prompts[f"{char}|{tone}"] = self.prompt_editor.toPlainText().strip()
         
         self.prefs["custom_prompts"] = self.custom_prompts
+        
+        # 3. Update Technical Config
+        new_asr = self.asr_combo.currentText()
+        new_llm = self.llm_combo.currentText()
+        for m in self.asr_library:
+            if m["name"] == new_asr:
+                self.tech_config["whisper_model"] = m.get("whisper_model", "")
+                self.tech_config["whisper_repo"] = m.get("whisper_repo", "")
+                self.tech_config["asr_backend"] = m.get("backend", "whisper")
+                break
+        for m in self.llm_library:
+            if m["name"] == new_llm:
+                self.tech_config["grammar_repo"] = m.get("repo_id", "")
+                self.tech_config["grammar_file"] = m.get("file_name", "")
+                break
         
         try:
             self.prefs["vram_timeout"] = int(self.vram_spin.text())
@@ -975,11 +1191,17 @@ CRITICAL RULES:
         with open(self.prefs_path, "w", encoding="utf-8") as f:
             json.dump(self.prefs, f, indent=4)
         
+        print(f"DEBUG: Saved Prefs. Hotkey: {self.prefs.get('hotkey')}, Path: {self.prefs_path}")
+        
         # Update tech config if needed
         with open(self.config_path, "w", encoding="utf-8") as f:
             json.dump(self.tech_config, f, indent=4)
             
-        self.close()
+        self.is_dirty = False
+        
+        # 5. Check for changes
+        if (new_asr != old_asr) or (new_llm != old_llm):
+            self.handle_model_change_and_restart()
 
     def start_hotkey_record(self):
         self.btn_rec.setText("RECORDING...")
@@ -1199,6 +1421,180 @@ CRITICAL RULES:
         except: return False
 
 
+    def handle_model_change_and_restart(self):
+        """
+        Updates models via download_models.py and prompts for restart.
+        """
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Updating Models")
+        dlg.setFixedSize(400, 150)
+        dlg.setWindowFlags(Qt.Dialog | Qt.CustomizeWindowHint | Qt.WindowTitleHint) # No close button
+        
+        layout = QVBoxLayout(dlg)
+        lbl = QLabel("Downloading/Verifying model files...\nPlease wait, this may take a few minutes.")
+        lbl.setWordWrap(True)
+        lbl.setStyleSheet("color: white; font-size: 13px;")
+        layout.addWidget(lbl)
+        
+        pbar = QProgressBar()
+        pbar.setRange(0, 0) # Indeterminate
+        pbar.setStyleSheet("""
+            QProgressBar {
+                background-color: rgba(255, 255, 255, 0.1);
+                border: none;
+                border-radius: 4px;
+                height: 6px;
+            }
+            QProgressBar::chunk {
+                background-color: #4CAF50;
+                border-radius: 4px;
+            }
+        """)
+        layout.addWidget(pbar)
+        
+        status_lbl = QLabel("Initializing...")
+        status_lbl.setStyleSheet("color: #888888; font-size: 11px;")
+        layout.addWidget(status_lbl)
+        
+        dlg.setStyleSheet("background-color: #1a1a1a; border: 1px solid #333;")
+        
+        # Worker Thread
+        import threading
+        # Ensure we can import download_models
+        try:
+            import download_models
+        except ImportError:
+            sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+            import download_models
+        
+        def run_update():
+            # Redirect log
+            original_log = download_models.log
+            def ui_log(msg):
+                print(msg) 
+            
+            download_models.log = ui_log
+            try:
+                download_models.main()
+                QTimer.singleShot(500, dlg.accept)
+            except Exception as e:
+                print(f"Update failed: {e}")
+                QTimer.singleShot(500, dlg.reject)
+            finally:
+                download_models.log = original_log
+
+        threading.Thread(target=run_update, daemon=True).start()
+        
+        res = dlg.exec()
+        
+        if res == QDialog.Accepted:
+            # Prompt Restart
+            restart = QMessageBox.question(
+                self, 
+                "Restart Required", 
+                "Models updated successfully.\nPrivox needs to restart to apply changes.\n\nRestart now?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            
+            if restart == QMessageBox.Yes:
+                # Launch new instance
+                if getattr(sys, "frozen", False):
+                    subprocess.Popen([sys.executable])
+                else:
+                    # Dev mode
+                    subprocess.Popen([sys.executable] + sys.argv)
+                
+                QApplication.quit()
+        else:
+            QMessageBox.warning(self, "Update Failed", "Model update failed. Check logs.")
+
+    def handle_model_change_and_restart(self):
+        """
+        Updates models via download_models.py and prompts for restart.
+        """
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Updating Models")
+        dlg.setFixedSize(400, 150)
+        dlg.setWindowFlags(Qt.Dialog | Qt.CustomizeWindowHint | Qt.WindowTitleHint) # No close button
+        
+        layout = QVBoxLayout(dlg)
+        lbl = QLabel("Downloading/Verifying model files...\nPlease wait, this may take a few minutes.")
+        lbl.setWordWrap(True)
+        lbl.setStyleSheet("color: white; font-size: 13px;")
+        layout.addWidget(lbl)
+        
+        pbar = QProgressBar()
+        pbar.setRange(0, 0) # Indeterminate
+        pbar.setStyleSheet("""
+            QProgressBar {
+                background-color: rgba(255, 255, 255, 0.1);
+                border: none;
+                border-radius: 4px;
+                height: 6px;
+            }
+            QProgressBar::chunk {
+                background-color: #4CAF50;
+                border-radius: 4px;
+            }
+        """)
+        layout.addWidget(pbar)
+        
+        status_lbl = QLabel("Initializing...")
+        status_lbl.setStyleSheet("color: #888888; font-size: 11px;")
+        layout.addWidget(status_lbl)
+        
+        dlg.setStyleSheet("background-color: #1a1a1a; border: 1px solid #333;")
+        
+        # Worker Thread
+        import threading
+        # Ensure we can import download_models
+        try:
+            import download_models
+        except ImportError:
+            sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+            import download_models
+        
+        def run_update():
+            # Redirect log
+            original_log = download_models.log
+            def ui_log(msg):
+                print(msg) 
+            
+            download_models.log = ui_log
+            try:
+                download_models.main()
+                QTimer.singleShot(500, dlg.accept)
+            except Exception as e:
+                print(f"Update failed: {e}")
+                QTimer.singleShot(500, dlg.reject)
+            finally:
+                download_models.log = original_log
+
+        threading.Thread(target=run_update, daemon=True).start()
+        
+        res = dlg.exec()
+        
+        if res == QDialog.Accepted:
+            # Prompt Restart
+            restart = QMessageBox.question(
+                self, 
+                "Restart Required", 
+                "Models updated successfully.\nPrivox needs to restart to apply changes.\n\nRestart now?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            
+            if restart == QMessageBox.Yes:
+                # Launch new instance
+                if getattr(sys, "frozen", False):
+                    subprocess.Popen([sys.executable])
+                else:
+                    # Dev mode
+                    subprocess.Popen([sys.executable] + sys.argv)
+                
+                QApplication.quit()
+        else:
+            QMessageBox.warning(self, "Update Failed", "Model update failed. Check logs.")
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = SettingsGUI()
@@ -1209,11 +1605,8 @@ if __name__ == "__main__":
     else:
         app.setFont(QFont("Segoe UI", 10))
     
-    # Load initial values from unified config (honors global defaults if no user prefs)
-    window.char_combo.setCurrentText(window.config.get("character", "Writing Assistant"))
-    window.tone_combo.setCurrentText(window.config.get("tone", "Natural"))
-    window.asr_combo.setCurrentText(window.config.get("whisper_model", "Distil-Whisper Large v3 (English)"))
-    window.llm_combo.setCurrentText(window.config.get("current_refiner", "Llama 3.2 3B Instruct"))
+    # Load initial values now happens inside init_ui -> load_initial_state
+    # window.load_initial_state() # Called internally
 
     # Initialize descriptions
     window.update_asr_desc(window.asr_combo.currentText())

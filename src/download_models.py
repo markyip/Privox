@@ -62,40 +62,25 @@ def main():
             log("SenseVoiceSmall model present.")
 
     # 0. Install Llama-cpp-python with CUDA support
-    llama_stable = False
+    # Only attempt to fix if import COMPLETELY fails.
+    # We assume if it imports, the user (or previous run) set it up correctly.
+    # Re-installing every time causes hangs/delays.
     try:
         import llama_cpp
-        # Attempt to initialize a dummy Llama instance with n_gpu_layers=1 to check for CUDA backend
-        # Note: We need a small model file for this, or just check the system info string
-        sys_info = llama_cpp.llama_print_system_info()
-        if b"CUDA" in sys_info or "CUDA" in str(sys_info):
-            log("llama-cpp-python is installed with CUDA support.")
-            llama_stable = True
-        else:
-            log("llama-cpp-python is installed but CUDA support is MISSING.")
-            llama_stable = False
+        log(f"llama-cpp-python found (Version: {getattr(llama_cpp, '__version__', 'Unknown')})")
     except ImportError:
-        log("llama-cpp-python missing.")
-        llama_stable = False
-
-    if not llama_stable:
-        log("Repairing llama-cpp-python (Forcing CUDA 12.4 binary wheel)...")
+        log("llama-cpp-python missing. Attempting auto-install (CUDA 12.4)...")
         import subprocess
         try:
             # Environment isolation
             env = os.environ.copy()
             env["PYTHONNOUSERSITE"] = "1"
             
-            # First, try to uninstall any broken/CPU version
-            subprocess.call([sys.executable, "-m", "pip", "uninstall", "-y", "llama-cpp-python"], env=env)
-            
             # Use the "cu124" wheel index for CUDA 12.4
-            # We pin 0.3.4 as it's known to have stable wheels, force binary, and skip deps
             subprocess.check_call([
                 sys.executable, "-m", "pip", "install", 
                 "llama-cpp-python==0.3.4", 
                 "--extra-index-url", "https://abetlen.github.io/llama-cpp-python/whl/cu124",
-                "--force-reinstall",
                 "--no-cache-dir",
                 "--only-binary=:all:",
                 "--no-deps"

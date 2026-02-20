@@ -191,7 +191,17 @@ except Exception as e:
         ctypes.windll.user32.MessageBoxW(0, f"Privox Import Error:\n\n{e}\n\nTraceback:\n{err_stack[:500]}...", "Privox Fatal Error", 0x10)
     sys.exit(1)
 
-# --- Configuration ---
+# --- 2. Programmatic Console Hiding (Fail-safe for Windows) ---
+if sys.platform == "win32":
+    # If launched via python.exe (creating a console), hide it immediately.
+    # This ensures that even if launched manually with python, it goes to background.
+    kernel32 = ctypes.WinDLL('kernel32')
+    user32 = ctypes.WinDLL('user32')
+    hWnd = kernel32.GetConsoleWindow()
+    if hWnd != 0:
+        user32.ShowWindow(hWnd, 0) # 0 = SW_HIDE
+
+# --- 3. Configuration ---
 SAMPLE_RATE = 16000
 BLOCK_SIZE = 512 
 VAD_THRESHOLD = 0.5 
@@ -713,15 +723,19 @@ class VoiceInputApp:
         try:
             prefs_path = os.path.join(BASE_DIR, ".user_prefs.json")
             if os.path.exists(prefs_path):
-                with open(prefs_path, "r", encoding="utf-8") as f:
-                    prefs = json.load(f)
+                # RE-READ to ensure we have latest state (avoid race conditions with GUI)
+                if os.path.exists(prefs_path):
+                    with open(prefs_path, "r", encoding="utf-8") as f:
+                        latest_prefs = json.load(f)
+                else: 
+                    latest_prefs = {}
                 
-                stats = prefs.get("model_usage_stats", {})
+                stats = latest_prefs.get("model_usage_stats", {})
                 stats[model_name] = datetime.now().isoformat()
-                prefs["model_usage_stats"] = stats
+                latest_prefs["model_usage_stats"] = stats
                 
                 with open(prefs_path, "w", encoding="utf-8") as f:
-                    json.dump(prefs, f, indent=4)
+                    json.dump(latest_prefs, f, indent=4)
         except Exception as e:
             log_print(f"Error tracking usage: {e}")
 
@@ -1140,31 +1154,57 @@ class VoiceInputApp:
 
         # 2. Key Normalization
         key_name = ""
-        if isinstance(key, keyboard.Key):
-            key_name = key.name
-        elif hasattr(key, 'char') and key.char:
-            key_name = key.char.lower()
-        elif hasattr(key, 'vk'):
-            # Handle virtual keys (important for some mouse remappings)
-            # VK codes: F1=0x70 ... F12=0x7B, F13=0x7C ... F24=0x87. Space=0x20, Enter=0x0D
-            vk_map = {
-                0x70: "f1", 0x71: "f2", 0x72: "f3", 0x73: "f4",
-                0x74: "f5", 0x75: "f6", 0x76: "f7", 0x77: "f8",
-                0x78: "f9", 0x79: "f10", 0x7A: "f11", 0x7B: "f12",
-                0x7C: "f13", 0x7D: "f14", 0x7E: "f15", 0x7F: "f16",
-                0x80: "f17", 0x81: "f18", 0x82: "f19", 0x83: "f20",
-                0x84: "f21", 0x85: "f22", 0x86: "f23", 0x87: "f24",
-                0x20: "space", 0x0D: "enter", 0x09: "tab", 0x1B: "esc",
-                0x21: "page_up", 0x22: "page_down", 0x23: "end", 0x24: "home",
-                0x2D: "insert", 0x2E: "delete"
-            }
-            key_name = vk_map.get(key.vk, str(key.vk))
+        try:
+            if isinstance(key, keyboard.Key):
+                key_name = key.name
+            elif hasattr(key, 'char') and key.char:
+                key_name = key.char.lower()
+            elif hasattr(key, 'vk'):
+                # Handle virtual keys (important for some mouse remappings)
+                # VK codes: F1=0x70 ... F12=0x7B, F13=0x7C ... F24=0x87. Space=0x20, Enter=0x0D
+                vk_map = {
+                    0x70: "f1", 0x71: "f2", 0x72: "f3", 0x73: "f4",
+                    0x74: "f5", 0x75: "f6", 0x76: "f7", 0x77: "f8",
+                    0x78: "f9", 0x79: "f10", 0x7A: "f11", 0x7B: "f12",
+                    0x7C: "f13", 0x7D: "f14", 0x7E: "f15", 0x7F: "f16",
+                    0x80: "f17", 0x81: "f18", 0x82: "f19", 0x83: "f20",
+                    0x84: "f21", 0x85: "f22", 0x86: "f23", 0x87: "f24",
+                    0x20: "space", 0x0D: "enter", 0x09: "tab", 0x1B: "esc",
+                    0x21: "page_up", 0x22: "page_down", 0x23: "end", 0x24: "home",
+                    0x2D: "insert", 0x2E: "delete"
+                }
+                key_name = vk_map.get(key.vk, str(key.vk))
+            
+        except Exception:
+            pass
 
         # 3. Check Match
         if key_name == self.target_key:
+            # Win32 Robustness: Check for "Stuck" modifiers using ctypes
+            if sys.platform == 'win32' and self.active_mods != self.target_mods:
+                import ctypes
+                # Check physical state of tracked modifiers
+                stuck = []
+                for mod in list(self.active_mods):
+                    vk = 0
+                    if mod == 'ctrl': vk = 0x11
+                    elif mod == 'shift': vk = 0x10
+                    elif mod == 'alt': vk = 0x12
+                    
+                    # GetAsyncKeyState returns MSB set if key is down
+                    if vk and not (ctypes.windll.user32.GetAsyncKeyState(vk) & 0x8000):
+                        stuck.append(mod)
+                
+                if stuck:
+                    log_print(f" [Hotkey Diagnostic] Clearing stuck modifiers: {stuck}")
+                    for mod in stuck:
+                        self.active_mods.remove(mod)
+
             # Check if active modifiers match EXACTLY what is required
             if self.active_mods == self.target_mods:
                 self.toggle_hotkey()
+            else:
+                log_print(f" [Hotkey Ignored] Key '{key_name}' pressed, but modifiers mismatch. Expected: {self.target_mods}, Actual: {self.active_mods}")
 
     def on_release(self, key):
         """Untrack modifiers."""
@@ -1359,6 +1399,21 @@ class VoiceInputApp:
             if self.heavy_models_loaded and not self.is_listening and self.ui_state != "PROCESSING":
                 if (time.time() - self.last_activity_time) > self.vram_timeout:
                     self.unload_heavy_models()
+
+            # Config Polling (Hot-reload)
+            try:
+                prefs_path = os.path.join(BASE_DIR, ".user_prefs.json")
+                if os.path.exists(prefs_path):
+                    mtime = os.path.getmtime(prefs_path)
+                    if not hasattr(self, '_last_prefs_mtime'):
+                         self._last_prefs_mtime = mtime
+                    elif mtime > self._last_prefs_mtime:
+                        log_print("Configuration change detected. Reloading...")
+                        self._last_prefs_mtime = mtime
+                        # Small delay to ensure writer finished
+                        time.sleep(0.1)
+                        self.load_config()
+            except: pass
 
             try:
                 try:

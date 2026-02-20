@@ -67,3 +67,10 @@ IDEAS.md
 
 # Agent
 .agent/
+
+# User Prefs
+.user_prefs.json
+
+# Local scripts
+run_dev.bat
+uninstall.bat

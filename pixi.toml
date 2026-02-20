@@ -8,6 +8,7 @@ platforms = ["win-64"]
 
 [tasks]
 start = "python src/voice_input.py"
+start-windowless = "pythonw src/voice_input.py"
 build = "python build_app.py"
 
 [system-requirements]

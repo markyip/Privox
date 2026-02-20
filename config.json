@@ -1,115 +1,26 @@
 {
-  "asr_backend": "whisper",
-  "hotkey": "f8",
-  "sound_enabled": true,
-  "vram_timeout": 60,
-  "whisper_model": "Distil-Whisper Large v3 (English)",
-  "whisper_repo": "Systran/faster-distil-whisper-large-v3",
-  "grammar_repo": "bartowski/Llama-3.2-3B-Instruct-GGUF",
-  "grammar_file": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
-  "character": "Writing Assistant",
-  "tone": "Natural",
-
-  "current_refiner": "Llama 3.2 3B Instruct",
-  "refiner_profiles": {
-    "English Specialist (CoEdit)": {
-      "repo_id": "nvhf/coedit-large-Q6_K-GGUF",
-      "file_name": "coedit-large-q6_k.gguf",
-      "prompt_type": "t5",
-      "description": "Premium English refiner. 60x more efficient. No chat glitches."
-    },
-    "Multilingual (Qwen 2.5)": {
-      "repo_id": "bartowski/Qwen2.5-3B-Instruct-GGUF",
-      "file_name": "Qwen2.5-3B-Instruct-Q4_K_M.gguf",
-      "prompt_type": "llama",
-      "description": "Best for Chinese/English mix. High instruction obedience."
-    },
-    "Standard (Llama 3.2)": {
-      "repo_id": "bartowski/Llama-3.2-3B-Instruct-GGUF",
-      "file_name": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
-      "prompt_type": "llama",
-      "description": "General purpose balanced refiner."
+    "asr_backend": "whisper",
+    "whisper_repo": "Systran/faster-distil-whisper-large-v3",
+    "grammar_repo": "bartowski/Llama-3.2-3B-Instruct-GGUF",
+    "grammar_file": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+    "refiner_profiles": {
+        "English Specialist (CoEdit)": {
+            "repo_id": "nvhf/coedit-large-Q6_K-GGUF",
+            "file_name": "coedit-large-q6_k.gguf",
+            "prompt_type": "t5",
+            "description": "Premium English refiner. 60x more efficient. No chat glitches."
+        },
+        "Multilingual (Qwen 2.5)": {
+            "repo_id": "bartowski/Qwen2.5-3B-Instruct-GGUF",
+            "file_name": "Qwen2.5-3B-Instruct-Q4_K_M.gguf",
+            "prompt_type": "llama",
+            "description": "Best for Chinese/English mix. High instruction obedience."
+        },
+        "Standard (Llama 3.2)": {
+            "repo_id": "bartowski/Llama-3.2-3B-Instruct-GGUF",
+            "file_name": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+            "prompt_type": "llama",
+            "description": "General purpose balanced refiner."
+        }
     }
-  },
-  "auto_stop_enabled": true,
-  "silence_timeout_ms": 10000,
-  "custom_dictionary": [
-    "Privox",
-    "Github",
-    "CUDA"
-  ],
-  "asr_library": [
-    {
-      "name": "Distil-Whisper Large v3 (English)",
-      "backend": "whisper",
-      "whisper_model": "distil-large-v3",
-      "whisper_repo": "Systran/faster-distil-whisper-large-v3",
-      "description": "Best accuracy. Faster inference with distilled architecture. Optimized for English."
-    },
-    {
-      "name": "Kotoba-Whisper v2.0 (Japanese)",
-      "backend": "whisper",
-      "whisper_model": "kotoba-whisper-v2.0-faster",
-      "whisper_repo": "kotoba-tech/kotoba-whisper-v2.0-faster",
-      "description": "6x faster than Large v3 for Japanese speaker. High accuracy."
-    },
-    {
-      "name": "Whisper Large v3 Turbo (Korean)",
-      "backend": "whisper",
-      "whisper_model": "large-v3-turbo-korean",
-      "whisper_repo": "ghost613/faster-whisper-large-v3-turbo-korean",
-      "description": "Optimized Turbo model for Korean speech recognition."
-    },
-    {
-      "name": "Whisper Large v3 Turbo (Cantonese)",
-      "backend": "whisper",
-      "whisper_model": "large-v3-turbo-cantonese",
-      "whisper_repo": "ylpeter/faster-whisper-large-v3-turbo-cantonese-16",
-      "description": "Best for Cantonese. Reduced hallucination and high speed."
-    },
-    {
-      "name": "Whisper Large v3 (French Distil)",
-      "backend": "whisper",
-      "whisper_model": "large-v3-french-distil",
-      "whisper_repo": "brandenkmurray/faster-whisper-large-v3-french-distil-dec16",
-      "description": "9x faster for French. Distilled large-v3 architecture."
-    },
-    {
-      "name": "Whisper Large v3 Turbo (German)",
-      "backend": "whisper",
-      "whisper_model": "large-v3-turbo-german",
-      "whisper_repo": "TheChola/whisper-large-v3-turbo-german-faster-whisper",
-      "description": "High performance German ASR with CTranslate2 optimization."
-    },
-    {
-      "name": "OpenAI Whisper Small",
-      "backend": "whisper",
-      "whisper_model": "small",
-      "whisper_repo": "openai/whisper-small",
-      "description": "Quick processing with decent accuracy. Good for low-resource environments."
-    }
-  ],
-  "llm_library": [
-    {
-      "name": "CoEdit Large (T5)",
-      "repo_id": "nvhf/coedit-large-Q6_K-GGUF",
-      "file_name": "coedit-large-q6_k.gguf",
-      "prompt_type": "t5",
-      "description": "Premium English specialist refiner (60x more efficient). Optimized for grammar and flow."
-    },
-    {
-      "name": "Qwen 2.5 3B Instruct",
-      "repo_id": "bartowski/Qwen2.5-3B-Instruct-GGUF",
-      "file_name": "Qwen2.5-3B-Instruct-Q4_K_M.gguf",
-      "prompt_type": "llama",
-      "description": "Multilingual powerhouse. Best for Chinese/English mix and high instruction obedience."
-    },
-    {
-      "name": "Llama 3.2 3B Instruct",
-      "repo_id": "bartowski/Llama-3.2-3B-Instruct-GGUF",
-      "file_name": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
-      "prompt_type": "llama",
-      "description": "Standard general-purpose balanced refiner. Excellent all-rounder."
-    }
-  ]
 }

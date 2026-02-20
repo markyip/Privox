@@ -169,7 +169,8 @@ class InstallerGUI(QMainWindow):
         
         self.init_ui()
         self.load_styles()
-        apply_mica_or_acrylic(self, acrylic=True)
+        # Removed apply_mica_or_acrylic to prevent "Square Blur" artifacts on rounded corners.
+        # We now rely solely on setAttribute(Qt.WA_TranslucentBackground) for transparency.
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -183,7 +184,7 @@ class InstallerGUI(QMainWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
-        apply_mica_or_acrylic(self, acrylic=True)
+        # Removed apply_mica_or_acrylic
 
     def init_ui(self):
         self.main_container = QWidget()
@@ -262,6 +263,9 @@ class InstallerGUI(QMainWindow):
 
     def load_styles(self):
         self.setStyleSheet("""
+            QMainWindow {
+                background: transparent;
+            }
             QWidget#main_container { 
                 background-color: rgba(18, 18, 18, 0.92); 
                 border-radius: 12px;
@@ -404,17 +408,26 @@ class InstallerGUI(QMainWindow):
         self.path_edit = QLineEdit()
         default_path = os.path.join(os.environ.get('LOCALAPPDATA', 'C:'), "Privox")
         if self.mode == "uninstall":
-            # If we are in uninstall mode, we should assume we are running from the installed directory
-            # or at least try to find where we are.
+            # In uninstall mode, try to detect where we are running from
+            # If frozen (exe), we are likely in the install dir.
             if getattr(sys, 'frozen', False):
                 default_path = os.path.dirname(sys.executable)
             else:
                 default_path = EXE_DIR
+            
+            # Make Read Only for Uninstaller to prevent user error
+            self.path_edit.setReadOnly(True)
+            self.path_edit.setStyleSheet("color: rgba(255, 255, 255, 0.5); background-color: rgba(0, 0, 0, 0.2); border: 1px solid rgba(255, 255, 255, 0.05);")
+
         self.path_edit.setText(os.path.normpath(default_path))
         
         btn_browse = QPushButton("Browse...")
         btn_browse.setFixedSize(80, 34)
         btn_browse.clicked.connect(self.browse_path)
+        
+        # Hide browse button in uninstall mode
+        if self.mode == "uninstall":
+            btn_browse.setVisible(False)
         
         row.addWidget(self.path_edit)
         row.addWidget(btn_browse)
@@ -498,13 +511,20 @@ class InstallerGUI(QMainWindow):
         self.thread.quit()
         if success:
             self.stack.setCurrentIndex(2)
-            self.btn_next.setText("Launch")
-            self.btn_next.setEnabled(True)
-            self.btn_next.clicked.disconnect()
-            self.btn_next.clicked.connect(self.launch_app)
+            if self.mode == "uninstall":
+                self.btn_next.setText("Close")
+                self.btn_next.clicked.disconnect()
+                self.btn_next.clicked.connect(self.close)
+            else:
+                self.btn_next.setText("Launch")
+                self.btn_next.setEnabled(True)
+                self.btn_next.clicked.disconnect()
+                self.btn_next.clicked.connect(self.launch_app)
             self.btn_cancel.hide()
         else:
             QMessageBox.critical(self, "Error", "Installation failed. Check logs.")
+            self.btn_next.setText("Failed")
+            self.btn_next.setEnabled(False)
             self.btn_cancel.setEnabled(True)
             self.btn_cancel.setText("Close")
 
@@ -534,12 +554,27 @@ class InstallerGUI(QMainWindow):
         threading.Thread(target=run_uninstall, daemon=True).start()
 
     def worker_uninstall(self, target_dir):
-        # 1. Kill Processes
+        # Debug logging to file
+        try:
+            with open(os.path.join(os.environ.get("TEMP", "."), "privox_uninstall_debug.txt"), "a") as f:
+                f.write(f"Starting Uninstall. Target: {target_dir}, PID: {os.getpid()}\n")
+        except: pass
+
+        # 1. Kill Processes (Exclude Self)
         self.append_log("Terminating processes...")
         try:
-            subprocess.run(["taskkill", "/F", "/IM", "Privox.exe", "/T"], creationflags=subprocess.CREATE_NO_WINDOW, capture_output=True)
+            current_pid = os.getpid()
+            # Kill other running Privox instances but not this one
+            proc = subprocess.run(
+                ["taskkill", "/F", "/IM", "Privox.exe", "/FI", f"PID ne {current_pid}", "/T"], 
+                creationflags=subprocess.CREATE_NO_WINDOW, 
+                capture_output=True,
+                text=True
+            )
+            self.append_log(f"Taskkill: Code={proc.returncode}, Out={proc.stdout.strip()}, Err={proc.stderr.strip()}")
             time.sleep(1.0)
-        except: pass
+        except Exception as e:
+            self.append_log(f"Taskkill error: {e}")
         self.update_progress(20)
 
         # 2. Cleanup Registry
@@ -560,19 +595,67 @@ class InstallerGUI(QMainWindow):
 
         # 4. Delete Files (Delayed)
         self.append_log("Wiping application files...")
-        # Since the uninstaller might be the EXE ITSELF, we need a batch file to finish the job
-        temp_dir = os.environ.get('TEMP', '.')
-        cleanup_bat = os.path.join(temp_dir, f"cleanup_privox_{os.getpid()}.bat")
+        temp_dir = os.environ.get('TEMP', os.path.expanduser("~"))
         
-        # We delete everything except for the current running executable if it's inside target_dir
-        # But if we were launched from a temp location (extract), then we can wipe the whole thing
-        with open(cleanup_bat, "w") as f:
-            f.write("@echo off\n")
-            f.write("timeout /t 2 /nobreak > nul\n")
-            f.write(f'rd /s /q "{target_dir}"\n')
-            f.write(f'del "{cleanup_bat}"\n')
+        # Safety: Ensure temp_dir is NOT the target_dir (prevent self-locking)
+        if os.path.abspath(temp_dir) == os.path.abspath(target_dir):
+            temp_dir = os.path.join(os.environ.get('SystemRoot', 'C:\\Windows'), 'Temp')
+            
+        # Robust PowerShell script for cleanup (More reliable than batch)
+        ps_script = os.path.join(temp_dir, f"cleanup_privox_{os.getpid()}.ps1")
+        log_file = os.path.join(temp_dir, f"privox_cleanup_{os.getpid()}.log")
         
-        subprocess.Popen([cleanup_bat], creationflags=subprocess.CREATE_NO_WINDOW)
+        with open(ps_script, "w") as f:
+            f.write(f"$ErrorActionPreference = 'SilentlyContinue'\n")
+            f.write(f"$log = '{log_file}'\n")
+            f.write(f"Add-Content $log 'Starting PowerShell Cleanup for PID {os.getpid()}'\n")
+            
+            # Phase 1: Wait for PID
+            f.write(f"$target_pid = {os.getpid()}\n")
+            f.write("count = 0\n")
+            f.write("while ((Get-Process -Id $target_pid -ErrorAction SilentlyContinue) -and ($count -lt 30)) {\n")
+            f.write("    Start-Sleep -Seconds 1\n")
+            f.write("    $count++\n")
+            f.write("}\n")
+            
+            # Phase 2: Force Kill specific Privox instances just in case
+            f.write("Get-Process -Name 'Privox' -ErrorAction SilentlyContinue | Stop-Process -Force\n")
+            f.write("Start-Sleep -Seconds 2\n")
+
+            # Phase 3: Retry Delete Loop (Rename Strategy)
+            f.write(f"$target_dir = '{target_dir}'\n")
+            f.write(f"$trash_dir = '{target_dir}_TRASH'\n")
+            
+            # Try to rename first (atomic unlock)
+            f.write("if (Test-Path $target_dir) {\n")
+            f.write("    Rename-Item -LiteralPath $target_dir -NewName $trash_dir -ErrorAction SilentlyContinue\n")
+            f.write("}\n")
+            
+            f.write(f"$del_target = if (Test-Path $trash_dir) {{ $trash_dir }} else {{ $target_dir }}\n")
+            
+            f.write("for ($i=1; $i -le 10; $i++) {\n")
+            f.write("    if (Test-Path $del_target) {\n")
+            f.write("        Add-Content $log \"Attempt $i to delete $del_target\"\n")
+            f.write("        Remove-Item -LiteralPath $del_target -Recurse -Force -ErrorAction SilentlyContinue\n")
+            f.write("        if (-not (Test-Path $del_target)) {\n")
+            f.write("            Add-Content $log 'Success'\n")
+            f.write("            break\n")
+            f.write("        }\n")
+            f.write("        Start-Sleep -Seconds 2\n")
+            f.write("    } else { break }\n")
+            f.write("}\n")
+            
+            # Self-delete (schedule)
+            f.write(f"Remove-Item '{ps_script}' -Force\n")
+
+        # Execute PowerShell hidden
+        # Execute PowerShell hidden
+        subprocess.Popen(
+            ["powershell", "-ExecutionPolicy", "Bypass", "-File", ps_script],
+            cwd=temp_dir,
+            creationflags=subprocess.CREATE_NO_WINDOW, # No window
+            close_fds=True
+        )
         self.update_progress(100)
         self.append_log("Uninstall complete.")
 
@@ -647,11 +730,18 @@ def install_app_files(target_dir, log_cb):
                     log_cb(f"Warning syncing {folder}: {e}")
         
         create_shortcut(target_exe, target_dir)
+        
+        # Register in Windows Settings (Add/Remove Programs)
+        log_cb("Registering uninstaller...")
+        register_uninstaller(target_dir, target_exe)
+        
         return True
     except Exception as e:
         log_cb(f"Install error: {e}")
         return False
 
+
+def create_shortcut(target_exe, target_dir):
     try:
         app_name = "Privox"
         icon_path = os.path.join(target_dir, "assets", "icon.ico")
@@ -659,22 +749,21 @@ def install_app_files(target_dir, log_cb):
         # 1. Start Menu Shortcut
         start_menu = os.path.join(os.environ['APPDATA'], 'Microsoft', 'Windows', 'Start Menu', 'Programs')
         if not os.path.exists(start_menu): os.makedirs(start_menu)
-        start_menu_link = os.path.join(start_menu, f"{app_name}.lnk")
-        create_lnk(target_exe, target_dir, icon_path, start_menu_link)
+        create_lnk(target_exe, target_dir, icon_path, os.path.join(start_menu, f"{app_name}.lnk"))
         
         # 2. Startup Folder Shortcut (Auto-Launch)
         startup_folder = os.path.join(os.environ['APPDATA'], 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup')
         if not os.path.exists(startup_folder): os.makedirs(startup_folder)
-        startup_link = os.path.join(startup_folder, f"{app_name}.lnk")
-        create_lnk(target_exe, target_dir, icon_path, startup_link)
+        create_lnk(target_exe, target_dir, icon_path, os.path.join(startup_folder, f"{app_name}.lnk"))
 
     except Exception as e:
         print(f"Shortcut creation failed: {e}")
 
+
 def create_lnk(target_exe, target_dir, icon_path, lnk_path):
     try:
-        # Added --run flag to shortcut TargetPath
-        vbs_script = f'Set oWS = WScript.CreateObject("WScript.Shell")\nsLinkFile = "{lnk_path}"\nSet oLink = oWS.CreateShortcut(sLinkFile)\noLink.TargetPath = "{target_exe} --run"\noLink.WorkingDirectory = "{target_dir}"\noLink.IconLocation = "{icon_path},0"\noLink.Save'
+        # Added --run flag to shortcut Arguments (NOT TargetPath)
+        vbs_script = f'Set oWS = WScript.CreateObject("WScript.Shell")\nsLinkFile = "{lnk_path}"\nSet oLink = oWS.CreateShortcut(sLinkFile)\noLink.TargetPath = "{target_exe}"\noLink.Arguments = "--run"\noLink.WorkingDirectory = "{target_dir}"\noLink.IconLocation = "{icon_path},0"\noLink.Save'
         vbs_file = os.path.join(os.environ['TEMP'], f"mkshortcut_{os.getpid()}_{hash(lnk_path)}.vbs")
         with open(vbs_file, "w") as f: f.write(vbs_script)
         subprocess.call(["cscript", "//nologo", vbs_file], creationflags=subprocess.CREATE_NO_WINDOW)
@@ -733,9 +822,8 @@ def run_app():
     pixi_exe = os.path.join(internal_dir, "pixi", "pixi.exe")
     
     if os.path.exists(pixi_exe):
-        # We use 'pixi run start' as defined in pixi.toml
-        # CREATE_NO_WINDOW for the pixi process itself, but the app (PySide6) will show its own window/tray
-        subprocess.Popen([pixi_exe, "run", "start"], cwd=EXE_DIR, creationflags=subprocess.CREATE_NO_WINDOW)
+        # We use 'pixi run start-windowless' to ensure no terminal window is created
+        subprocess.Popen([pixi_exe, "run", "start-windowless"], cwd=EXE_DIR, creationflags=subprocess.CREATE_NO_WINDOW)
     else:
         # Fallback if somehow Pixi is missing but we're trying to run
         print("Error: Pixi environment not found. Please reinstall.")

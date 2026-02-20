@@ -262,6 +262,10 @@ class InstallerGUI(QMainWindow):
         self.btn_cancel.clicked.connect(self.close)
         self.btn_cancel.setCursor(Qt.PointingHandCursor)
         
+        self.btn_next = QPushButton("INSTALL")
+        self.btn_next.setObjectName("btn_next")
+        self.btn_next.setFixedSize(140, 44)
+        self.btn_next.setCursor(Qt.PointingHandCursor)
         self.btn_next.setStyleSheet("QPushButton#btn_next { background-color: #ffffff; color: #000000; border-radius: 6px; font-weight: 900; }")
         self.btn_next.clicked.connect(self.start_install)
         

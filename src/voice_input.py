@@ -199,6 +199,8 @@ if sys.platform == "win32":
     user32 = ctypes.WinDLL('user32')
     hWnd = kernel32.GetConsoleWindow()
     if hWnd != 0:
+        # Set title BEFORE hiding to ensure uninstaller can find/kill by title
+        kernel32.SetConsoleTitleW("Privox Background Engine")
         user32.ShowWindow(hWnd, 0) # 0 = SW_HIDE
 
 # --- 3. Configuration ---

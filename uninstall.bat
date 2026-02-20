@@ -28,8 +28,13 @@ set "TARGET_DIR=%~2"
 timeout /t 2 /nobreak >nul
 
 :: 3. Kill Processes (Force + Tree)
+:: Kill by explicit title (Set in voice_input.py)
+taskkill /F /T /FI "WINDOWTITLE eq Privox*" >nul 2>&1
+:: Kill by possible image names (Dev and Frozen)
 taskkill /F /T /IM Privox.exe >nul 2>&1
 taskkill /F /T /IM python.exe /FI "WINDOWTITLE eq Privox*" >nul 2>&1
+:: Fallback: PowerShell regex kill for any process spanning 'Privox' in title/arguments
+powershell -Command "Get-Process | Where-Object { $_.MainWindowTitle -like '*Privox*' -or $_.ProcessName -eq 'Privox' } | Stop-Process -Force" >nul 2>&1
 
 :: 4. Remove Registry Keys
 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "Privox" /f >nul 2>&1

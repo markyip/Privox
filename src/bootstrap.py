@@ -55,9 +55,14 @@ class InstallWorker(QObject):
     def __init__(self, target_dir):
         super().__init__()
         self.target_dir = os.path.normpath(target_dir)
+        self.cancelled = False
+
+    def stop(self):
+        self.cancelled = True
 
     def run(self):
         try:
+            if self.cancelled: return
             target_dir = self.target_dir
             target_exe = os.path.join(target_dir, "Privox.exe")
             
@@ -66,36 +71,42 @@ class InstallWorker(QObject):
 
             # 1. Install Files
             if not install_app_files(target_dir, self.log_signal.emit):
-                self.finished.emit(False)
+                if not self.cancelled:
+                    self.finished.emit(False)
                 return
             
+            if self.cancelled: return
             self.progress_signal.emit(30)
             
             # 2. Pixi Setup
             pixi_exe = ensure_pixi(target_dir, self.log_signal.emit)
-            if not pixi_exe:
-                self.finished.emit(False)
+            if not pixi_exe or self.cancelled:
+                if not self.cancelled:
+                    self.finished.emit(False)
                 return
                 
             self.progress_signal.emit(40)
             self.log_signal.emit("Setting up environment (Pixi)...")
             
             success = run_pixi_command(self, [pixi_exe, "install", "-v"], cwd=target_dir)
-            if not success:
-                self.finished.emit(False)
+            if not success or self.cancelled:
+                if not self.cancelled:
+                    self.finished.emit(False)
                 return
                 
+            if self.cancelled: return
             self.progress_signal.emit(80)
 
             # 3. Models
             self.log_signal.emit("Checking AI Models...")
             run_pixi_command(self, [pixi_exe, "run", "python", "src/download_models.py"], cwd=target_dir)
             
+            if self.cancelled: return
             self.progress_signal.emit(95)
             register_uninstaller(target_dir, target_exe)
             
             self.progress_signal.emit(100)
-            self.finished.emit(True)
+            self.finished.emit(not self.cancelled)
             
         except Exception as e:
             self.log_signal.emit(f"Fatal Error: {e}")
@@ -110,11 +121,15 @@ def run_pixi_command(worker, cmd, cwd):
             creationflags=subprocess.CREATE_NO_WINDOW
         )
         for line in process.stdout:
+            if worker.cancelled:
+                process.terminate()
+                worker.log_signal.emit("Installation cancelled by user.")
+                return False
             msg = line.strip()
             if msg:
                 worker.log_signal.emit(msg)
         process.wait()
-        return process.returncode == 0
+        return process.returncode == 0 and not worker.cancelled
     except Exception as e:
         worker.log_signal.emit(f"Command Error: {e}")
         return False
@@ -254,6 +269,9 @@ class InstallerGUI(QMainWindow):
         # Direct style application to bypass QSS hierarchy issues
         self.btn_next.setStyleSheet("QPushButton#btn_next { background-color: #ffffff; color: #000000; border-radius: 6px; font-weight: 900; }")
         self.btn_next.clicked.connect(self.start_install if self.mode == "install" else self.start_uninstall)
+        
+        self.btn_cancel.clicked.disconnect()
+        self.btn_cancel.clicked.connect(self.on_cancel_clicked)
         
         bottom_layout.addStretch()
         bottom_layout.addWidget(self.btn_cancel)
@@ -487,7 +505,9 @@ class InstallerGUI(QMainWindow):
         self.btn_next.setEnabled(False)
         self.btn_next.setText("INSTALLING...")
         self.btn_next.setCursor(Qt.ArrowCursor)
-        self.btn_cancel.setEnabled(False)
+        # Keep cancel enabled to allow user to stop
+        self.btn_cancel.setEnabled(True)
+        self.btn_cancel.setText("CANCEL")
         
         self.thread = QThread()
         self.worker = InstallWorker(self.path_edit.text())
@@ -499,6 +519,16 @@ class InstallerGUI(QMainWindow):
         self.worker.progress_signal.connect(self.update_progress)
         
         self.thread.start()
+
+    def on_cancel_clicked(self):
+        if hasattr(self, 'worker') and self.worker and self.thread.isRunning():
+            res = QMessageBox.question(self, "Cancel Installation", "Are you sure you want to stop the installation?", QMessageBox.Yes | QMessageBox.No)
+            if res == QMessageBox.Yes:
+                self.worker.stop()
+                self.btn_cancel.setEnabled(False)
+                self.btn_cancel.setText("STOPPING...")
+        else:
+            self.close()
 
     def update_progress(self, val):
         self.progress_bar.setValue(val)
@@ -812,7 +842,14 @@ def register_uninstaller(install_dir, exe_path):
             winreg.SetValueEx(key, "EstimatedSize", 0, winreg.REG_DWORD, 250000) # KB
             
         # Broadcast environment change to refresh Shell/Settings
-        ctypes.windll.user32.SendMessageW(0xFFFF, 0x001A, 0, "Environment")
+        # HWND_BROADCAST = 0xFFFF, WM_SETTINGCHANGE = 0x001A
+        # SMTO_ABORTIFHUNG = 0x0002
+        # Use SendMessageTimeoutW to avoid hanging on non-responsive applications
+        result = ctypes.wintypes.DWORD()
+        ctypes.windll.user32.SendMessageTimeoutW(
+            0xFFFF, 0x001A, 0, "Environment", 
+            0x0002, 1000, ctypes.byref(result)
+        )
     except Exception as e:
         print(f"Failed to register uninstaller: {e}")
 

@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
     QPushButton, QLabel, QFrame, QStackedWidget, QLineEdit, 
     QScrollArea, QGraphicsDropShadowEffect, QSizePolicy, QPlainTextEdit,
     QGridLayout, QDialog, QComboBox, QCheckBox, QLayout, QSpacerItem,
-    QMessageBox, QProgressBar
+    QMessageBox, QProgressBar, QSpinBox
 )
 import ctypes
 import sounddevice as sd
@@ -505,6 +505,34 @@ CRITICAL RULES:
                 border: 1px solid #ffffff;
                 image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path fill='%23000000' d='M9.5 3L4.5 8 2.5 6'/></svg>");
             }
+            QSpinBox {
+                background-color: rgba(255, 255, 255, 0.05);
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                border-radius: 8px;
+                padding: 1px 5px 1px 12px;
+                color: #ffffff;
+                font-size: 13px;
+                min-height: 38px;
+            }
+            QSpinBox:focus {
+                border: 1px solid rgba(255, 255, 255, 0.3);
+                background-color: rgba(255, 255, 255, 0.08);
+            }
+            QSpinBox::up-button, QSpinBox::down-button {
+                background: transparent;
+                border: none;
+                width: 24px;
+            }
+            QSpinBox::up-arrow {
+                image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 12 12'><path fill='%23aaaaaa' d='M2 8l4-4 4 4z'/></svg>");
+                width: 10px;
+                height: 10px;
+            }
+            QSpinBox::down-arrow {
+                image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 12 12'><path fill='%23aaaaaa' d='M2 4l4 4 4-4z'/></svg>");
+                width: 10px;
+                height: 10px;
+            }
         """)
 
         central_widget = QWidget()
@@ -684,17 +712,17 @@ CRITICAL RULES:
         self.llm_combo.currentIndexChanged.connect(self.mark_dirty)
         self.check_sound.toggled.connect(self.mark_dirty)
         self.check_startup.toggled.connect(self.mark_dirty)
-        self.vram_spin.textChanged.connect(self.mark_dirty)
-        self.stop_spin.textChanged.connect(self.mark_dirty)
+        self.vram_spin.valueChanged.connect(self.mark_dirty)
+        self.stop_spin.valueChanged.connect(self.mark_dirty)
         self.prompt_editor.textChanged.connect(self.mark_dirty)
 
         self.check_sound.setChecked(self.config.get("sound_enabled", True))
         self.check_startup.setChecked(self.check_startup_status())
-        self.vram_spin.setText(str(self.config.get("vram_timeout", 60)))
+        self.vram_spin.setValue(max(5, int(self.config.get("vram_timeout", 60))))
         
         # Auto-stop conversion display (ms to s)
         stop_ms = self.config.get("silence_timeout_ms", 10000)
-        self.stop_spin.setText(str(int(stop_ms/1000)))
+        self.stop_spin.setValue(max(5, int(stop_ms/1000)))
         self.hk_val.setText(self.config.get("hotkey", "F8").upper())
         
         # Initial prompt load
@@ -945,15 +973,22 @@ CRITICAL RULES:
 
         # Timeouts
         timeout_layout = QHBoxLayout()
-        self.vram_spin = QLineEdit()
-        self.vram_spin.setPlaceholderText("60")
-        self.vram_spin.setFixedWidth(60)
-        self.stop_spin = QLineEdit()
-        self.stop_spin.setPlaceholderText("10")
-        self.stop_spin.setFixedWidth(60)
+        self.vram_spin = QSpinBox()
+        self.vram_spin.setMinimum(5)
+        self.vram_spin.setMaximum(3600)
+        self.vram_spin.setFixedWidth(80)
+        self.vram_spin.setSuffix(" s")
+        self.vram_spin.valueChanged.connect(self.mark_dirty)
 
-        timeout_layout.addWidget(self.create_field("VRAM Saver (s)", self.vram_spin))
-        timeout_layout.addWidget(self.create_field("Auto-Stop (s)", self.stop_spin))
+        self.stop_spin = QSpinBox()
+        self.stop_spin.setMinimum(5)
+        self.stop_spin.setMaximum(30)
+        self.stop_spin.setFixedWidth(80)
+        self.stop_spin.setSuffix(" s")
+        self.stop_spin.valueChanged.connect(self.mark_dirty)
+
+        timeout_layout.addWidget(self.create_field("VRAM Saver", self.vram_spin))
+        timeout_layout.addWidget(self.create_field("Auto-Stop", self.stop_spin))
         timeout_layout.addStretch()
         layout.addLayout(timeout_layout)
 
@@ -1191,10 +1226,10 @@ CRITICAL RULES:
                 break
         
         try:
-            self.prefs["vram_timeout"] = int(self.vram_spin.text())
+            self.prefs["vram_timeout"] = max(5, self.vram_spin.value())
         except: pass
         try:
-            val = int(self.stop_spin.text())
+            val = max(5, self.stop_spin.value())
             # Convert Seconds from UI to MS for backend, capped at 30s
             self.prefs["silence_timeout_ms"] = min(30000, val * 1000)
         except: pass

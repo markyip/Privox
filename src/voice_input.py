@@ -796,7 +796,8 @@ class VoiceInputApp:
             self.sound_enabled = prefs.get("sound_enabled", True)
             self.auto_stop_enabled = prefs.get("auto_stop_enabled", True)
             old_silence = getattr(self, "silence_timeout_ms", 10000)
-            self.silence_timeout_ms = prefs.get("silence_timeout_ms", 10000)
+            # Backend Clamping: Min 5s
+            self.silence_timeout_ms = max(5000, prefs.get("silence_timeout_ms", 10000))
             
             # Dynamic VAD Re-initialization if timeout changed
             if hasattr(self, 'VADIterator') and self.vad_model and self.silence_timeout_ms != old_silence:
@@ -808,7 +809,7 @@ class VoiceInputApp:
                                                      speech_pad_ms=SPEECH_PAD_MS)
 
             self.custom_dictionary = prefs.get("custom_dictionary", [])
-            self.vram_timeout = prefs.get("vram_timeout", 60)
+            self.vram_timeout = max(5, prefs.get("vram_timeout", 60))
             self.character = prefs.get("character", "Writing Assistant")
             self.tone = prefs.get("tone", "Natural")
             self.custom_prompts = prefs.get("custom_prompts", {})

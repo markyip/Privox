@@ -794,7 +794,18 @@ class VoiceInputApp:
 
             self.sound_enabled = prefs.get("sound_enabled", True)
             self.auto_stop_enabled = prefs.get("auto_stop_enabled", True)
+            old_silence = getattr(self, "silence_timeout_ms", 10000)
             self.silence_timeout_ms = prefs.get("silence_timeout_ms", 10000)
+            
+            # Dynamic VAD Re-initialization if timeout changed
+            if hasattr(self, 'VADIterator') and self.vad_model and self.silence_timeout_ms != old_silence:
+                log_print(f"Applying new Auto-Stop Timeout: {self.silence_timeout_ms}ms")
+                self.vad_iterator = self.VADIterator(self.vad_model, 
+                                                     threshold=VAD_THRESHOLD, 
+                                                     sampling_rate=SAMPLE_RATE, 
+                                                     min_silence_duration_ms=self.silence_timeout_ms, 
+                                                     speech_pad_ms=SPEECH_PAD_MS)
+
             self.custom_dictionary = prefs.get("custom_dictionary", [])
             self.vram_timeout = prefs.get("vram_timeout", 60)
             self.character = prefs.get("character", "Writing Assistant")
@@ -1409,11 +1420,12 @@ class VoiceInputApp:
                     if not hasattr(self, '_last_prefs_mtime'):
                          self._last_prefs_mtime = mtime
                     elif mtime > self._last_prefs_mtime:
-                        log_print("Configuration change detected. Reloading...")
+                        log_print(f"Configuration change detected (mtime={mtime}). Reloading settings...")
                         self._last_prefs_mtime = mtime
                         # Small delay to ensure writer finished
                         time.sleep(0.1)
                         self.load_config()
+                        log_print(f"Reload complete. Auto-Stop: {self.silence_timeout_ms}ms, VRAM Saver: {self.vram_timeout}s")
             except: pass
 
             try:

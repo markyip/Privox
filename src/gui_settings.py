@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 import ctypes
 import sounddevice as sd
 import subprocess
+import models_config
 
 # --- DWM Helpers for Glassmorphism ---
 def apply_mica_or_acrylic(window, acrylic=True):
@@ -405,42 +406,9 @@ class SettingsGUI(QMainWindow):
         if "custom_dictionary" not in self.prefs:
             self.prefs["custom_dictionary"] = self.tech_config.get("custom_dictionary", [])
             
-        # Library Loading (Prefer User Prefs > Config > Default Fallback)
-        self.asr_library = self.prefs.get("asr_library", self.tech_config.get("asr_library", [
-            {"name": "Distil-Whisper Large v3 (English)", "whisper_repo": "Systran/faster-distil-whisper-large-v3", "description": "Fast & High Quality. Best accuracy with distilled architecture."},
-            {"name": "OpenAI Whisper Small", "whisper_repo": "openai/whisper-small", "description": "Quick processing for low-resource environments."},
-            {"name": "Whisper Large v3 Turbo (Cantonese)", "whisper_repo": "ylpeter/faster-whisper-large-v3-turbo-cantonese-16", "description": "High-speed Cantonese transcription. Reduced hallucination."},
-            {"name": "Whisper Large v3 Turbo (Korean)", "whisper_repo": "ghost613/faster-whisper-large-v3-turbo-korean", "description": "High-performance Korean transcription. Optimized for speed and accuracy."},
-            {"name": "Whisper Large v3 Turbo (German)", "whisper_repo": "aseifert/faster-whisper-large-v3-turbo-german", "description": "Precision German recognition. Handles technical and colloquial speech."},
-            {"name": "Whisper Large v3 Turbo (French)", "whisper_repo": "Mathos34400/whisper-large-v3-turbo-french-v6", "description": "State-of-the-art French transcription with anti-overfitting optimization."},
-            {"name": "Whisper Large v3 Turbo (Japanese)", "whisper_repo": "XA9/faster-whisper-large-v3-ja", "description": "Superior Japanese performance with CTranslate2 optimization."},
-            {"name": "Whisper Large v2 (Hindi)", "whisper_repo": "collabora/faster-whisper-large-v2-hindi", "description": "Fine-tuned for Hindi. Optimized for mixed-code (Hinglish)."},
-            {"name": "Whisper Large v3 Turbo (Multilingual)", "whisper_repo": "deepdml/faster-whisper-large-v3-turbo-ct2", "description": "State-of-the-art multilingual model. Excellent for Singlish, Arabic, and diverse accents."}
-        ]))
-        
-        self.llm_library = self.prefs.get("llm_library", self.tech_config.get("llm_library", [
-            {
-                "name": "CoEdit Large (T5)", 
-                "repo_id": "nvhf/coedit-large-Q6_K-GGUF", 
-                "file_name": "coedit-large-q6_k.gguf", 
-                "prompt_type": "t5",
-                "description": "Premium English refiner. 60x more efficient than LLMs."
-            },
-            {
-                "name": "Llama 3.2 3B Instruct", 
-                "repo_id": "bartowski/Llama-3.2-3B-Instruct-GGUF", 
-                "file_name": "Llama-3.2-3B-Instruct-Q4_K_M.gguf", 
-                "prompt_type": "llama",
-                "description": "General purpose balanced refiner for all languages."
-            },
-            {
-                "name": "Multilingual (Qwen 2.5 3B)", 
-                "repo_id": "bartowski/Qwen2.5-3B-Instruct-GGUF", 
-                "file_name": "Qwen2.5-3B-Instruct-Q4_K_M.gguf", 
-                "prompt_type": "llama",
-                "description": "Best for mixed languages and high instruction obedience."
-            }
-        ]))
+        # Library Loading (Ported from models_config)
+        self.asr_library = models_config.ASR_LIBRARY
+        self.llm_library = models_config.LLM_LIBRARY
 
         self.custom_prompts = self.prefs.get("custom_prompts", self.tech_config.get("custom_prompts", {}))
         
@@ -1446,8 +1414,8 @@ CRITICAL RULES:
             
         self.is_dirty = False
         
-        # 5. Check for changes
-        if (new_asr != old_asr) or (new_llm != old_llm):
+        # 5. Check for changes (Non-empty and actually different)
+        if (old_asr and new_asr != old_asr) or (old_llm and new_llm != old_llm):
             self.handle_model_change_and_restart()
 
     def start_hotkey_record(self):
@@ -1662,24 +1630,62 @@ CRITICAL RULES:
         key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
         app_name = "Privox"
         
-        # Use Privox.exe (the installer/launcher) with --run flag
+        # If frozen, use executable. If script, use python + script path.
         if getattr(sys, 'frozen', False):
-            exe_path = f'"{sys.executable}" --run'
+            exe_path = f'"{sys.executable}"'
         else:
-            # Dev mode: python.exe src/bootstrap.py --run
-            bootstrap_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bootstrap.py")
-            exe_path = f'"{sys.executable}" "{bootstrap_path}" --run'
+            # Dev mode: point to the source entry point (usually voice_input.py or bootstrap.py)
+            src_dir = os.path.dirname(os.path.abspath(__file__))
+            entry_point = os.path.join(src_dir, "voice_input.py")
+            exe_path = f'"{sys.executable}" "{entry_point}"'
 
         try:
+            # 1. Update Registry Run key
             key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS)
             if self.check_startup.isChecked():
                 winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, exe_path)
+                log_print(f"Registry: Auto-launch enabled.")
             else:
-                try: winreg.DeleteValue(key, app_name)
+                try: 
+                    winreg.DeleteValue(key, app_name)
+                    log_print("Registry: Auto-launch entry removed.")
                 except FileNotFoundError: pass
             winreg.CloseKey(key)
+            
+            # 2. ALSO manage the Start Menu Startup shortcut (if any) to prevent override
+            self.manage_startup_shortcut(self.check_startup.isChecked())
+            
         except Exception as e:
             print(f"Error toggle startup: {e}")
+
+    def manage_startup_shortcut(self, install):
+        """Creates or removes a shell shortcut in the user's Startup folder."""
+        try:
+            import winshell
+            from win32com.client import Dispatch
+            
+            startup_path = winshell.startup()
+            shortcut_path = os.path.join(startup_path, "Privox.lnk")
+            
+            if install:
+                if not os.path.exists(shortcut_path):
+                    target = sys.executable
+                    wDir = os.path.dirname(target)
+                    icon = target
+
+                    shell = Dispatch('WScript.Shell')
+                    shortcut = shell.CreateShortCut(shortcut_path)
+                    shortcut.Targetpath = target
+                    shortcut.WorkingDirectory = wDir
+                    shortcut.IconLocation = icon
+                    shortcut.save()
+                    log_print("Startup Folder: Shortcut created.")
+            else:
+                if os.path.exists(shortcut_path):
+                    os.remove(shortcut_path)
+                    log_print("Startup Folder: Shortcut removed.")
+        except Exception as e:
+            log_print(f"Startup Shortcut Error: {e}")
 
     def check_startup_status(self):
         if sys.platform != 'win32': return False

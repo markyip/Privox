@@ -16,6 +16,7 @@ import gc
 import concurrent.futures
 import subprocess
 from datetime import datetime, timedelta
+import models_config
 from huggingface_hub import HfApi
 if sys.platform == 'win32':
     import winreg
@@ -200,7 +201,7 @@ if sys.platform == "win32":
     hWnd = kernel32.GetConsoleWindow()
     if hWnd != 0:
         # Set title BEFORE hiding to ensure uninstaller can find/kill by title
-        kernel32.SetConsoleTitleW("Privox Background Engine")
+        kernel32.SetConsoleTitleW("Privox_Service_Background_Engine")
         user32.ShowWindow(hWnd, 0) # 0 = SW_HIDE
 
 # --- 3. Configuration ---
@@ -248,59 +249,8 @@ class SoundManager:
             threading.Thread(target=self._play, args=(400, 500), daemon=True).start()
 
 
-# --- Prompt Template Libraries (Linguistic Lens v2) ---
-
-CHARACTER_LENSES = {
-    "Writing Assistant": (
-        "Focus on clarity, grammar, and flow. Use professional yet accessible vocabulary. "
-        "Resolve ambiguities as a general senior editor would."
-    ),
-    "Code Expert": (
-        "Focus on Software Engineering jargon. Do not simplify technical abbreviations (API, SDK, PR, VRAM). "
-        "Preserve camelCase, PascalCase, or snake_case formatting. Prioritize logic-based corrections."
-    ),
-    "Philosopher": (
-        "Focus on intellectual and ontological vocabulary. Maintain complex sentence structures. "
-        "Do not simplify metaphysical or academic terms. Prioritize depth of nuance."
-    ),
-    "Executive Secretary": (
-        "Focus on extreme formality and business etiquette. Use polite, indirect phrasing. "
-        "Organize thoughts into clear, actionable business communication."
-    ),
-    "Personal Buddy": (
-        "Focus on conversational, low-friction vocabulary. Tolerant of slang and informal grammar. "
-        "Prioritize making the text sound like a natural, relaxed voice."
-    ),
-    "Custom": "" # User provides absolute persona definition
-}
-
-TONE_OVERLAYS = {
-    "Professional": (
-        "Style: Formal. Replace casual words with professional alternatives. Use complex, well-structured sentences. "
-        "Objective: Sound authoritative and polished."
-    ),
-    "Natural": (
-        "Style: Conversational. Maintain the speaker's original cadence. Fix only obvious errors. "
-        "Objective: Sound like a clear version of the original speaker."
-    ),
-    "Polite": (
-        "Style: Courteous. Soften direct statements. Use honorifics/politeness where contextually appropriate. "
-        "Objective: Sound respectful and considerate."
-    ),
-    "Casual": (
-        "Style: Relaxed. Keep contractions (don't, can't). Use simpler, direct vocabulary. "
-        "Objective: Sound friendly and approachable."
-    ),
-    "Aggressive": (
-        "Style: Direct and forceful. Use punchy, active verbs. Minimize hedge words (e.g., 'maybe', 'think'). "
-        "Objective: Sound decisive and high-energy."
-    ),
-    "Concise": (
-        "Style: Surgical brevity. Delete all filler and redundant phrases. Merge fragments into single punchy statements. "
-        "Objective: Maximum information with minimum words."
-    ),
-    "Custom": "" # User provides absolute tone/style definition
-}
+# --- Persona & Tone Logic (Moved to models_config.py) ---
+# Dictionaries CHARACTER_LENSES and TONE_OVERLAYS are now imported from models_config.
 
 class GrammarChecker:
     def __init__(self, refiner_profile=None, custom_dictionary=None, custom_prompts=None, command_prompt=None, character=None, tone=None):
@@ -420,17 +370,7 @@ class GrammarChecker:
         user_text = self.custom_prompts.get(key, "").strip()
         
         # Layer 1: Core System Directives (Global Critical Rules)
-        prompt = (
-            "REFINE TRANSCRIPT: Provide a clean, accurate version of the ASR input.\n\n"
-            "CRITICAL RULES:\n"
-            "1. FIX GRAMMAR: Correct grammar and spelling errors.\n"
-            "2. IMPROVE FLOW: Make text readable while preserving original meaning.\n"
-            "3. PUNCTUATION: Use appropriate punctuation for clarity.\n"
-            "4. NO HALLUCINATION: Do not add information not present in the original transcript.\n"
-            "5. REMOVE FILLERS: Delete unnecessary filler words (uh, um, yeah, etc.).\n"
-            "6. **ABSOLUTE NO CONVERSATION**: Output ONLY the corrected text. Never add commentary, greetings, or questions.\n"
-            "7. IF UNCLEAR: If the input consists purely of noise, mirror it exactly.\n"
-        )
+        prompt = f"REFINE TRANSCRIPT: Provide a clean, accurate version of the ASR input.\n\n{models_config.CRITICAL_RULES}"
         
         dict_str = ", ".join(self.custom_dictionary)
         if dict_str:
@@ -444,12 +384,12 @@ class GrammarChecker:
         # We append these LAST so they win any conflicts in the LLM's attention.
         overrides = ""
         if self.character != "Custom":
-            lens = CHARACTER_LENSES.get(self.character, "")
+            lens = models_config.CHARACTER_LENSES.get(self.character, "")
             if lens:
                 overrides += f"\n[STRICT IDENTITY OVERRIDE]: {lens}"
         
         if self.tone != "Custom":
-            overlay = TONE_OVERLAYS.get(self.tone, "")
+            overlay = models_config.TONE_OVERLAYS.get(self.tone, "")
             if overlay:
                 overrides += f"\n[STRICT STYLE OVERRIDE]: {overlay}"
         
@@ -818,29 +758,8 @@ class VoiceInputApp:
             self.current_refiner = prefs.get("current_refiner", "Llama 3.2 3B Instruct")
             
             # Library Loading (Prefer User Prefs > Config > Default)
-            self.asr_library = prefs.get("asr_library", config.get("asr_library", [
-                {"name": "Distil-Whisper Large v3 (English)", "whisper_repo": "Systran/faster-distil-whisper-large-v3", "description": "Fast & High Quality. Best accuracy with distilled architecture."},
-                {"name": "OpenAI Whisper Small", "whisper_repo": "openai/whisper-small", "description": "Quick processing for low-resource environments."},
-                {"name": "Whisper Large v3 Turbo (Cantonese)", "whisper_repo": "ylpeter/faster-whisper-large-v3-turbo-cantonese-16", "description": "High-speed Cantonese transcription. Reduced hallucination."},
-                {"name": "Whisper Large v2 (Hindi)", "whisper_repo": "collabora/faster-whisper-large-v2-hindi", "description": "Fine-tuned for Hindi. Optimized for mixed-code (Hinglish)."},
-                {"name": "Whisper Large v3 Turbo (Multilingual)", "whisper_repo": "deepdml/faster-whisper-large-v3-turbo-ct2", "description": "State-of-the-art multilingual model. Excellent for Singlish, Arabic, and diverse accents."}
-            ]))
-            self.llm_library = prefs.get("llm_library", config.get("llm_library", [
-                {
-                    "name": "CoEdit Large (T5)", 
-                    "repo_id": "nvhf/coedit-large-Q6_K-GGUF", 
-                    "file_name": "coedit-large-q6_k.gguf", 
-                    "prompt_type": "t5",
-                    "description": "Premium English refiner. 60x more efficient than LLMs."
-                },
-                {
-                    "name": "Llama 3.2 3B Instruct", 
-                    "repo_id": "bartowski/Llama-3.2-3B-Instruct-GGUF", 
-                    "file_name": "Llama-3.2-3B-Instruct-Q4_K_M.gguf", 
-                    "prompt_type": "llama",
-                    "description": "General purpose balanced refiner for all languages."
-                }
-            ]))
+            self.asr_library = prefs.get("asr_library", config.get("asr_library", models_config.ASR_LIBRARY))
+            self.llm_library = prefs.get("llm_library", config.get("llm_library", models_config.LLM_LIBRARY))
 
             # Filter libraries
             self.asr_library = [m for m in self.asr_library if self.verify_model(m, "asr")]

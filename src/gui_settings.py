@@ -19,6 +19,7 @@ if sys.platform == 'win32':
         os.add_dll_directory(bin_path)
 
 import json
+import models_config
 from PySide6.QtGui import QColor, QPainter, QFont, QIcon, QAction, QLinearGradient, QBrush, QPen
 from PySide6.QtCore import Qt, QSize, QPropertyAnimation, QEasingCurve, QPoint, Signal, QRect, QParallelAnimationGroup, Property, QTimer
 from PySide6.QtWidgets import (
@@ -289,43 +290,11 @@ class SettingsGUI(QMainWindow):
             self.prefs["custom_dictionary"] = self.tech_config.get("custom_dictionary", [])
             
         # Library Loading (Prefer User Prefs > Config > Default Fallback)
-        self.asr_library = self.prefs.get("asr_library", self.tech_config.get("asr_library", [
-            {"name": "Distil-Whisper Large v3 (English)", "whisper_repo": "Systran/faster-distil-whisper-large-v3", "description": "Fast & High Quality. Best accuracy with distilled architecture."},
-            {"name": "OpenAI Whisper Small", "whisper_repo": "openai/whisper-small", "description": "Quick processing for low-resource environments."},
-            {"name": "Whisper Large v3 Turbo (Cantonese)", "whisper_repo": "ylpeter/faster-whisper-large-v3-turbo-cantonese-16", "description": "High-speed Cantonese transcription. Reduced hallucination."},
-            {"name": "Whisper Large v3 Turbo (Korean)", "whisper_repo": "ghost613/faster-whisper-large-v3-turbo-korean", "description": "High-performance Korean transcription. Optimized for speed and accuracy."},
-            {"name": "Whisper Large v3 Turbo (German)", "whisper_repo": "aseifert/faster-whisper-large-v3-turbo-german", "description": "Precision German recognition. Handles technical and colloquial speech."},
-            {"name": "Whisper Large v3 Turbo (French)", "whisper_repo": "Mathos34400/whisper-large-v3-turbo-french-v6", "description": "State-of-the-art French transcription with anti-overfitting optimization."},
-            {"name": "Whisper Large v3 Turbo (Japanese)", "whisper_repo": "XA9/faster-whisper-large-v3-ja", "description": "Superior Japanese performance with CTranslate2 optimization."},
-            {"name": "Whisper Large v2 (Hindi)", "whisper_repo": "collabora/faster-whisper-large-v2-hindi", "description": "Fine-tuned for Hindi. Optimized for mixed-code (Hinglish)."},
-            {"name": "Whisper Large v3 Turbo (Multilingual)", "whisper_repo": "deepdml/faster-whisper-large-v3-turbo-ct2", "description": "State-of-the-art multilingual model. Excellent for Singlish, Arabic, and diverse accents."}
-        ]))
+        self.asr_library = self.prefs.get("asr_library", self.tech_config.get("asr_library", models_config.ASR_LIBRARY))
         
-        self.llm_library = self.prefs.get("llm_library", self.tech_config.get("llm_library", [
-            {
-                "name": "CoEdit Large (T5)", 
-                "repo_id": "nvhf/coedit-large-Q6_K-GGUF", 
-                "file_name": "coedit-large-q6_k.gguf", 
-                "prompt_type": "t5",
-                "description": "Premium English refiner. 60x more efficient than LLMs."
-            },
-            {
-                "name": "Llama 3.2 3B Instruct", 
-                "repo_id": "bartowski/Llama-3.2-3B-Instruct-GGUF", 
-                "file_name": "Llama-3.2-3B-Instruct-Q4_K_M.gguf", 
-                "prompt_type": "llama",
-                "description": "General purpose balanced refiner for all languages."
-            },
-            {
-                "name": "Multilingual (Qwen 2.5 3B)", 
-                "repo_id": "bartowski/Qwen2.5-3B-Instruct-GGUF", 
-                "file_name": "Qwen2.5-3B-Instruct-Q4_K_M.gguf", 
-                "prompt_type": "llama",
-                "description": "Best for mixed languages and high instruction obedience."
-            }
-        ]))
+        self.llm_library = self.prefs.get("llm_library", self.tech_config.get("llm_library", models_config.LLM_LIBRARY))
 
-        self.custom_prompts = self.prefs.get("custom_prompts", self.tech_config.get("custom_prompts", {}))
+        self.custom_prompts = self.prefs.get("custom_prompts", self.tech_config.get("custom_prompts", models_config.DEFAULT_PROMPTS))
         
         char = self.prefs.get("character", self.tech_config.get("character", "Writing Assistant"))
         tone = self.prefs.get("tone", self.tech_config.get("tone", "Natural"))
@@ -351,25 +320,8 @@ class SettingsGUI(QMainWindow):
         if self.tech_config.get("current_refiner") == "Standard (Llama 3.2)":
             self.tech_config["current_refiner"] = "Llama 3.2 3B Instruct"
 
-    CRITICAL_RULES = """
-CRITICAL RULES:
-1. FIX GRAMMAR: Correct English grammar and spelling errors.
-2. IMPROVE FLOW: Make the text more readable while preserving its original meaning.
-3. PUNCTUATION: Use appropriate punctuation for clarity.
-4. NO HALLUCINATION: Do not add information not present in the original transcript.
-5. REMOVE FILLERS: Delete unnecessary filler words (uh, um, yeah, etc.).
-6. **ABSOLUTE NO CONVERSATION**: Output ONLY the corrected text. Never add commentary, greetings, or questions. This rule overrides all persona and tone settings.
-7. IF UNCLEAR: If the input consists purely of noise, mirror it exactly without explanation."""
-
-    DEFAULT_PROMPTS = {
-        "Writing Assistant|Professional": f"Refine the provided transcript into clear, professional, and grammatically correct business text. Focus on executive clarity, precision, and a formal tone.\n\n{CRITICAL_RULES}",
-        "Writing Assistant|Natural": f"Refine the provided transcript into clean, professional, and grammatically correct text, while maintaining a natural and conversational flow.\n\n{CRITICAL_RULES}",
-        "Writing Assistant|Concise": f"Summarize the provided transcript into the most essential points, removing all fluff and redundancy while ensuring logical flow.\n\n{CRITICAL_RULES}",
-        "Code Expert|Natural": f"Refine this technical explanation or code description. Ensure terminology is accurate, the flow is logical, and the tone is helpful yet professional.\n\n{CRITICAL_RULES}",
-        "Code Expert|Concise": f"Convert this technical speech into a concise summary. Use markdown where helpful to highlight key terms or snippets.\n\n{CRITICAL_RULES}",
-        "Executive Secretary|Polite": f"Draft a formal and highly respectful response based on this transcript. Organize the thoughts into a polished executive format.\n\n{CRITICAL_RULES}",
-        "Personal Buddy|Casual": f"Clean up this transcript while keeping the relaxed, casual vibe and slang intact. Only fix major clarity and readability issues.\n\n{CRITICAL_RULES}"
-    }
+    CRITICAL_RULES = models_config.CRITICAL_RULES
+    DEFAULT_PROMPTS = models_config.DEFAULT_PROMPTS
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -396,7 +348,7 @@ CRITICAL RULES:
             event.accept()
 
     def init_ui(self):
-        self.setWindowTitle("Privox Settings")
+        self.setWindowTitle("Privox_Settings_GUI")
         self.resize(1000, 750)
         self.setMinimumSize(900, 700)
         
@@ -1442,6 +1394,10 @@ CRITICAL RULES:
         key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
         app_name = "Privox"
         
+        # Paths for Startup Folder Shortcut
+        startup_folder = os.path.join(os.environ.get('APPDATA', ''), 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup')
+        shortcut_path = os.path.join(startup_folder, "Privox.lnk")
+
         # Use Privox.exe (the installer/launcher) with --run flag
         if getattr(sys, 'frozen', False):
             exe_path = f'"{sys.executable}" --run'
@@ -1455,22 +1411,37 @@ CRITICAL RULES:
             if self.check_startup.isChecked():
                 winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, exe_path)
             else:
+                # 1. Remove Registry Key
                 try: winreg.DeleteValue(key, app_name)
                 except FileNotFoundError: pass
+                
+                # 2. Remove Startup Folder Shortcut (Installer discrepancy fix)
+                if os.path.exists(shortcut_path):
+                    try: os.remove(shortcut_path)
+                    except Exception as e: print(f"Error removing startup shortcut: {e}")
             winreg.CloseKey(key)
         except Exception as e:
             print(f"Error toggle startup: {e}")
 
     def check_startup_status(self):
         if sys.platform != 'win32': return False
+        
+        # 1. Check Registry
         key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
         app_name = "Privox"
+        reg_exists = False
         try:
             key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_READ)
             winreg.QueryValueEx(key, app_name)
             winreg.CloseKey(key)
-            return True
-        except: return False
+            reg_exists = True
+        except: pass
+        
+        # 2. Check Startup Folder Shortcut
+        startup_folder = os.path.join(os.environ.get('APPDATA', ''), 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup')
+        shortcut_exists = os.path.exists(os.path.join(startup_folder, "Privox.lnk"))
+        
+        return reg_exists or shortcut_exists
 
 
     def handle_model_change_and_restart(self):

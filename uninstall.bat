@@ -27,14 +27,22 @@ set "TARGET_DIR=%~2"
 :: Wait a bit for the original launcher to exit
 timeout /t 2 /nobreak >nul
 
-:: 3. Kill Processes (Force + Tree)
-:: Kill by explicit title (Set in voice_input.py)
-taskkill /F /T /FI "WINDOWTITLE eq Privox*" >nul 2>&1
-:: Kill by possible image names (Dev and Frozen)
+:: 3. Kill Processes (Two-Stage: Graceful then Forced)
+:: Stage 1: Try to close gracefully so the app can remove its own tray icon
+taskkill /FI "WINDOWTITLE eq Privox_Settings_GUI" >nul 2>&1
+taskkill /FI "WINDOWTITLE eq Privox_Service_Background_Engine" >nul 2>&1
+timeout /t 1 /nobreak >nul
+
+:: Stage 2: Force-kill any lingering processes (avoiding wildcard *Privox* to protect IDE)
+taskkill /F /T /FI "WINDOWTITLE eq Privox_Settings_GUI" >nul 2>&1
+taskkill /F /T /FI "WINDOWTITLE eq Privox_Service_Background_Engine" >nul 2>&1
 taskkill /F /T /IM Privox.exe >nul 2>&1
-taskkill /F /T /IM python.exe /FI "WINDOWTITLE eq Privox*" >nul 2>&1
-:: Fallback: PowerShell regex kill for any process spanning 'Privox' in title/arguments
-powershell -Command "Get-Process | Where-Object { $_.MainWindowTitle -like '*Privox*' -or $_.ProcessName -eq 'Privox' } | Stop-Process -Force" >nul 2>&1
+
+:: Fallback: PowerShell exact match
+powershell -Command "Get-Process | Where-Object { $_.MainWindowTitle -eq 'Privox_Settings_GUI' -or $_.MainWindowTitle -eq 'Privox_Service_Background_Engine' -or $_.ProcessName -eq 'Privox' } | Stop-Process -Force" >nul 2>&1
+
+:: Tray Refresh (Robust V2): Refreshes main tray AND overflow area by simulating mouse move
+powershell -Command "$c='using System;using System.Runtime.InteropServices;public class T{[DllImport(\"user32.dll\")]public static extern IntPtr FindWindow(string l,string n);[DllImport(\"user32.dll\")]public static extern IntPtr FindWindowEx(IntPtr p,IntPtr c,string s,string w);[DllImport(\"user32.dll\")]public static extern int GetWindowRect(IntPtr h,out R r);[DllImport(\"user32.dll\")]public static extern int SendMessage(IntPtr h,int m,int w,int l);[StructLayout(LayoutKind.Sequential)]public struct R{public int L,T,Ri,B;}}';Add-Type -TypeDefinition $c;foreach($w in @('Shell_TrayWnd','NotifyIconOverflowWindow')){$h=[T]::FindWindow($w,$null);if($h -ne [IntPtr]::Zero){$t=[T]::FindWindowEx($h,[IntPtr]::Zero,'TrayNotifyWnd',$null);if($t -eq [IntPtr]::Zero){$t=$h};$p=[T]::FindWindowEx($t,[IntPtr]::Zero,'SysPager',$null);$tb=if($p -ne [IntPtr]::Zero){[T]::FindWindowEx($p,[IntPtr]::Zero,'ToolbarWindow32',$null)}else{[T]::FindWindowEx($t,[IntPtr]::Zero,'ToolbarWindow32',$null)};if($tb -ne [IntPtr]::Zero){$r=New-Object T+R;[T]::GetWindowRect($tb,[ref]$r);for($x=0;$x -lt ($r.Ri-$r.L);$x+=5){for($y=0;$y -lt ($r.B-$r.T);$y+=5){[T]::SendMessage($tb,0x0200,0,$x+($y*0x10000))}}}}}" >nul 2>&1
 
 :: 4. Remove Registry Keys
 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "Privox" /f >nul 2>&1

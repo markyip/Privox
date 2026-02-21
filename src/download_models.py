@@ -1,6 +1,7 @@
 import os
 import sys
 import shutil
+import models_config
 
 def log(msg):
     print(f"[ModelSetup] {msg}", flush=True)
@@ -19,10 +20,10 @@ def main():
         target_base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     
     # Load settings from config.json if it exists
-    whisper_model_name = "distil-large-v3"
-    whisper_repo = "Systran/faster-distil-whisper-large-v3"
-    grammar_file = "Llama-3.2-3B-Instruct-Q4_K_M.gguf"
-    grammar_repo = "bartowski/Llama-3.2-3B-Instruct-GGUF"
+    whisper_model_name = models_config.ASR_LIBRARY[0]["whisper_model"]
+    whisper_repo = models_config.ASR_LIBRARY[0]["whisper_repo"]
+    grammar_file = models_config.LLM_LIBRARY[1]["file_name"] # Llama 3.2
+    grammar_repo = models_config.LLM_LIBRARY[1]["repo_id"]
     
     config_path = os.path.join(target_base_dir, "config.json")
     if os.path.exists(config_path):

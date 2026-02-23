@@ -5,6 +5,10 @@ Ensures consistency between GUI and Background engine.
 
 import os
 import sys
+import platform
+
+IS_MAC = (sys.platform == 'darwin' or platform.system() == 'Darwin')
+IS_WIN = (sys.platform == 'win32' or platform.system() == 'Windows')
 
 def get_app_data_dir(base_fallback_dir):
     """
@@ -12,7 +16,7 @@ def get_app_data_dir(base_fallback_dir):
     On macOS, this points to ~/Library/Application Support/Privox.
     On Windows/Linux, it gracefully falls back to the application base folder.
     """
-    if sys.platform == "darwin":
+    if IS_MAC:
         app_support = os.path.expanduser("~/Library/Application Support/Privox")
         if not os.path.exists(app_support):
             try:

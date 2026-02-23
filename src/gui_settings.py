@@ -7,7 +7,12 @@ os.environ["PYTHONNOUSERSITE"] = "1"
 import site
 site.ENABLE_USER_SITE = False
 
-if sys.platform == 'win32':
+import platform
+
+IS_MAC = (sys.platform == 'darwin' or platform.system() == 'Darwin')
+IS_WIN = (sys.platform == 'win32' or platform.system() == 'Windows')
+
+if IS_WIN:
     # Inject pixi environment DLL paths explicitly to resolve procedure conflicts
     env_path = os.path.join(os.getcwd(), ".pixi", "envs", "default")
     dll_path = os.path.join(env_path, "Library", "bin")
@@ -35,7 +40,7 @@ import subprocess
 
 # --- DWM Helpers for Glassmorphism ---
 def apply_mica_or_acrylic(window, acrylic=True):
-    if sys.platform != 'win32': return
+    if not IS_WIN: return
     try:
         import ctypes
         hwnd = window.effectiveWinId().value()
@@ -240,7 +245,7 @@ class SettingsGUI(QMainWindow):
             if os.path.exists(icon_path):
                 self.setWindowIcon(QIcon(icon_path))
                 # Set App ID for Windows Taskbar Grouping
-                if sys.platform == 'win32':
+                if IS_WIN:
                     myappid = u'markyip.privox.settings.1.0'
                     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
         except: pass
@@ -348,7 +353,7 @@ class SettingsGUI(QMainWindow):
         self.setMinimumSize(900, 700)
         
         # Window Decorations
-        if sys.platform == 'darwin':
+        if IS_MAC:
             # macOS native window (Traffic Lights) but disable maximize
             self.setWindowFlags(Qt.Window | Qt.WindowCloseButtonHint | Qt.WindowMinimizeButtonHint)
             self.setFixedSize(1000, 750) # Maintain dimensions to avoid resize breaking layouts
@@ -522,7 +527,7 @@ class SettingsGUI(QMainWindow):
         btn_close.clicked.connect(self.close)
         title_bar_layout.addWidget(btn_close)
         
-        if sys.platform == 'darwin':
+        if IS_MAC:
             title_bar.setVisible(False)
             
         main_v_layout.addWidget(title_bar)
@@ -1080,7 +1085,7 @@ class SettingsGUI(QMainWindow):
                     success_msg = QMessageBox(self)
                     success_msg.setWindowTitle("Success")
                     success_msg.setText("All AI models wiped successfully.")
-                    if sys.platform == 'darwin':
+                    if IS_MAC:
                         success_msg.setInformativeText("You may now drag Privox.app to the Trash to complete uninstallation.")
                     success_msg.setStyleSheet("QMessageBox { background-color: #1a1a1a; color: white; } QLabel { color: white; } QPushButton { background-color: #333333; color: white; padding: 5px 15px; border-radius: 3px; } QPushButton:hover { background-color: #444444; }")
                     success_msg.exec()
@@ -1480,7 +1485,7 @@ class SettingsGUI(QMainWindow):
         return os.path.expanduser("~/Library/LaunchAgents/com.markyip.privox.plist")
 
     def toggle_startup(self):
-        if sys.platform == 'win32':
+        if IS_WIN:
             import winreg
             key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
             app_name = "Privox"
@@ -1514,7 +1519,7 @@ class SettingsGUI(QMainWindow):
             except Exception as e:
                 print(f"Error toggle startup: {e}")
                 
-        elif sys.platform == 'darwin':
+        elif IS_MAC:
             plist_path = self._get_mac_plist_path()
             if self.check_startup.isChecked():
                 # Create LaunchAgent plist
@@ -1555,7 +1560,7 @@ class SettingsGUI(QMainWindow):
                         print(f"Error disabling macOS startup: {e}")
 
     def check_startup_status(self):
-        if sys.platform == 'win32':
+        if IS_WIN:
             import winreg
             # 1. Check Registry
             key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -1573,7 +1578,7 @@ class SettingsGUI(QMainWindow):
             shortcut_exists = os.path.exists(os.path.join(startup_folder, "Privox.lnk"))
             return reg_exists or shortcut_exists
             
-        elif sys.platform == 'darwin':
+        elif IS_MAC:
             return os.path.exists(self._get_mac_plist_path())
             
         return False
@@ -1687,7 +1692,7 @@ if __name__ == "__main__":
     window.refresh_dict_list()
     
     window.show()
-    if sys.platform == 'darwin':
+    if IS_MAC:
         window.raise_()
         window.activateWindow()
         try:

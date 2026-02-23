@@ -12,26 +12,57 @@ import urllib.request
 import json
 import time
 
-if sys.platform == 'win32':
+import platform
+
+# Ultra-Robust Platform Detection
+# We use multiple methods and normalize to be absolutely sure
+_sys_plat = str(sys.platform).lower()
+_plat_sys = str(platform.system()).lower()
+
+IS_MAC = (_sys_plat == 'darwin' or _plat_sys == 'darwin')
+IS_WIN = (_sys_plat == 'win32' or _plat_sys == 'windows' or os.name == 'nt')
+
+# Backward compatibility for any remaining lowercase references
+is_mac = IS_MAC
+is_win = IS_WIN
+
+if IS_WIN:
     import winreg
     import ctypes
 
 def get_app_data_dir():
     """ Returns ~/Library/Application Support/Privox on Mac, or local dir on Windows. """
-    if sys.platform == 'darwin':
-        base = os.path.expanduser('~/Library/Application Support')
-        target = os.path.join(base, "Privox")
-        if not os.path.exists(target):
-            os.makedirs(target)
-        return target
-    return EXE_DIR
+    if IS_MAC:
+        try:
+            base = os.path.expanduser('~/Library/Application Support')
+            target = os.path.join(base, "Privox")
+            if not os.path.exists(target):
+                os.makedirs(target, exist_ok=True)
+            return target
+        except Exception as e:
+            # Fallback for Mac if Application Support is weird
+            return os.path.join(os.path.expanduser('~'), ".privox")
+            
+    if IS_WIN:
+        appdata = os.environ.get('LOCALAPPDATA')
+        if appdata:
+            target = os.path.join(appdata, "Privox")
+            if not os.path.exists(target):
+                os.makedirs(target, exist_ok=True)
+            return target
+            
+    # Universal fallback: use a hidden folder in HOME
+    target = os.path.join(os.path.expanduser('~'), ".privox")
+    if not os.path.exists(target):
+        os.makedirs(target, exist_ok=True)
+    return target
 
 # --- 0. Hard Environment Isolation (MUST BE FIRST) ---
 os.environ["PYTHONNOUSERSITE"] = "1"
 import site
 site.ENABLE_USER_SITE = False
 
-if sys.platform == 'win32':
+if IS_WIN:
     # Inject pixi environment DLL paths if already present
     env_path = os.path.join(os.getcwd(), ".pixi", "envs", "default")
     dll_path = os.path.join(env_path, "Library", "bin")
@@ -168,7 +199,7 @@ def run_pixi_command(worker, cmd, cwd):
             cmd, cwd=cwd,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, encoding='utf-8', errors='replace',
-            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
+            creationflags=subprocess.CREATE_NO_WINDOW if IS_WIN else 0
         )
         for line in process.stdout:
             if worker.cancelled:
@@ -186,7 +217,7 @@ def run_pixi_command(worker, cmd, cwd):
 
 def apply_dark_title_bar(window):
     """ Enforces a pitch-black title bar on Windows 10/11 using DWM API. """
-    if sys.platform != 'win32':
+    if not IS_WIN:
         return
     try:
         hwnd = window.effectiveWinId().value()
@@ -235,8 +266,9 @@ class InstallerGUI(QMainWindow):
         self.init_ui()
         self.load_styles()
         
-        if sys.platform == 'darwin' and mode == "install":
-            # On macOS, don't ask for path, just go.
+        if IS_MAC and mode == "install":
+            # On macOS, Swiss Style is too much. Skip straight to progress.
+            self.stack.setCurrentIndex(1)
             from PySide6.QtCore import QTimer
             QTimer.singleShot(100, self.start_install)
 
@@ -464,6 +496,11 @@ class InstallerGUI(QMainWindow):
         desc.setObjectName("desc")
         desc.setWordWrap(True)
         layout.addWidget(desc)
+
+        # DEBUG: Show platform in Welcome page if we ever see it (should be skipped on Mac)
+        diag = QLabel(f"Platform: {sys.platform} | IS_MAC: {IS_MAC}")
+        diag.setStyleSheet("font-size: 8px; color: rgba(255, 255, 255, 0.1);")
+        layout.addWidget(diag)
         
         path_box = QFrame()
         path_box.setStyleSheet("background-color: transparent; border: none; border-radius: 12px;")
@@ -477,7 +514,7 @@ class InstallerGUI(QMainWindow):
         row = QHBoxLayout()
         self.path_edit = QLineEdit()
         
-        if sys.platform == 'darwin':
+        if IS_MAC:
             default_path = get_app_data_dir()
             self.path_edit.setReadOnly(True)
             self.path_edit.setStyleSheet("color: rgba(255, 255, 255, 0.5); background-color: rgba(0, 0, 0, 0.2); border: 1px solid rgba(255, 255, 255, 0.05);")
@@ -503,7 +540,7 @@ class InstallerGUI(QMainWindow):
         btn_browse.clicked.connect(self.browse_path)
         
         # Hide browse button in uninstall mode or macOS
-        if self.mode == "uninstall" or sys.platform == 'darwin':
+        if self.mode == "uninstall" or IS_MAC:
             btn_browse.setVisible(False)
         
         row.addWidget(self.path_edit)
@@ -568,11 +605,10 @@ class InstallerGUI(QMainWindow):
         self.btn_cancel.setEnabled(True)
         self.btn_cancel.setText("CANCEL")
         
-        is_mac = sys.platform == 'darwin'
-        target_dir = get_app_data_dir() if is_mac else self.path_edit.text()
+        target_dir = get_app_data_dir() if IS_MAC else self.path_edit.text()
 
         self.thread = QThread()
-        self.worker = InstallWorker(target_dir, is_mac)
+        self.worker = InstallWorker(target_dir, IS_MAC)
         self.worker.moveToThread(self.thread)
         
         self.thread.started.connect(self.worker.run)
@@ -620,7 +656,7 @@ class InstallerGUI(QMainWindow):
 
     def launch_app(self):
         target_exe = os.path.join(self.path_edit.text(), "Privox.exe")
-        if sys.platform == 'darwin':
+        if IS_MAC:
             target_exe = os.path.join(get_app_data_dir(), "Privox") # On Mac, it's the app bundle
         
         if os.path.exists(target_exe):
@@ -689,13 +725,18 @@ def install_app_files(target_dir, log_cb, is_mac=False):
         # Kill running instances
         try:
             my_pid = os.getpid()
-            if sys.platform == 'win32':
+            if IS_WIN:
                 kill_cmd = "Get-CimInstance Win32_Process -Filter \"Name = 'python.exe' OR Name = 'pythonw.exe'\" | Where-Object { $_.CommandLine -match 'voice_input\.py' -or $_.CommandLine -match 'gui_settings\.py' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
                 subprocess.run(["powershell", "-Command", kill_cmd], creationflags=subprocess.CREATE_NO_WINDOW, capture_output=True, timeout=5)
                 subprocess.run(["taskkill", "/F", "/IM", "Privox.exe", "/FI", f"PID ne {my_pid}"], creationflags=subprocess.CREATE_NO_WINDOW, capture_output=True, timeout=5)
             else:
-                subprocess.run(["pkill", "-f", "Privox"], capture_output=True)
-            time.sleep(2.0)
+                # Surgical kill: -x matches exact process name 'Privox' (the bundled Mac app)
+                # This avoids killing the Antigravity/IDE server which has the workspace path in its args
+                subprocess.run(["pkill", "-x", "Privox"], capture_output=True)
+                # Specific patterns for background python scripts
+                subprocess.run(["pkill", "-f", "voice_input.py"], capture_output=True)
+                subprocess.run(["pkill", "-f", "gui_settings.py"], capture_output=True)
+            time.sleep(1.0)
         except: pass
         
         # Copy Core Files
@@ -735,7 +776,7 @@ def install_app_files(target_dir, log_cb, is_mac=False):
             
         src_dir = EXE_DIR
         if getattr(sys, 'frozen', False):
-            if sys.platform == 'darwin':
+            if IS_MAC:
                 src_dir = getattr(sys, '_MEIPASS', os.path.join(os.path.dirname(EXE_DIR), 'Resources'))
             else:
                 src_dir = getattr(sys, '_MEIPASS', EXE_DIR)
@@ -862,12 +903,11 @@ def register_uninstaller(install_dir, exe_path):
 
 def run_app(target_dir=None):
     """ Launches the main application using Pixi environment directly to avoid terminal flash. """
-    is_mac = sys.platform == 'darwin'
     if target_dir is None:
-        target_dir = get_app_data_dir() if is_mac else EXE_DIR
+        target_dir = get_app_data_dir() if IS_MAC else EXE_DIR
         
-    python_exec_name = "python" if is_mac else "pythonw.exe"
-    env_pythonw = os.path.join(target_dir, ".pixi", "envs", "default", "bin" if is_mac else "", python_exec_name)
+    python_exec_name = "python" if IS_MAC else "pythonw.exe"
+    env_pythonw = os.path.join(target_dir, ".pixi", "envs", "default", "bin" if IS_MAC else "", python_exec_name)
     
     if os.path.exists(env_pythonw):
         # Run python/pythonw directly to ensure no console flashes from 'pixi run' invoking a shell
@@ -893,14 +933,13 @@ def run_app(target_dir=None):
             sys.exit(1)
 
 if __name__ == "__main__":
-    is_mac = sys.platform == 'darwin'
     
     if "--run" in sys.argv:
         run_app()
         sys.exit(0)
         
     # Auto-Launch/Update Bypass for macOS
-    if is_mac:
+    if IS_MAC:
         app_data = get_app_data_dir()
         pixi_bin = os.path.join(app_data, ".pixi", "envs", "default", "bin", "python")
         if os.path.exists(pixi_bin):
@@ -914,12 +953,21 @@ if __name__ == "__main__":
             
             # Sync python scripts to ensure we load the latest version
             src_dir = getattr(sys, '_MEIPASS', os.path.join(os.path.dirname(EXE_DIR), 'Resources')) if getattr(sys, 'frozen', False) else EXE_DIR
+            
+            # If src/ folder doesn't exist in destination, we need a full sync
+            # This handles the case where someone might have deleted files
+            if not os.path.exists(os.path.join(app_data, "src")):
+                app = QApplication(sys.argv)
+                gui = InstallerGUI(mode="install")
+                gui.show()
+                sys.exit(app.exec())
+
+            # Perform a quick silent update of source files
             for folder in ["src"]:
                 src = os.path.join(src_dir, folder)
                 dst = os.path.join(app_data, folder)
                 if os.path.exists(src):
                     try:
-                        import shutil
                         shutil.copytree(src, dst, dirs_exist_ok=True)
                     except: pass
             
@@ -927,12 +975,18 @@ if __name__ == "__main__":
                 src_f = os.path.join(src_dir, f)
                 if os.path.exists(src_f):
                     try:
-                        import shutil
                         shutil.copy2(src_f, os.path.join(app_data, f))
                     except: pass
 
             run_app(target_dir=app_data)
             sys.exit(0)
+        else:
+            # First-time run on Mac: No Pixi environment. Start Installer GUI.
+            # It will auto-trigger because of the QTimer in __init__
+            app = QApplication(sys.argv)
+            gui = InstallerGUI(mode="install")
+            gui.show()
+            sys.exit(app.exec())
         
     mode = "install"
     if "--uninstall" in sys.argv:

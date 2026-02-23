@@ -18,7 +18,12 @@ import subprocess
 from datetime import datetime, timedelta
 import models_config
 from huggingface_hub import HfApi
-if sys.platform == 'win32':
+import platform
+
+IS_MAC = (sys.platform == 'darwin' or platform.system() == 'Darwin')
+IS_WIN = (sys.platform == 'win32' or platform.system() == 'Windows')
+
+if IS_WIN:
     import winreg
     import ctypes
     from ctypes import wintypes
@@ -126,7 +131,7 @@ else:
 APP_DATA_DIR = models_config.get_app_data_dir(BASE_DIR)
 
 # Simplified Path Logic: Trust Pixi environment but handle DLLs if needed
-if sys.platform == 'win32':
+if IS_WIN:
     # Ensure CUDA DLLs from pixi env are reachable (usually in .pixi/envs/default/bin)
     pixi_bin = os.path.join(BASE_DIR, ".pixi", "envs", "default", "bin")
     if os.path.exists(pixi_bin):
@@ -157,7 +162,7 @@ try:
     log_print(f"Torch Version: {torch.__version__}")
     log_print(f"Torch Path: {getattr(torch, '__file__', 'Unknown')}")
     log_print("Importing Model components...")
-    if sys.platform != 'darwin':
+    if not IS_MAC:
         from llama_cpp import Llama
     log_print("Model components import successful.")
     log_print(f"CUDA Available: {torch.cuda.is_available()}")
@@ -190,7 +195,7 @@ except Exception as e:
     err_stack = traceback.format_exc()
     log_print(f"CRITICAL UTILITY IMPORT ERROR: {e}")
     log_print(err_stack)
-    if sys.platform == 'win32':
+    if IS_WIN:
         import ctypes
         ctypes.windll.user32.MessageBoxW(0, f"Privox Import Error:\n\n{e}\n\nTraceback:\n{err_stack[:500]}...", "Privox Fatal Error", 0x10)
     sys.exit(1)
@@ -390,7 +395,7 @@ class GrammarChecker:
             err_trace = traceback.format_exc()
             log_print(f"\nError loading Grammar Model: {e}\n{err_trace}")
             self.loading_error = str(e)
-            if sys.platform == 'win32':
+            if IS_WIN:
                  ctypes.windll.user32.MessageBoxW(0, f"Error loading Grammar Model (Llama):\n\n{e}\n\nTraceback:\n{err_trace[:500]}", "Privox Model Error", 0x10)
 
     def get_effective_prompt(self):
@@ -1591,7 +1596,7 @@ class VoiceInputApp:
         self.mutex_handle = None
         self.mac_lockfile = None
         
-        if sys.platform == 'win32':
+        if IS_WIN:
             import ctypes
             mutex_name = "Global\\Privox_SingleInstance_Mutex"
             self.mutex_handle = ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name)
@@ -1609,7 +1614,7 @@ class VoiceInputApp:
             
             log_print("Acquired single-instance mutex.")
             
-        elif sys.platform == 'darwin':
+        elif IS_MAC:
             import fcntl
             import tempfile
             lockfile_path = os.path.join(tempfile.gettempdir(), 'privox_single_instance.lock')

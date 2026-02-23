@@ -10,7 +10,21 @@ import ctypes
 import zipfile
 import urllib.request
 import json
-import winreg
+import time
+
+if sys.platform == 'win32':
+    import winreg
+    import ctypes
+
+def get_app_data_dir():
+    """ Returns ~/Library/Application Support/Privox on Mac, or local dir on Windows. """
+    if sys.platform == 'darwin':
+        base = os.path.expanduser('~/Library/Application Support')
+        target = os.path.join(base, "Privox")
+        if not os.path.exists(target):
+            os.makedirs(target)
+        return target
+    return EXE_DIR
 
 # --- 0. Hard Environment Isolation (MUST BE FIRST) ---
 os.environ["PYTHONNOUSERSITE"] = "1"
@@ -52,10 +66,11 @@ class InstallWorker(QObject):
     log_signal = Signal(str)
     progress_signal = Signal(int)
 
-    def __init__(self, target_dir):
+    def __init__(self, target_dir, is_mac=False):
         super().__init__()
         self.target_dir = os.path.normpath(target_dir)
         self.cancelled = False
+        self.is_mac = is_mac
 
     def stop(self):
         self.cancelled = True
@@ -70,7 +85,7 @@ class InstallWorker(QObject):
             self.progress_signal.emit(10)
 
             # 1. Install Files
-            if not install_app_files(target_dir, self.log_signal.emit):
+            if not install_app_files(target_dir, self.log_signal.emit, self.is_mac):
                 if not self.cancelled:
                     self.finished.emit(False)
                 return
@@ -79,7 +94,7 @@ class InstallWorker(QObject):
             self.progress_signal.emit(30)
             
             # 2. Pixi Setup
-            pixi_exe = ensure_pixi(target_dir, self.log_signal.emit)
+            pixi_exe = ensure_pixi(target_dir, self.log_signal.emit, self.is_mac)
             if not pixi_exe or self.cancelled:
                 if not self.cancelled:
                     self.finished.emit(False)
@@ -88,8 +103,43 @@ class InstallWorker(QObject):
             self.progress_signal.emit(40)
             self.log_signal.emit("Setting up environment (Pixi)...")
             
-            success = run_pixi_command(self, [pixi_exe, "install", "-v"], cwd=target_dir)
-            if not success or self.cancelled:
+            # success = run_pixi_command(self, [pixi_exe, "install", "-v"], cwd=target_dir)
+            # if not success or self.cancelled:
+            #     if not self.cancelled:
+            #         self.finished.emit(False)
+            #     return
+            try:
+                self.log_signal.emit("Pixi detected.")
+                self.log_signal.emit("Setting up environment (Pixi)...")
+                # Create a simple python script execution purely to trigger Pixi's environment build
+                import subprocess
+                if self.is_mac:
+                    self.log_signal.emit("Building macOS MLX environment... This might take a few minutes...")
+                    build_cmd = [pixi_exe, "run", "python", "-c", "import sys; print('Environment ready')"]
+                else:
+                    build_cmd = [pixi_exe, "run", "python", "-c", "import sys; print('Environment ready')"]
+                    
+                process = subprocess.Popen(
+                    build_cmd, 
+                    cwd=self.target_dir, 
+                    stdout=subprocess.PIPE, 
+                    stderr=subprocess.STDOUT, 
+                    text=True,
+                    bufsize=1,
+                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0) if not self.is_mac else 0
+                )
+                for line in process.stdout:
+                    line = line.strip()
+                    if line:
+                        self.log_signal.emit(f"Pixi: {line}")
+                process.wait()
+                if process.returncode != 0:
+                    self.log_signal.emit(f"Pixi environment setup failed with exit code {process.returncode}")
+                    if not self.cancelled:
+                        self.finished.emit(False)
+                    return
+            except Exception as e:
+                self.log_signal.emit(f"Pixi environment setup error: {e}")
                 if not self.cancelled:
                     self.finished.emit(False)
                 return
@@ -118,7 +168,7 @@ def run_pixi_command(worker, cmd, cwd):
             cmd, cwd=cwd,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, encoding='utf-8', errors='replace',
-            creationflags=subprocess.CREATE_NO_WINDOW
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
         )
         for line in process.stdout:
             if worker.cancelled:
@@ -184,8 +234,11 @@ class InstallerGUI(QMainWindow):
         
         self.init_ui()
         self.load_styles()
-        # Removed apply_mica_or_acrylic to prevent "Square Blur" artifacts on rounded corners.
-        # We now rely solely on setAttribute(Qt.WA_TranslucentBackground) for transparency.
+        
+        if sys.platform == 'darwin' and mode == "install":
+            # On macOS, don't ask for path, just go.
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(100, self.start_install)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -423,7 +476,14 @@ class InstallerGUI(QMainWindow):
         
         row = QHBoxLayout()
         self.path_edit = QLineEdit()
-        default_path = os.path.join(os.environ.get('LOCALAPPDATA', 'C:'), "Privox")
+        
+        if sys.platform == 'darwin':
+            default_path = get_app_data_dir()
+            self.path_edit.setReadOnly(True)
+            self.path_edit.setStyleSheet("color: rgba(255, 255, 255, 0.5); background-color: rgba(0, 0, 0, 0.2); border: 1px solid rgba(255, 255, 255, 0.05);")
+        else:
+            default_path = os.path.join(os.environ.get('LOCALAPPDATA', 'C:'), "Privox")
+            
         if self.mode == "uninstall":
             # In uninstall mode, try to detect where we are running from
             # If frozen (exe), we are likely in the install dir.
@@ -442,8 +502,8 @@ class InstallerGUI(QMainWindow):
         btn_browse.setFixedSize(80, 34)
         btn_browse.clicked.connect(self.browse_path)
         
-        # Hide browse button in uninstall mode
-        if self.mode == "uninstall":
+        # Hide browse button in uninstall mode or macOS
+        if self.mode == "uninstall" or sys.platform == 'darwin':
             btn_browse.setVisible(False)
         
         row.addWidget(self.path_edit)
@@ -508,8 +568,11 @@ class InstallerGUI(QMainWindow):
         self.btn_cancel.setEnabled(True)
         self.btn_cancel.setText("CANCEL")
         
+        is_mac = sys.platform == 'darwin'
+        target_dir = get_app_data_dir() if is_mac else self.path_edit.text()
+
         self.thread = QThread()
-        self.worker = InstallWorker(self.path_edit.text())
+        self.worker = InstallWorker(target_dir, is_mac)
         self.worker.moveToThread(self.thread)
         
         self.thread.started.connect(self.worker.run)
@@ -557,17 +620,21 @@ class InstallerGUI(QMainWindow):
 
     def launch_app(self):
         target_exe = os.path.join(self.path_edit.text(), "Privox.exe")
+        if sys.platform == 'darwin':
+            target_exe = os.path.join(get_app_data_dir(), "Privox") # On Mac, it's the app bundle
+        
         if os.path.exists(target_exe):
-            subprocess.Popen([target_exe, "--run"])
+            run_app(target_dir=self.path_edit.text()) # Pass the actual install dir
         self.close()
 
 # --- Helper Functions (Migrated from legacy bootstrap.py) ---
 
-def ensure_pixi(base_dir, log_cb):
+def ensure_pixi(base_dir, log_cb, is_mac=False):
     """ Checks for local pixi executable, downloads if missing. """
     internal_dir = os.path.join(base_dir, "_internal")
     pixi_dir = os.path.join(internal_dir, "pixi")
-    pixi_exe = os.path.join(pixi_dir, "pixi.exe")
+    pixi_exe_name = "pixi" if is_mac else "pixi.exe"
+    pixi_exe = os.path.join(pixi_dir, pixi_exe_name)
     
     if os.path.exists(pixi_exe):
         log_cb("Pixi detected.")
@@ -577,24 +644,42 @@ def ensure_pixi(base_dir, log_cb):
     if not os.path.exists(pixi_dir):
         os.makedirs(pixi_dir)
         
-    url = "https://github.com/prefix-dev/pixi/releases/latest/download/pixi-x86_64-pc-windows-msvc.zip"
-    zip_path = os.path.join(pixi_dir, "pixi.zip")
+    if is_mac:
+        import platform
+        arch = platform.machine().lower()
+        if arch in ['arm64', 'aarch64']:
+            url = "https://github.com/prefix-dev/pixi/releases/latest/download/pixi-aarch64-apple-darwin.tar.gz"
+        else:
+            url = "https://github.com/prefix-dev/pixi/releases/latest/download/pixi-x86_64-apple-darwin.tar.gz"
+        archive_path = os.path.join(pixi_dir, "pixi.tar.gz")
+    else:
+        url = "https://github.com/prefix-dev/pixi/releases/latest/download/pixi-x86_64-pc-windows-msvc.zip"
+        archive_path = os.path.join(pixi_dir, "pixi.zip")
     
     try:
-        urllib.request.urlretrieve(url, zip_path)
+        urllib.request.urlretrieve(url, archive_path)
         log_cb("Extracting Pixi...")
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(pixi_dir)
-        os.remove(zip_path)
+        if archive_path.endswith('.zip'):
+            with zipfile.ZipFile(archive_path, 'r') as zip_ref:
+                zip_ref.extractall(pixi_dir)
+        else:
+            import tarfile
+            with tarfile.open(archive_path, "r:gz") as tar:
+                tar.extractall(pixi_dir)
+            # Make the binary executable on macOS
+            pixi_bin = os.path.join(pixi_dir, "pixi")
+            if os.path.exists(pixi_bin):
+                os.chmod(pixi_bin, 0o755)
+        os.remove(archive_path)
         return pixi_exe if os.path.exists(pixi_exe) else None
     except Exception as e:
         log_cb(f"Pixi download error: {e}")
         return None
 
-def install_app_files(target_dir, log_cb):
+def install_app_files(target_dir, log_cb, is_mac=False):
     """ Copies the EXE and resources to the target directory. """
     try:
-        exe_name = "Privox.exe"
+        exe_name = "Privox" if is_mac else "Privox.exe"
         target_exe = os.path.join(target_dir, exe_name)
         if not os.path.exists(target_dir): os.makedirs(target_dir)
         
@@ -604,27 +689,66 @@ def install_app_files(target_dir, log_cb):
         # Kill running instances
         try:
             my_pid = os.getpid()
-            # Precisely target Privox background processes instead of all python.exe
-            kill_cmd = "Get-CimInstance Win32_Process -Filter \"Name = 'python.exe' OR Name = 'pythonw.exe'\" | Where-Object { $_.CommandLine -match 'voice_input\.py' -or $_.CommandLine -match 'gui_settings\.py' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
-            subprocess.run(["powershell", "-Command", kill_cmd], creationflags=subprocess.CREATE_NO_WINDOW, capture_output=True, timeout=5)
-            
-            subprocess.run(["taskkill", "/F", "/IM", "Privox.exe", "/FI", f"PID ne {my_pid}"], creationflags=subprocess.CREATE_NO_WINDOW, capture_output=True, timeout=5)
+            if sys.platform == 'win32':
+                kill_cmd = "Get-CimInstance Win32_Process -Filter \"Name = 'python.exe' OR Name = 'pythonw.exe'\" | Where-Object { $_.CommandLine -match 'voice_input\.py' -or $_.CommandLine -match 'gui_settings\.py' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
+                subprocess.run(["powershell", "-Command", kill_cmd], creationflags=subprocess.CREATE_NO_WINDOW, capture_output=True, timeout=5)
+                subprocess.run(["taskkill", "/F", "/IM", "Privox.exe", "/FI", f"PID ne {my_pid}"], creationflags=subprocess.CREATE_NO_WINDOW, capture_output=True, timeout=5)
+            else:
+                subprocess.run(["pkill", "-f", "Privox"], capture_output=True)
             time.sleep(2.0)
         except: pass
         
         # Copy Core Files
         if os.path.normpath(current_exe) != os.path.normpath(target_exe):
-            shutil.copy2(current_exe, target_exe)
+            if is_mac:
+                # On macOS, the executable is inside the app bundle
+                # The installer itself is the app bundle, so we copy the whole thing
+                # The target_dir is ~/Library/Application Support/Privox
+                # We want to copy the current app bundle (EXE_DIR) into target_dir
+                # So, target_app_bundle = os.path.join(target_dir, "Privox.app")
+                # shutil.copytree(EXE_DIR, target_app_bundle, dirs_exist_ok=True)
+                # For now, let's assume the installer is the app bundle and we copy its contents
+                # to the target_dir, and then the pixi environment will be built there.
+                # This needs careful thought for macOS app bundles.
+                # For now, let's copy the contents of the current app bundle's Resources folder
+                # to the target_dir.
+                
+                # If running as a frozen app on macOS, sys.executable is the app bundle path.
+                # We need to copy the *contents* of the app bundle's Resources folder.
+                if getattr(sys, 'frozen', False):
+                    # sys._MEIPASS points to the temporary bundle contents
+                    src_contents_dir = getattr(sys, '_MEIPASS', EXE_DIR)
+                else:
+                    # If not frozen, we are running from source, so EXE_DIR is the project root
+                    src_contents_dir = EXE_DIR
+
+                # Copy everything from src_contents_dir to target_dir
+                for item in os.listdir(src_contents_dir):
+                    s = os.path.join(src_contents_dir, item)
+                    d = os.path.join(target_dir, item)
+                    if os.path.isdir(s):
+                        shutil.copytree(s, d, dirs_exist_ok=True)
+                    else:
+                        shutil.copy2(s, d)
+            else: # Windows
+                shutil.copy2(current_exe, target_exe)
+            
+        src_dir = EXE_DIR
+        if getattr(sys, 'frozen', False):
+            if sys.platform == 'darwin':
+                src_dir = getattr(sys, '_MEIPASS', os.path.join(os.path.dirname(EXE_DIR), 'Resources'))
+            else:
+                src_dir = getattr(sys, '_MEIPASS', EXE_DIR)
         
         # Copy Configs
         for f in ["config.json", "pixi.toml", "pixi.lock", "uninstall.bat"]:
-            src = os.path.join(EXE_DIR, f)
+            src = os.path.join(src_dir, f)
             if os.path.exists(src):
                 shutil.copy2(src, os.path.join(target_dir, f))
 
         # Copy Assets & Models
         for folder in ["models", "assets", "src"]:
-            src = os.path.join(EXE_DIR, folder)
+            src = os.path.join(src_dir, folder)
             dst = os.path.join(target_dir, folder)
             if os.path.exists(src):
                 log_cb(f"Syncing {folder}...")
@@ -736,38 +860,79 @@ def register_uninstaller(install_dir, exe_path):
     except Exception as e:
         print(f"Failed to register uninstaller: {e}")
 
-def run_app():
+def run_app(target_dir=None):
     """ Launches the main application using Pixi environment directly to avoid terminal flash. """
     is_mac = sys.platform == 'darwin'
+    if target_dir is None:
+        target_dir = get_app_data_dir() if is_mac else EXE_DIR
+        
     python_exec_name = "python" if is_mac else "pythonw.exe"
-    env_pythonw = os.path.join(EXE_DIR, ".pixi", "envs", "default", "bin" if is_mac else "", python_exec_name)
+    env_pythonw = os.path.join(target_dir, ".pixi", "envs", "default", "bin" if is_mac else "", python_exec_name)
     
     if os.path.exists(env_pythonw):
         # Run python/pythonw directly to ensure no console flashes from 'pixi run' invoking a shell
-        script_path = os.path.join(EXE_DIR, "src", "voice_input.py")
+        script_path = os.path.join(target_dir, "src", "voice_input.py")
         if is_mac:
-            # Popen without creationflags on Unix
-            subprocess.Popen([env_pythonw, script_path], cwd=EXE_DIR)
+            # Popen without creationflags on Unix, pipe to DEVNULL to prevent blocking GUI
+            # Use Popen with preexec_fn to detach on Unix-like systems
+            subprocess.Popen([env_pythonw, script_path], cwd=target_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, preexec_fn=os.setsid)
         else:
-            subprocess.Popen([env_pythonw, script_path], cwd=EXE_DIR, creationflags=subprocess.CREATE_NO_WINDOW)
+            subprocess.Popen([env_pythonw, script_path], cwd=target_dir, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     else:
         # Fallback to pixi run if environment isn't standard
-        internal_dir = os.path.join(EXE_DIR, "_internal")
+        internal_dir = os.path.join(target_dir, "_internal")
         pixi_exe = os.path.join(internal_dir, "pixi", "pixi" if is_mac else "pixi.exe")
         
         if os.path.exists(pixi_exe):
             if is_mac:
-                subprocess.Popen([pixi_exe, "run", "start"], cwd=EXE_DIR)
+                subprocess.Popen([pixi_exe, "run", "start"], cwd=target_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, preexec_fn=os.setsid)
             else:
-                subprocess.Popen([pixi_exe, "run", "start-windowless"], cwd=EXE_DIR, creationflags=subprocess.CREATE_NO_WINDOW)
+                subprocess.Popen([pixi_exe, "run", "start-windowless"], cwd=target_dir, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         else:
             print("Error: Pixi environment not found. Please reinstall.")
             sys.exit(1)
 
 if __name__ == "__main__":
+    is_mac = sys.platform == 'darwin'
+    
     if "--run" in sys.argv:
         run_app()
         sys.exit(0)
+        
+    # Auto-Launch/Update Bypass for macOS
+    if is_mac:
+        app_data = get_app_data_dir()
+        pixi_bin = os.path.join(app_data, ".pixi", "envs", "default", "bin", "python")
+        if os.path.exists(pixi_bin):
+            # Force kill old background instances so we can update and run
+            try:
+                subprocess.run(["pkill", "-f", "voice_input.py"], capture_output=True)
+                subprocess.run(["pkill", "-f", "gui_settings.py"], capture_output=True)
+                import time
+                time.sleep(1.0)
+            except: pass
+            
+            # Sync python scripts to ensure we load the latest version
+            src_dir = getattr(sys, '_MEIPASS', os.path.join(os.path.dirname(EXE_DIR), 'Resources')) if getattr(sys, 'frozen', False) else EXE_DIR
+            for folder in ["src"]:
+                src = os.path.join(src_dir, folder)
+                dst = os.path.join(app_data, folder)
+                if os.path.exists(src):
+                    try:
+                        import shutil
+                        shutil.copytree(src, dst, dirs_exist_ok=True)
+                    except: pass
+            
+            for f in ["config.json", "pixi.toml", "pixi.lock"]:
+                src_f = os.path.join(src_dir, f)
+                if os.path.exists(src_f):
+                    try:
+                        import shutil
+                        shutil.copy2(src_f, os.path.join(app_data, f))
+                    except: pass
+
+            run_app(target_dir=app_data)
+            sys.exit(0)
         
     mode = "install"
     if "--uninstall" in sys.argv:

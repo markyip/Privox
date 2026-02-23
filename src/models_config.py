@@ -3,6 +3,26 @@ Shared configuration for Privox AI model libraries and prompt templates.
 Ensures consistency between GUI and Background engine.
 """
 
+import os
+import sys
+
+def get_app_data_dir(base_fallback_dir):
+    """
+    Returns the appropriate directory for storing user data (prefs, configs, models).
+    On macOS, this points to ~/Library/Application Support/Privox.
+    On Windows/Linux, it gracefully falls back to the application base folder.
+    """
+    if sys.platform == "darwin":
+        app_support = os.path.expanduser("~/Library/Application Support/Privox")
+        if not os.path.exists(app_support):
+            try:
+                os.makedirs(app_support, exist_ok=True)
+            except Exception as e:
+                print(f"Failed to create macOS App Support dir: {e}")
+                return base_fallback_dir
+        return app_support
+    return base_fallback_dir
+
 # --- Voice-to-Text (ASR) Library ---
 ASR_LIBRARY = [
     {"name": "Distil-Whisper Large v3 (English)", "whisper_repo": "Systran/faster-distil-whisper-large-v3", "whisper_model": "distil-large-v3", "repo": "Systran/faster-distil-whisper-large-v3", "description": "Fast & High Quality. Best accuracy with distilled architecture."},
@@ -105,16 +125,35 @@ CRITICAL RULES:
 3. PUNCTUATION: Use appropriate punctuation for clarity.
 4. NO HALLUCINATION: Do not add information not present in the original transcript.
 5. REMOVE FILLERS: Delete unnecessary filler words (uh, um, yeah, etc.).
-6. **ABSOLUTE NO CONVERSATION**: Output ONLY the corrected text. Never add commentary, greetings, or questions.
-7. IF UNCLEAR: If the input consists purely of noise, mirror it exactly.
+6. **ABSOLUTE NO CONVERSATION**: Output ONLY the corrected text inside the tags. Never add commentary, greetings, or questions.
 """
 
-# --- Default User Prompts ---
+# --- System API Formatter (Few-Shot Alignment) ---
+SYSTEM_FORMATTER = f"""
+You are a precise text-processing API. Your job is to process the user's transcript according to the Core Directive.
+You MUST wrap your final processed text perfectly inside <refined> and </refined> XML tags. Do NOT output anything outside of these tags.
+
+{CRITICAL_RULES}
+
+<example_1>
+[Core Directive]: Refine this text for clarity.
+[Transcript]: uhh i think i wanna go to the the store
+Output: <refined>I think I want to go to the store.</refined>
+</example_1>
+
+<example_2>
+[Core Directive]: Rewrite as a Pirate.
+[Transcript]: hello there my friend
+Output: <refined>Ahoy there, me hearty!</refined>
+</example_2>
+"""
+
+# --- Default User Prompts (Core Directives) ---
 DEFAULT_PROMPTS = {
-    "Writing Assistant|Professional": f"Refine the provided transcript into clear, professional, and grammatically correct business text. Focus on executive clarity, precision, and a formal tone.\n\n{CRITICAL_RULES}",
-    "Writing Assistant|Natural": f"Refine the provided transcript into clean, professional, and grammatically correct text, while maintaining a natural and conversational flow.\n\n{CRITICAL_RULES}",
-    "Writing Assistant|Concise": f"Summarize the provided transcript into the most essential points, removing all fluff and redundancy while ensuring logical flow.\n\n{CRITICAL_RULES}",
-    "Code Expert|Natural": f"Refine this technical explanation or code description. Ensure terminology is accurate, the flow is logical, and the tone is helpful yet professional.\n\n{CRITICAL_RULES}",
-    "Code Expert|Concise": f"Convert this technical speech into a concise summary. Use markdown where helpful to highlight key terms or snippets.\n\n{CRITICAL_RULES}",
-    "Executive Secretary|Polite": f"Draft a formal and highly respectful response based on this transcript. Organize the thoughts into a polished executive format.\n\n{CRITICAL_RULES}",
+    "Writing Assistant|Professional": "Refine the provided transcript into clear, professional, and grammatically correct business text. Focus on executive clarity, precision, and a formal tone.",
+    "Writing Assistant|Natural": "Refine the provided transcript into clean, professional, and grammatically correct text, while maintaining a natural and conversational flow.",
+    "Writing Assistant|Concise": "Summarize the provided transcript into the most essential points, removing all fluff and redundancy while ensuring logical flow.",
+    "Code Expert|Natural": "Refine this technical explanation or code description. Ensure terminology is accurate, the flow is logical, and the tone is helpful yet professional.",
+    "Code Expert|Concise": "Convert this technical speech into a concise summary. Use markdown where helpful to highlight key terms or snippets.",
+    "Executive Secretary|Polite": "Draft a formal and highly respectful response based on this transcript. Organize the thoughts into a polished executive format.",
 }

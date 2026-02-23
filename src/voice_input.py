@@ -123,6 +123,8 @@ if getattr(sys, 'frozen', False):
 else:
     BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+APP_DATA_DIR = models_config.get_app_data_dir(BASE_DIR)
+
 # Simplified Path Logic: Trust Pixi environment but handle DLLs if needed
 if sys.platform == 'win32':
     # Ensure CUDA DLLs from pixi env are reachable (usually in .pixi/envs/default/bin)
@@ -154,9 +156,10 @@ try:
     log_print(f"Python Version: {sys.version}")
     log_print(f"Torch Version: {torch.__version__}")
     log_print(f"Torch Path: {getattr(torch, '__file__', 'Unknown')}")
-    log_print("Importing Llama components...")
-    from llama_cpp import Llama
-    log_print("Llama import successful.")
+    log_print("Importing Model components...")
+    if sys.platform != 'darwin':
+        from llama_cpp import Llama
+    log_print("Model components import successful.")
     log_print(f"CUDA Available: {torch.cuda.is_available()}")
     log_print(f"CUDA Version: {torch.version.cuda}")
     log_print(f"CuDNN Version: {torch.backends.cudnn.version()}")
@@ -275,7 +278,7 @@ class GrammarChecker:
 
         if is_mac:
             # --- macOS MLX Execution Path ---
-            mlx_target_dir = os.path.join(BASE_DIR, "models", "mlx-llama-3.2")
+            mlx_target_dir = os.path.join(APP_DATA_DIR, "models", "mlx-llama-3.2")
             if not os.path.exists(mlx_target_dir):
                 self.loading_error = f"MLX Model missing: {mlx_target_dir}"
                 log_print(self.loading_error)
@@ -301,7 +304,7 @@ class GrammarChecker:
         # --- Windows/Linux Llama Context Execution Path ---
 
         # 1. Check Local "models" folder (Offline Mode)
-        local_model_path = os.path.join(BASE_DIR, "models", file_name)
+        local_model_path = os.path.join(APP_DATA_DIR, "models", file_name)
         if os.path.exists(local_model_path):
             log_print(f"Found local model: {local_model_path}")
             model_path = local_model_path
@@ -321,7 +324,7 @@ class GrammarChecker:
                     log_print(f"Found in Hugging Face cache: {model_path}")
                 except Exception:
                     log_print(f"Model not in cache. Downloading {file_name} from {repo_id}...")
-                    local_dir = os.path.join(BASE_DIR, "models")
+                    local_dir = os.path.join(APP_DATA_DIR, "models")
                     if not os.path.exists(local_dir):
                         os.makedirs(local_dir, exist_ok=True)
                     
@@ -391,27 +394,18 @@ class GrammarChecker:
                  ctypes.windll.user32.MessageBoxW(0, f"Error loading Grammar Model (Llama):\n\n{e}\n\nTraceback:\n{err_trace[:500]}", "Privox Model Error", 0x10)
 
     def get_effective_prompt(self):
-        """Constructs a composite prompt with hidden overrides.
-        Layer 1: Core Safety/Format (Hidden)
-        Layer 2: User Instructions (Visible in GUI)
-        Layer 3: Late-Binding Overrides (Hidden, conditional)
-        """
+        """Constructs the combined Core Directive string based on user selections."""
         key = f"{self.character}|{self.tone}"
-        user_text = self.custom_prompts.get(key, "").strip()
         
-        # Layer 1: Core System Directives (Global Critical Rules)
-        prompt = f"REFINE TRANSCRIPT: Provide a clean, accurate version of the ASR input.\n\n{models_config.CRITICAL_RULES}"
+        # Layer 1: Base User Directive from Dropdowns
+        prompt_directive = self.custom_prompts.get(key, "Refine the provided transcript.").strip()
         
+        # Jargon Injection
         dict_str = ", ".join(self.custom_dictionary)
         if dict_str:
-            prompt += f"Specific Jargon/Hints: {dict_str}\n"
+            prompt_directive += f" Specific Jargon/Hints: {dict_str}\n"
 
-        # Layer 2: User-Edited Instructions
-        if user_text:
-            prompt += f"\n### ADDITIONAL USER INSTRUCTIONS ###\n{user_text}\n"
-
-        # Layer 3: Late-Binding Overrides (Ensures Dropdown Priority)
-        # We append these LAST so they win any conflicts in the LLM's attention.
+        # Layer 2: Late-Binding Overrides (Ensures Dropdown priority)
         overrides = ""
         if self.character != "Custom":
             lens = models_config.CHARACTER_LENSES.get(self.character, "")
@@ -424,9 +418,9 @@ class GrammarChecker:
                 overrides += f"\n[STRICT STYLE OVERRIDE]: {overlay}"
         
         if overrides:
-            prompt += f"\n### SYSTEM OVERRIDES (HIGHEST PRIORITY) ###{overrides}\n"
+            prompt_directive += f"\n### SYSTEM OVERRIDES (HIGHEST PRIORITY) ###{overrides}\n"
 
-        return prompt
+        return prompt_directive
 
     def correct(self, text, is_command=False):
         # 1. Pre-processing Guardrail: Skip LLM for very short or empty inputs
@@ -446,21 +440,23 @@ class GrammarChecker:
                 # Agent Mode
                 system_prompt = self.command_prompt or (
                     "You are Privox, an intelligent assistant. Execute the user's instruction perfectly. "
-                    "Output ONLY the result. Do not chat."
+                    "Output ONLY the result inside <refined> and </refined> tags. Do not chat."
                 )
                 user_content = text
             else:
-                system_prompt = self.get_effective_prompt()
-                user_content = f"Input Text: {text}\n\nCorrected Text:"
+                # Use the new robust Wrapper Structure
+                core_directive = self.get_effective_prompt()
+                system_prompt = models_config.SYSTEM_FORMATTER
+                user_content = f"[Core Directive]: {core_directive}\n[Transcript]: {text}\nOutput: "
 
             # Format based on model type
             if prompt_type == "t5":
-                # CoEdit / T5 style: simple instruction + input
+                # CoEdit / T5 style: simple instruction + input (Does not use XML wrapping naturally)
                 action = "Polish" if self.tone != "Natural" else "Fix grammar"
                 prompt = f"{action}: {text}"
                 stop_tokens = ["\n"]
             else:
-                # Llama 3 / Chat style
+                # Llama 3 / Qwen / Mistral style format
                 prompt = (
                     f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n{system_prompt}<|eot_id|>"
                     f"<|start_header_id|>user<|end_header_id|>\n\n{user_content}<|eot_id|>"
@@ -479,8 +475,7 @@ class GrammarChecker:
                     max_tokens=1024,
                     verbose=False
                 )
-                # MLX generate returns the text directly (it strips prompt usually, but we strip to be safe)
-                return output.strip()
+                raw_response = output.strip()
             else:
                 # --- Windows Llama CPP Execution ---
                 output = self.model(
@@ -490,8 +485,24 @@ class GrammarChecker:
                     echo=False,
                     temperature=0.3,
                 )
-                return output['choices'][0]['text'].strip()
+                raw_response = output['choices'][0]['text'].strip()
                 
+            # If standard instruction model (T5), just return the raw string
+            if prompt_type == "t5":
+                return raw_response
+
+            # If Llama/Qwen, extract text purely from inside the <refined> tags 
+            # to crush conversational alignment hallucinations.
+            import re
+            match = re.search(r'<refined>(.*?)</refined>', raw_response, flags=re.DOTALL | re.IGNORECASE)
+            if match:
+                log_print("Regex extracted <refined> block successfully.")
+                return match.group(1).strip()
+            
+            # Fallback if the model hallucinated and forgot the tags.
+            log_print("Warning: Model failed to use <refined> tags. Returning raw output.")
+            return raw_response
+
         except Exception as e:
             log_print(f"Grammar Check Error: {e}")
             return text
@@ -588,7 +599,7 @@ class VoiceInputApp:
         log_print("Loading Silero VAD...", end="", flush=True)
         try:
             # Force Torch Hub to use the local models folder for VAD
-            hub_dir = os.path.join(BASE_DIR, "models", "hub")
+            hub_dir = os.path.join(APP_DATA_DIR, "models", "hub")
             if not os.path.exists(hub_dir):
                 os.makedirs(hub_dir, exist_ok=True)
             torch.hub.set_dir(hub_dir)
@@ -634,19 +645,25 @@ class VoiceInputApp:
                     device_str = "cuda" if is_gpu else "cpu"
                     
                     if ASR_BACKEND == "sensevoice":
-                        sense_dir = os.path.join(BASE_DIR, "models", "SenseVoiceSmall")
-                        log_print(f"ASR Diagnostic - Initializing SenseVoiceSmall on {device_str}...")
+                        sense_dir = os.path.join(APP_DATA_DIR, "models", "SenseVoiceSmall")
+                        if not os.path.exists(sense_dir):
+                            log_print("Fetching SenseVoiceSmall...")
+                            from modelscope.hub.snapshot_download import snapshot_download
+                            snapshot_download('iic/SenseVoiceSmall', local_dir=sense_dir)
+                            
                         from funasr import AutoModel
+                        self.vad_model = AutoModel(model="fsmn-vad", model_revision="v2.0.4", max_single_segment_time=60000, disable_update=True)
                         self.asr_model = AutoModel(
-                            model=sense_dir if os.path.exists(sense_dir) else "iic/SenseVoiceSmall",
-                            device=device_str,
-                            disable_update=True
+                            model=sense_dir,
+                            vad_model="fsmn-vad",
+                            vad_kwargs={"max_single_segment_time": 30000},
+                            disable_update=True,
+                            device="cuda" if torch.cuda.is_available() else "cpu"
                         )
-                        log_print(f"SenseVoice initialized successfully.")
                     else:
                         compute_type = "float16" if is_gpu else "int8"
                         from faster_whisper import WhisperModel
-                        local_whisper = os.path.join(BASE_DIR, "models", f"whisper-{WHISPER_SIZE}")
+                        local_whisper = os.path.join(APP_DATA_DIR, "models", f"whisper-{WHISPER_SIZE}")
                         model_path = local_whisper if os.path.exists(os.path.join(local_whisper, "model.bin")) else WHISPER_REPO
                         log_print(f"ASR Diagnostic - Initializing WhisperModel ({WHISPER_SIZE}) on {device_str}...")
                         self.asr_model = WhisperModel(model_path, device=device_str, compute_type=compute_type)
@@ -711,7 +728,7 @@ class VoiceInputApp:
     def track_model_usage(self, model_name):
         """Update last_used timestamp for the given model in hidden prefs."""
         try:
-            prefs_path = os.path.join(BASE_DIR, ".user_prefs.json")
+            prefs_path = os.path.join(APP_DATA_DIR, ".user_prefs.json")
             if os.path.exists(prefs_path):
                 # RE-READ to ensure we have latest state (avoid race conditions with GUI)
                 if os.path.exists(prefs_path):
@@ -732,8 +749,8 @@ class VoiceInputApp:
     def load_config(self):
         """Unified configuration loader with split protection and migration."""
         try:
-            config_path = os.path.join(BASE_DIR, "config.json")
-            prefs_path = os.path.join(BASE_DIR, ".user_prefs.json")
+            config_path = os.path.join(APP_DATA_DIR, "config.json")
+            prefs_path = os.path.join(APP_DATA_DIR, ".user_prefs.json")
             
             # --- 1. Load Technical Config (Static/Public) ---
             config = {}
@@ -866,7 +883,7 @@ class VoiceInputApp:
         
         # 1. Check local path if provided
         if local_path:
-            full_path = os.path.join(BASE_DIR, local_path)
+            full_path = os.path.join(APP_DATA_DIR, local_path)
             if os.path.isdir(full_path):
                 # Basic signature check
                 if model_type == "asr" and os.path.exists(os.path.join(full_path, "model.bin")):
@@ -892,7 +909,7 @@ class VoiceInputApp:
     def cleanup_stale_models(self, days):
         """Deletes models that haven't been used in X days."""
         try:
-            prefs_path = os.path.join(BASE_DIR, ".user_prefs.json")
+            prefs_path = os.path.join(APP_DATA_DIR, ".user_prefs.json")
             if not os.path.exists(prefs_path): return
             
             with open(prefs_path, "r", encoding="utf-8") as f:
@@ -904,7 +921,7 @@ class VoiceInputApp:
             # Collect all models currently in libraries to avoid deleting active ones
             active_repos = [m.get("repo") for m in self.asr_library + self.llm_library if m.get("repo")]
             
-            models_dir = os.path.join(BASE_DIR, "models")
+            models_dir = os.path.join(APP_DATA_DIR, "models")
             if not os.path.exists(models_dir): return
             
             for item in os.listdir(models_dir):
@@ -940,8 +957,8 @@ class VoiceInputApp:
     def load_config(self):
         # We moved the hotkey setup to the bottom of load_config where it belongs
         try:
-            prefs_path = os.path.join(BASE_DIR, ".user_prefs.json")
-            config_path = os.path.join(BASE_DIR, "config.json")
+            prefs_path = os.path.join(APP_DATA_DIR, ".user_prefs.json")
+            config_path = os.path.join(APP_DATA_DIR, "config.json")
             
             # (The rest of load_config is already above this point. 
             # We are injecting the hotkey setup here before load_config ends)
@@ -1396,7 +1413,7 @@ class VoiceInputApp:
 
             # Config Polling (Hot-reload)
             try:
-                prefs_path = os.path.join(BASE_DIR, ".user_prefs.json")
+                prefs_path = os.path.join(APP_DATA_DIR, ".user_prefs.json")
                 if os.path.exists(prefs_path):
                     mtime = os.path.getmtime(prefs_path)
                     if not hasattr(self, '_last_prefs_mtime'):
@@ -1541,7 +1558,35 @@ class VoiceInputApp:
         else:
             self.stop_listening()
 
+    def check_mac_accessibility(self):
+        if sys.platform != 'darwin': return True
+        try:
+            import ctypes
+            import ctypes.util
+            app_services = ctypes.cdll.LoadLibrary(ctypes.util.find_library("ApplicationServices"))
+            
+            # Simple check
+            trusted = app_services.AXIsProcessTrusted()
+            if not trusted:
+                log_print("macOS Accessibility permissions missing. Prompting user...")
+                # Trigger Native Prompt via AppleScript
+                os.system('''osascript -e 'tell application "System Events" to get name of every process' >/dev/null 2>&1''')
+                
+                time.sleep(1)
+                trusted = app_services.AXIsProcessTrusted()
+                if not trusted:
+                    msg = 'Privox needs Accessibility permissions to detect the global hotkey (F8).\\n\\nPlease go to System Settings -> Privacy & Security -> Accessibility, and allow your terminal or Privox app.\\n\\nAfter granting permission, restart Privox.'
+                    os.system(f'''osascript -e 'display dialog "{msg}" buttons {{"OK"}} default button "OK" with title "Privox"' ''')
+                    return False
+            return True
+        except Exception as e:
+            log_print(f"Error checking accessibility: {e}")
+            return True
+
     def run(self):
+        if not self.check_mac_accessibility():
+            sys.exit(0)
+            
         # Single Instance Mutex Check
         self.mutex_handle = None
         self.mac_lockfile = None

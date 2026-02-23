@@ -255,17 +255,15 @@ class SettingsGUI(QMainWindow):
         
     def load_config(self):
         # Robust config path resolution
-        if not os.path.exists(self.config_path):
-            # Try finding it relative to this script (Project Root)
-            script_dir = os.path.dirname(os.path.abspath(__file__)) # src/
-            project_root = os.path.dirname(script_dir) # Project/
-            candidate = os.path.join(project_root, "config.json")
-            if os.path.exists(candidate):
-                self.config_path = candidate
+        if getattr(sys, 'frozen', False):
+            project_root = os.path.dirname(os.path.normpath(sys.executable))
+        else:
+            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            
+        app_data_dir = models_config.get_app_data_dir(project_root)
         
-        self.config_path = os.path.abspath(self.config_path)
-        base_dir = os.path.dirname(self.config_path)
-        self.prefs_path = os.path.join(base_dir, ".user_prefs.json")
+        self.config_path = os.path.join(app_data_dir, "config.json")
+        self.prefs_path = os.path.join(app_data_dir, ".user_prefs.json")
         
         # Load Tech Config
         self.tech_config = {}
@@ -349,9 +347,15 @@ class SettingsGUI(QMainWindow):
         self.resize(1000, 750)
         self.setMinimumSize(900, 700)
         
-        # Frameless Modern Window
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
-        self.setAttribute(Qt.WA_TranslucentBackground)
+        # Window Decorations
+        if sys.platform == 'darwin':
+            # macOS native window (Traffic Lights) but disable maximize
+            self.setWindowFlags(Qt.Window | Qt.WindowCloseButtonHint | Qt.WindowMinimizeButtonHint)
+            self.setFixedSize(1000, 750) # Maintain dimensions to avoid resize breaking layouts
+        else:
+            # Frameless Modern Window for Windows
+            self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
+            self.setAttribute(Qt.WA_TranslucentBackground)
         
         # Dark Palette
         # SWISS STYLE + GLASSMORPHISM THEME
@@ -518,6 +522,9 @@ class SettingsGUI(QMainWindow):
         btn_close.clicked.connect(self.close)
         title_bar_layout.addWidget(btn_close)
         
+        if sys.platform == 'darwin':
+            title_bar.setVisible(False)
+            
         main_v_layout.addWidget(title_bar)
 
         main_layout = QHBoxLayout()
@@ -1004,8 +1011,92 @@ class SettingsGUI(QMainWindow):
         input_layout.addWidget(btn_refresh)
         
         layout.addWidget(input_frame)
+        
+        # --- Wipe Models Action ---
+        wipe_frame = QFrame()
+        wipe_frame.setStyleSheet("""
+            QFrame {
+                background-color: transparent;
+                border: 1px solid rgba(255, 59, 48, 0.2);
+                border-radius: 12px;
+            }
+        """)
+        wipe_layout = QHBoxLayout(wipe_frame)
+        wipe_layout.setContentsMargins(20, 16, 20, 16)
+        
+        wipe_info = QVBoxLayout()
+        wipe_lbl = QLabel("UNINSTALL / WIPE")
+        wipe_lbl.setStyleSheet("font-weight: 800; color: #ff3b30; border: none; font-size: 11px; letter-spacing: 1px;")
+        wipe_desc = QLabel("Delete all downloaded AI Models to free up disk space.")
+        wipe_desc.setStyleSheet("color: rgba(255, 255, 255, 0.5); font-size: 13px; border: none;")
+        wipe_info.addWidget(wipe_lbl)
+        wipe_info.addWidget(wipe_desc)
+        
+        btn_wipe = QPushButton("Wipe Model(s)")
+        btn_wipe.setFixedSize(140, 44)
+        btn_wipe.setCursor(Qt.PointingHandCursor)
+        btn_wipe.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                color: #ff3b30;
+                border: 1px solid #ff3b30;
+                border-radius: 6px;
+                font-weight: 800;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: #ff3b30;
+                color: #ffffff;
+            }
+        """)
+        btn_wipe.clicked.connect(self.wipe_models)
+        
+        wipe_layout.addLayout(wipe_info)
+        wipe_layout.addStretch()
+        wipe_layout.addWidget(btn_wipe)
+        layout.addWidget(wipe_frame)
+        
         layout.addStretch()
         
+    def wipe_models(self):
+        import shutil
+        app_data_dir = models_config.get_app_data_dir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        models_dir = os.path.join(app_data_dir, "models")
+        
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Wipe AI Models")
+        msg.setText("Are you sure you want to delete all downloaded AI models?")
+        msg.setInformativeText(f"This will free up several gigabytes of space.\\n\\nIf you run Privox again, the AI models will safely auto-download again.\\n\\nTarget: {models_dir}")
+        msg.setStandardButtons(QMessageBox.Yes | QMessageBox.Cancel)
+        msg.setDefaultButton(QMessageBox.Cancel)
+        
+        # Apply dark styling to the QMessageBox
+        msg.setStyleSheet("QMessageBox { background-color: #1a1a1a; color: white; } QLabel { color: white; } QPushButton { background-color: #333333; color: white; padding: 5px 15px; border-radius: 3px; } QPushButton:hover { background-color: #444444; }")
+        
+        if msg.exec() == QMessageBox.Yes:
+            try:
+                if os.path.exists(models_dir):
+                    shutil.rmtree(models_dir)
+                    success_msg = QMessageBox(self)
+                    success_msg.setWindowTitle("Success")
+                    success_msg.setText("All AI models wiped successfully.")
+                    if sys.platform == 'darwin':
+                        success_msg.setInformativeText("You may now drag Privox.app to the Trash to complete uninstallation.")
+                    success_msg.setStyleSheet("QMessageBox { background-color: #1a1a1a; color: white; } QLabel { color: white; } QPushButton { background-color: #333333; color: white; padding: 5px 15px; border-radius: 3px; } QPushButton:hover { background-color: #444444; }")
+                    success_msg.exec()
+                else:
+                    empty_msg = QMessageBox(self)
+                    empty_msg.setWindowTitle("Notice")
+                    empty_msg.setText("No models found to delete.")
+                    empty_msg.setStyleSheet("QMessageBox { background-color: #1a1a1a; color: white; } QLabel { color: white; } QPushButton { background-color: #333333; color: white; padding: 5px 15px; border-radius: 3px; } QPushButton:hover { background-color: #444444; }")
+                    empty_msg.exec()
+            except Exception as e:
+                err_msg = QMessageBox(self)
+                err_msg.setWindowTitle("Error")
+                err_msg.setText(f"Failed to wipe models: {e}")
+                err_msg.setStyleSheet("QMessageBox { background-color: #1a1a1a; color: white; } QLabel { color: white; } QPushButton { background-color: #333333; color: white; padding: 5px 15px; border-radius: 3px; } QPushButton:hover { background-color: #444444; }")
+                err_msg.exec()
+
     def refresh_input_source(self):
         try:
             # Re-query
@@ -1596,5 +1687,12 @@ if __name__ == "__main__":
     window.refresh_dict_list()
     
     window.show()
+    if sys.platform == 'darwin':
+        window.raise_()
+        window.activateWindow()
+        try:
+            os.system(f"osascript -e 'tell application \"System Events\" to set frontmost of the first process whose unix id is {os.getpid()} to true'")
+        except:
+            pass
     apply_mica_or_acrylic(window, acrylic=True)
     sys.exit(app.exec())

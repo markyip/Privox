@@ -33,6 +33,7 @@ pyinstaller_args = [
     '--add-data=src/gui_settings.py:src' if is_mac else '--add-data=src/gui_settings.py;src',
     '--add-data=src/models_config.py:src' if is_mac else '--add-data=src/models_config.py;src',
     '--add-data=pixi.toml:.' if is_mac else '--add-data=pixi.toml;.',
+    '--add-data=pixi.lock:.' if is_mac else '--add-data=pixi.lock;.',
     
     # Explicit Exclusions (Heavy Libs handled by Bootstrap)
     '--exclude-module=torch',
@@ -62,7 +63,29 @@ pyinstaller_args = [
 
 PyInstaller.__main__.run(pyinstaller_args)
 
+import plistlib
+
 if is_mac:
+    print("Injecting macOS Privacy Permissions into Info.plist...")
+    plist_path = 'dist/Privox.app/Contents/Info.plist'
+    if os.path.exists(plist_path):
+        try:
+            with open(plist_path, 'rb') as f:
+                plist = plistlib.load(f)
+            
+            # Add required privacy descriptions for macOS
+            plist['NSMicrophoneUsageDescription'] = "Privox needs microphone access to listen to your speech and transcribe it."
+            plist['NSAccessibilityUsageDescription'] = "Privox needs accessibility access to detect your global activation hotkey across all applications."
+            
+            # Optional: Hide dock icon since we rely on Menu Bar (LSUIElement)
+            plist['LSUIElement'] = True
+            
+            with open(plist_path, 'wb') as f:
+                plistlib.dump(plist, f)
+            print("Successfully injected privacy strings and LSUIElement into Info.plist.")
+        except Exception as e:
+            print(f"Error modifying Info.plist: {e}")
+
     print("Build Complete. Application bundle is in 'dist/Privox.app'")
 else:
     print("Build Complete. Executable is in 'dist/Privox.exe'")

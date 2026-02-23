@@ -18,6 +18,8 @@ def main():
         target_base_dir = os.path.dirname(sys.executable)
     else:
         target_base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        
+    app_data_dir = models_config.get_app_data_dir(target_base_dir)
     
     # Load settings from config.json if it exists
     whisper_model_name = models_config.ASR_LIBRARY[0]["whisper_model"]
@@ -25,7 +27,7 @@ def main():
     grammar_file = models_config.LLM_LIBRARY[1]["file_name"] # Llama 3.2
     grammar_repo = models_config.LLM_LIBRARY[1]["repo_id"]
     
-    config_path = os.path.join(target_base_dir, "config.json")
+    config_path = os.path.join(app_data_dir, "config.json")
     if os.path.exists(config_path):
         try:
             import json
@@ -41,7 +43,7 @@ def main():
             log(f"Config load error (using defaults): {e}")
             asr_backend = "whisper"
 
-    models_dir = os.path.join(target_base_dir, "models")
+    models_dir = os.path.join(app_data_dir, "models")
     if not os.path.exists(models_dir):
         os.makedirs(models_dir)
         

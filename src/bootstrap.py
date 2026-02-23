@@ -604,7 +604,10 @@ def install_app_files(target_dir, log_cb):
         # Kill running instances
         try:
             my_pid = os.getpid()
-            subprocess.run(["taskkill", "/F", "/IM", "python.exe", "/T"], creationflags=subprocess.CREATE_NO_WINDOW, capture_output=True, timeout=5)
+            # Precisely target Privox background processes instead of all python.exe
+            kill_cmd = "Get-CimInstance Win32_Process -Filter \"Name = 'python.exe' OR Name = 'pythonw.exe'\" | Where-Object { $_.CommandLine -match 'voice_input\.py' -or $_.CommandLine -match 'gui_settings\.py' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
+            subprocess.run(["powershell", "-Command", kill_cmd], creationflags=subprocess.CREATE_NO_WINDOW, capture_output=True, timeout=5)
+            
             subprocess.run(["taskkill", "/F", "/IM", "Privox.exe", "/FI", f"PID ne {my_pid}"], creationflags=subprocess.CREATE_NO_WINDOW, capture_output=True, timeout=5)
             time.sleep(2.0)
         except: pass
@@ -665,7 +668,8 @@ def create_shortcut(target_exe, target_dir):
 def create_lnk(target_exe, target_dir, icon_path, lnk_path):
     try:
         # Added --run flag to shortcut Arguments (NOT TargetPath)
-        vbs_script = f'Set oWS = WScript.CreateObject("WScript.Shell")\nsLinkFile = "{lnk_path}"\nSet oLink = oWS.CreateShortcut(sLinkFile)\noLink.TargetPath = "{target_exe}"\noLink.Arguments = "--run"\noLink.WorkingDirectory = "{target_dir}"\noLink.IconLocation = "{icon_path},0"\noLink.Save'
+        # oLink.WindowStyle = 7 ensures it runs minimized (hides initial flashes)
+        vbs_script = f'Set oWS = WScript.CreateObject("WScript.Shell")\nsLinkFile = "{lnk_path}"\nSet oLink = oWS.CreateShortcut(sLinkFile)\noLink.TargetPath = "{target_exe}"\noLink.Arguments = "--run"\noLink.WorkingDirectory = "{target_dir}"\noLink.IconLocation = "{icon_path},0"\noLink.WindowStyle = 7\noLink.Save'
         vbs_file = os.path.join(os.environ['TEMP'], f"mkshortcut_{os.getpid()}_{hash(lnk_path)}.vbs")
         with open(vbs_file, "w") as f: f.write(vbs_script)
         subprocess.call(["cscript", "//nologo", vbs_file], creationflags=subprocess.CREATE_NO_WINDOW)
@@ -730,17 +734,24 @@ def register_uninstaller(install_dir, exe_path):
         print(f"Failed to register uninstaller: {e}")
 
 def run_app():
-    """ Launches the main application using Pixi. """
-    internal_dir = os.path.join(EXE_DIR, "_internal")
-    pixi_exe = os.path.join(internal_dir, "pixi", "pixi.exe")
+    """ Launches the main application using Pixi environment directly to avoid terminal flash. """
+    env_pythonw = os.path.join(EXE_DIR, ".pixi", "envs", "default", "pythonw.exe")
     
-    if os.path.exists(pixi_exe):
-        # We use 'pixi run start-windowless' to ensure no terminal window is created
-        subprocess.Popen([pixi_exe, "run", "start-windowless"], cwd=EXE_DIR, creationflags=subprocess.CREATE_NO_WINDOW)
+    if os.path.exists(env_pythonw):
+        # Run pythonw directly to ensure no console flashes from 'pixi run' invoking a shell
+        script_path = os.path.join(EXE_DIR, "src", "voice_input.py")
+        subprocess.Popen([env_pythonw, script_path], cwd=EXE_DIR, creationflags=subprocess.CREATE_NO_WINDOW)
     else:
-        # Fallback if somehow Pixi is missing but we're trying to run
-        print("Error: Pixi environment not found. Please reinstall.")
-        sys.exit(1)
+        # Fallback to pixi run if environment isn't standard
+        internal_dir = os.path.join(EXE_DIR, "_internal")
+        pixi_exe = os.path.join(internal_dir, "pixi", "pixi.exe")
+        
+        if os.path.exists(pixi_exe):
+            # We use 'pixi run start-windowless' here, but it may flash a terminal briefly
+            subprocess.Popen([pixi_exe, "run", "start-windowless"], cwd=EXE_DIR, creationflags=subprocess.CREATE_NO_WINDOW)
+        else:
+            print("Error: Pixi environment not found. Please reinstall.")
+            sys.exit(1)
 
 if __name__ == "__main__":
     if "--run" in sys.argv:

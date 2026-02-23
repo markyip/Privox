@@ -891,7 +891,22 @@ class VoiceInputApp:
         except Exception as e:
             log_print(f"Cleanup error: {e}")
             
+    def load_config(self):
+        # We moved the hotkey setup to the bottom of load_config where it belongs
+        try:
+            prefs_path = os.path.join(BASE_DIR, ".user_prefs.json")
+            config_path = os.path.join(BASE_DIR, "config.json")
+            
+            # (The rest of load_config is already above this point. 
+            # We are injecting the hotkey setup here before load_config ends)
+            
             # Simple hotkey support
+            prefs = {}
+            if os.path.exists(prefs_path):
+                with open(prefs_path, "r", encoding="utf-8") as f:
+                    prefs = json.load(f)
+            hotkey_str = prefs.get("hotkey", "F8").lower()
+            
             self.hotkey = keyboard.Key.f8
             if hotkey_str in keyboard.Key.__members__:
                 self.hotkey = keyboard.Key[hotkey_str]
@@ -902,10 +917,8 @@ class VoiceInputApp:
                     self.hotkey = keyboard.Key[hotkey_str.upper()]
 
         except Exception as e:
-            log_print(f"Error loading config: {e}")
+            log_print(f"Error loading hotkey config: {e}")
             traceback.print_exc()
-
-
 
     def update_tray_tooltip(self):
         if self.icon:

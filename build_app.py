@@ -2,38 +2,37 @@ import PyInstaller.__main__
 import os
 import shutil
 
+import sys
+
 # Clean previous builds
 if os.path.exists('build'):
     shutil.rmtree('build', ignore_errors=True)
 if os.path.exists('dist'):
     shutil.rmtree('dist', ignore_errors=True)
 
-print("Starting PyInstaller Build...")
+print(f"Starting PyInstaller Build for {sys.platform}...")
 
-PyInstaller.__main__.run([
+is_mac = sys.platform == 'darwin'
+icon_path = 'assets/privox.icns' if is_mac else 'assets/privox.ico'
+
+# If compiling on mac and the icns isn't available, fallback to png
+if is_mac and not os.path.exists(icon_path):
+    icon_path = 'assets/icon.png'
+
+pyinstaller_args = [
     'src/bootstrap.py',
     '--name=Privox',
-    '--onefile',
+    '--onefile' if not is_mac else '--onedir', # macOS bundle is better as onedir (.app)
+    '--windowed' if is_mac else '--noconsole', # macOS specific flag for .app bundles
     '--clean',
-    '--noconsole',
-    '--noupx', # Disabling UPX often reduces false positives from AV
-    '--icon=assets/privox.ico',
-    '--add-data=assets;assets',
-    '--add-data=src/voice_input.py;src',
-    '--add-data=src/download_models.py;src',
-    '--add-data=src/gui_settings.py;src',
-    '--add-data=pixi.toml;.',
-    # Add metadata to look more legitimate (optional but recommended)
-    # '--version-file=version_info.txt', 
-    
-    # Core Application (NOT bundled as binary, but as data for system-python launch)
-    # '--hidden-import=voice_input',
-    
-    # Dependencies to Bundle (Lite but functional)
-    # '--hidden-import=pystray',
-    # '--hidden-import=pystray._win32',
-    # '--hidden-import=sounddevice',
-    # '--hidden-import=PIL',
+    '--noupx', 
+    f'--icon={icon_path}',
+    '--add-data=assets:assets' if is_mac else '--add-data=assets;assets',
+    '--add-data=src/voice_input.py:src' if is_mac else '--add-data=src/voice_input.py;src',
+    '--add-data=src/download_models.py:src' if is_mac else '--add-data=src/download_models.py;src',
+    '--add-data=src/gui_settings.py:src' if is_mac else '--add-data=src/gui_settings.py;src',
+    '--add-data=src/models_config.py:src' if is_mac else '--add-data=src/models_config.py;src',
+    '--add-data=pixi.toml:.' if is_mac else '--add-data=pixi.toml;.',
     
     # Explicit Exclusions (Heavy Libs handled by Bootstrap)
     '--exclude-module=torch',
@@ -50,13 +49,20 @@ PyInstaller.__main__.run([
     '--exclude-module=ctranslate2',
     '--exclude-module=tokenizers',
     '--exclude-module=onnxruntime',
-    '--exclude-module=llama_cpp', # Exclude llama_cpp as it is in _internal_libs
+    '--exclude-module=llama_cpp', 
+    '--exclude-module=mlx_lm',
+    '--exclude-module=mlx',
     '--exclude-module=PIL',
     '--exclude-module=pystray',
     '--exclude-module=sounddevice',
     '--exclude-module=pynput',
     '--exclude-module=pyperclip',
     '--exclude-module=huggingface_hub',
-])
+]
 
-print("Build Complete. Executable is in 'dist/Privox.exe'")
+PyInstaller.__main__.run(pyinstaller_args)
+
+if is_mac:
+    print("Build Complete. Application bundle is in 'dist/Privox.app'")
+else:
+    print("Build Complete. Executable is in 'dist/Privox.exe'")

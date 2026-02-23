@@ -647,6 +647,7 @@ def install_app_files(target_dir, log_cb):
 
 
 def create_shortcut(target_exe, target_dir):
+    if sys.platform != 'win32': return
     try:
         app_name = "Privox"
         icon_path = os.path.join(target_dir, "assets", "icon.ico")
@@ -666,6 +667,7 @@ def create_shortcut(target_exe, target_dir):
 
 
 def create_lnk(target_exe, target_dir, icon_path, lnk_path):
+    if sys.platform != 'win32': return
     try:
         # Added --run flag to shortcut Arguments (NOT TargetPath)
         # oLink.WindowStyle = 7 ensures it runs minimized (hides initial flashes)
@@ -696,6 +698,7 @@ def apply_mica_or_acrylic(window, acrylic=True):
 def register_uninstaller(install_dir, exe_path):
     if sys.platform != 'win32': return
     try:
+        import winreg
         key_path = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Privox"
         icon_path = os.path.join(install_dir, "assets", "icon.ico")
         install_date = time.strftime("%Y%m%d")
@@ -735,20 +738,28 @@ def register_uninstaller(install_dir, exe_path):
 
 def run_app():
     """ Launches the main application using Pixi environment directly to avoid terminal flash. """
-    env_pythonw = os.path.join(EXE_DIR, ".pixi", "envs", "default", "pythonw.exe")
+    is_mac = sys.platform == 'darwin'
+    python_exec_name = "python" if is_mac else "pythonw.exe"
+    env_pythonw = os.path.join(EXE_DIR, ".pixi", "envs", "default", "bin" if is_mac else "", python_exec_name)
     
     if os.path.exists(env_pythonw):
-        # Run pythonw directly to ensure no console flashes from 'pixi run' invoking a shell
+        # Run python/pythonw directly to ensure no console flashes from 'pixi run' invoking a shell
         script_path = os.path.join(EXE_DIR, "src", "voice_input.py")
-        subprocess.Popen([env_pythonw, script_path], cwd=EXE_DIR, creationflags=subprocess.CREATE_NO_WINDOW)
+        if is_mac:
+            # Popen without creationflags on Unix
+            subprocess.Popen([env_pythonw, script_path], cwd=EXE_DIR)
+        else:
+            subprocess.Popen([env_pythonw, script_path], cwd=EXE_DIR, creationflags=subprocess.CREATE_NO_WINDOW)
     else:
         # Fallback to pixi run if environment isn't standard
         internal_dir = os.path.join(EXE_DIR, "_internal")
-        pixi_exe = os.path.join(internal_dir, "pixi", "pixi.exe")
+        pixi_exe = os.path.join(internal_dir, "pixi", "pixi" if is_mac else "pixi.exe")
         
         if os.path.exists(pixi_exe):
-            # We use 'pixi run start-windowless' here, but it may flash a terminal briefly
-            subprocess.Popen([pixi_exe, "run", "start-windowless"], cwd=EXE_DIR, creationflags=subprocess.CREATE_NO_WINDOW)
+            if is_mac:
+                subprocess.Popen([pixi_exe, "run", "start"], cwd=EXE_DIR)
+            else:
+                subprocess.Popen([pixi_exe, "run", "start-windowless"], cwd=EXE_DIR, creationflags=subprocess.CREATE_NO_WINDOW)
         else:
             print("Error: Pixi environment not found. Please reinstall.")
             sys.exit(1)

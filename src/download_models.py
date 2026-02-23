@@ -62,73 +62,75 @@ def main():
         else:
             log("SenseVoiceSmall model present.")
 
-    # 0. Install Llama-cpp-python with CUDA support
+    # 0. Install Llama-cpp-python with CUDA support (WINDOWS/LINUX ONLY)
     # We check for version AND CUDA support. 0.2.24 (common in conda) is too old for Llama 3.2.
+    is_mac = sys.platform == "darwin"
     needs_llama_install = False
-    
-    # 0a. Check for GPU presence
     has_gpu = False
-    try:
-        import torch
-        has_gpu = torch.cuda.is_available()
-    except ImportError:
+    
+    if not is_mac:
+        # 0a. Check for GPU presence
         try:
+            import torch
+            has_gpu = torch.cuda.is_available()
+        except ImportError:
+            try:
+                import subprocess
+                subprocess.check_output(["nvidia-smi"], stderr=subprocess.STDOUT)
+                has_gpu = True
+            except:
+                has_gpu = False
+
+        try:
+            import llama_cpp
+            version = getattr(llama_cpp, '__version__', '0.0.0')
+            sys_info = str(llama_cpp.llama_print_system_info())
+            llama_has_cuda = "CUDA = 1" in sys_info
+            
+            log(f"Found llama-cpp-python v{version} (CUDA: {llama_has_cuda}) | System GPU: {has_gpu}")
+            
+            # Llama 3.1/3.2 needs 0.2.90+ or 0.3.x
+            v_parts = [int(p) for p in version.split('.') if p.isdigit()]
+            if v_parts < [0, 2, 90]:
+                log("Version is too old for Llama 3.2. Forcing update...")
+                needs_llama_install = True
+            elif has_gpu and not llama_has_cuda:
+                log("GPU present but llama-cpp-python is CPU-only. Updating to CUDA version...")
+                needs_llama_install = True
+                
+        except ImportError:
+            log("llama-cpp-python missing. Attempting install...")
+            needs_llama_install = True
+
+        if needs_llama_install:
             import subprocess
-            subprocess.check_output(["nvidia-smi"], stderr=subprocess.STDOUT)
-            has_gpu = True
-        except:
-            has_gpu = False
-
-    try:
-        import llama_cpp
-        version = getattr(llama_cpp, '__version__', '0.0.0')
-        sys_info = str(llama_cpp.llama_print_system_info())
-        llama_has_cuda = "CUDA = 1" in sys_info
-        
-        log(f"Found llama-cpp-python v{version} (CUDA: {llama_has_cuda}) | System GPU: {has_gpu}")
-        
-        # Llama 3.1/3.2 needs 0.2.90+ or 0.3.x
-        v_parts = [int(p) for p in version.split('.') if p.isdigit()]
-        if v_parts < [0, 2, 90]:
-            log("Version is too old for Llama 3.2. Forcing update...")
-            needs_llama_install = True
-        elif has_gpu and not llama_has_cuda:
-            log("GPU present but llama-cpp-python is CPU-only. Updating to CUDA version...")
-            needs_llama_install = True
-            
-    except ImportError:
-        log("llama-cpp-python missing. Attempting install...")
-        needs_llama_install = True
-
-    if needs_llama_install:
-        import subprocess
-        try:
-            # Environment isolation
-            env = os.environ.copy()
-            env["PYTHONNOUSERSITE"] = "1"
-            
-            # Base command
-            cmd = [sys.executable, "-m", "pip", "install", "llama-cpp-python==0.3.4"]
-            
-            if has_gpu:
-                log("Installing llama-cpp-python binary wheel (CUDA 12.4)...")
-                cmd += ["--extra-index-url", "https://abetlen.github.io/llama-cpp-python/whl/cu124"]
-            else:
-                log("Installing llama-cpp-python (CPU-only)...")
-            
-            cmd += [
-                "--no-input",
-                "--no-cache-dir",
-                "--force-reinstall",
-                "--only-binary=:all:",
-                "--no-deps"
-            ]
-            
-            subprocess.check_call(cmd, env=env)
-            log("llama-cpp-python installed successfully.")
-        except subprocess.CalledProcessError as e:
-            log(f"CRITICAL: Failed to install llama-cpp-python: {e}")
-            pass
+            try:
+                # Environment isolation
+                env = os.environ.copy()
+                env["PYTHONNOUSERSITE"] = "1"
+                
+                # Base command
+                cmd = [sys.executable, "-m", "pip", "install", "llama-cpp-python==0.3.4"]
+                
+                if has_gpu:
+                    log("Installing llama-cpp-python binary wheel (CUDA 12.4)...")
+                    cmd += ["--extra-index-url", "https://abetlen.github.io/llama-cpp-python/whl/cu124"]
+                else:
+                    log("Installing llama-cpp-python (CPU-only)...")
+                
+                cmd += [
+                    "--no-input",
+                    "--no-cache-dir",
+                    "--force-reinstall",
+                    "--only-binary=:all:",
+                    "--no-deps"
+                ]
+                
+                subprocess.check_call(cmd, env=env)
+                log("llama-cpp-python installed successfully.")
+            except subprocess.CalledProcessError as e:
+                log(f"CRITICAL: Failed to install llama-cpp-python: {e}")
+                pass
             
     try:
         from huggingface_hub import hf_hub_download, snapshot_download
@@ -137,11 +139,25 @@ def main():
         sys.exit(1)
 
     # 1. Grammar Model (Llama)
-    if not os.path.exists(os.path.join(models_dir, grammar_file)):
-        log(f"Downloading Grammar Model ({grammar_file})...")
-        hf_hub_download(repo_id=grammar_repo, filename=grammar_file, local_dir=models_dir)
+    if is_mac:
+        # macOS uses MLX, meaning we need the whole repo snapshot, not just a .gguf file
+        # Default MLX Llama 3.2 3B Repo
+        mlx_repo = "mlx-community/Llama-3.2-3B-Instruct-4bit"
+        mac_target_dir = os.path.join(models_dir, "mlx-llama-3.2")
+        
+        # Simple check if model exists
+        if not os.path.exists(os.path.join(mac_target_dir, "model.safetensors")):
+            log(f"Downloading MLX Grammar Model ({mlx_repo}) for macOS...")
+            snapshot_download(repo_id=mlx_repo, local_dir=mac_target_dir)
+        else:
+            log(f"MLX Grammar Model {mlx_repo} present.")
     else:
-        log(f"Grammar Model {grammar_file} present.")
+        # Windows/Linux uses single GGUF file
+        if not os.path.exists(os.path.join(models_dir, grammar_file)):
+            log(f"Downloading Grammar Model ({grammar_file})...")
+            hf_hub_download(repo_id=grammar_repo, filename=grammar_file, local_dir=models_dir)
+        else:
+            log(f"Grammar Model {grammar_file} present.")
 
     # 2. Whisper Model (Faster-Whisper Format)
     whisper_target = os.path.join(models_dir, "whisper-" + whisper_model_name)

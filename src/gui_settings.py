@@ -37,6 +37,7 @@ import subprocess
 def apply_mica_or_acrylic(window, acrylic=True):
     if sys.platform != 'win32': return
     try:
+        import ctypes
         hwnd = window.effectiveWinId().value()
         # DWMWA_SYSTEMBACKDROP_TYPE: 1=None, 2=Mica, 3=Acrylic (Tabbed), 4=MicaAlt
         # REMOVED ACRYLIC TO FIX ROUNDED CORNER ARTIFACTS
@@ -51,10 +52,6 @@ def apply_mica_or_acrylic(window, acrylic=True):
         black = ctypes.c_int(0x00000000)
         ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 35, ctypes.byref(black), 4)
     except: pass
-
-# Windows Registry for Startup
-if sys.platform == 'win32':
-    import winreg
 
 # SVG Icons for the dropdown arrow
 ARROW_DOWN_SVG = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path fill='%23aaaaaa' d='M2 4l4 4 4-4z'/></svg>"
@@ -1388,60 +1385,107 @@ class SettingsGUI(QMainWindow):
         # Spacer to keep items at top
         self.dict_list_layout.addStretch()
 
+    def _get_mac_plist_path(self):
+        return os.path.expanduser("~/Library/LaunchAgents/com.markyip.privox.plist")
+
     def toggle_startup(self):
-        if sys.platform != 'win32': return
-        
-        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
-        app_name = "Privox"
-        
-        # Paths for Startup Folder Shortcut
-        startup_folder = os.path.join(os.environ.get('APPDATA', ''), 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup')
-        shortcut_path = os.path.join(startup_folder, "Privox.lnk")
+        if sys.platform == 'win32':
+            import winreg
+            key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+            app_name = "Privox"
+            
+            # Paths for Startup Folder Shortcut
+            startup_folder = os.path.join(os.environ.get('APPDATA', ''), 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup')
+            shortcut_path = os.path.join(startup_folder, "Privox.lnk")
 
-        # Use Privox.exe (the installer/launcher) with --run flag
-        if getattr(sys, 'frozen', False):
-            exe_path = f'"{sys.executable}" --run'
-        else:
-            # Dev mode: python.exe src/bootstrap.py --run
-            bootstrap_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bootstrap.py")
-            exe_path = f'"{sys.executable}" "{bootstrap_path}" --run'
-
-        try:
-            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS)
-            if self.check_startup.isChecked():
-                winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, exe_path)
+            # Use Privox.exe (the installer/launcher) with --run flag
+            if getattr(sys, 'frozen', False):
+                exe_path = f'"{sys.executable}" --run'
             else:
-                # 1. Remove Registry Key
-                try: winreg.DeleteValue(key, app_name)
-                except FileNotFoundError: pass
+                # Dev mode: python.exe src/bootstrap.py --run
+                bootstrap_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bootstrap.py")
+                exe_path = f'"{sys.executable}" "{bootstrap_path}" --run'
+
+            try:
+                key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS)
+                if self.check_startup.isChecked():
+                    winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, exe_path)
+                else:
+                    # 1. Remove Registry Key
+                    try: winreg.DeleteValue(key, app_name)
+                    except FileNotFoundError: pass
+                    
+                    # 2. Remove Startup Folder Shortcut (Installer discrepancy fix)
+                    if os.path.exists(shortcut_path):
+                        try: os.remove(shortcut_path)
+                        except Exception as e: print(f"Error removing startup shortcut: {e}")
+                winreg.CloseKey(key)
+            except Exception as e:
+                print(f"Error toggle startup: {e}")
                 
-                # 2. Remove Startup Folder Shortcut (Installer discrepancy fix)
-                if os.path.exists(shortcut_path):
-                    try: os.remove(shortcut_path)
-                    except Exception as e: print(f"Error removing startup shortcut: {e}")
-            winreg.CloseKey(key)
-        except Exception as e:
-            print(f"Error toggle startup: {e}")
+        elif sys.platform == 'darwin':
+            plist_path = self._get_mac_plist_path()
+            if self.check_startup.isChecked():
+                # Create LaunchAgent plist
+                if getattr(sys, 'frozen', False):
+                    # Usually /Applications/Privox.app/Contents/MacOS/Privox
+                    exe_path = sys.executable
+                else:
+                    exe_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "voice_input.py")
+                    
+                plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.markyip.privox</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{sys.executable if not getattr(sys, 'frozen', False) else exe_path}</string>
+        <string>{exe_path if not getattr(sys, 'frozen', False) else '--run'}</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>
+"""
+                try:
+                    os.makedirs(os.path.dirname(plist_path), exist_ok=True)
+                    with open(plist_path, 'w') as f:
+                        f.write(plist_content)
+                except Exception as e:
+                    print(f"Error enabling macOS startup: {e}")
+            else:
+                # Remove LaunchAgent
+                if os.path.exists(plist_path):
+                    try:
+                        os.remove(plist_path)
+                    except Exception as e:
+                        print(f"Error disabling macOS startup: {e}")
 
     def check_startup_status(self):
-        if sys.platform != 'win32': return False
-        
-        # 1. Check Registry
-        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
-        app_name = "Privox"
-        reg_exists = False
-        try:
-            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_READ)
-            winreg.QueryValueEx(key, app_name)
-            winreg.CloseKey(key)
-            reg_exists = True
-        except: pass
-        
-        # 2. Check Startup Folder Shortcut
-        startup_folder = os.path.join(os.environ.get('APPDATA', ''), 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup')
-        shortcut_exists = os.path.exists(os.path.join(startup_folder, "Privox.lnk"))
-        
-        return reg_exists or shortcut_exists
+        if sys.platform == 'win32':
+            import winreg
+            # 1. Check Registry
+            key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+            app_name = "Privox"
+            reg_exists = False
+            try:
+                key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_READ)
+                winreg.QueryValueEx(key, app_name)
+                winreg.CloseKey(key)
+                reg_exists = True
+            except: pass
+            
+            # 2. Check Startup Folder Shortcut
+            startup_folder = os.path.join(os.environ.get('APPDATA', ''), 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup')
+            shortcut_exists = os.path.exists(os.path.join(startup_folder, "Privox.lnk"))
+            return reg_exists or shortcut_exists
+            
+        elif sys.platform == 'darwin':
+            return os.path.exists(self._get_mac_plist_path())
+            
+        return False
 
 
     def handle_model_change_and_restart(self):

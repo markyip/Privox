@@ -270,6 +270,35 @@ class GrammarChecker:
 
         repo_id = self.profile.get("repo_id", GRAMMAR_REPO)
         file_name = self.profile.get("file_name", GRAMMAR_FILE)
+        
+        is_mac = sys.platform == "darwin"
+
+        if is_mac:
+            # --- macOS MLX Execution Path ---
+            mlx_target_dir = os.path.join(BASE_DIR, "models", "mlx-llama-3.2")
+            if not os.path.exists(mlx_target_dir):
+                self.loading_error = f"MLX Model missing: {mlx_target_dir}"
+                log_print(self.loading_error)
+                return
+            
+            try:
+                log_print("Importing Apple MLX framework...")
+                import mlx.core as mx
+                from mlx_lm import load, generate
+                
+                log_print(f"Loading MLX Model from {mlx_target_dir} into Unified Memory...")
+                self.model, self.tokenizer = load(mlx_target_dir)
+                log_print("MLX Model Loaded Successfully. (Using Apple Silicon Acceleration)")
+                self.mlx_generate = generate
+            except Exception as e:
+                err_trace = traceback.format_exc()
+                log_print(f"\nCRITICAL: Failed to load MLX Model: {e}\n{err_trace}")
+                self.loading_error = str(e)
+                if self.icon:
+                     self.icon.notify(f"MLX Error: {e}", "Privox Error")
+            return
+            
+        # --- Windows/Linux Llama Context Execution Path ---
 
         # 1. Check Local "models" folder (Offline Mode)
         local_model_path = os.path.join(BASE_DIR, "models", file_name)
@@ -282,6 +311,7 @@ class GrammarChecker:
                 log_print(f"Checking Hugging Face for Refiner Model ({repo_id})...")
                 
                 # First try to get it from cache or defined local dir
+                from huggingface_hub import hf_hub_download
                 try:
                     model_path = hf_hub_download(
                         repo_id=repo_id, 
@@ -432,20 +462,36 @@ class GrammarChecker:
             else:
                 # Llama 3 / Chat style
                 prompt = (
-                    f"<|start_header_id|>system<|end_header_id|>\n\n{system_prompt}<|eot_id|>"
+                    f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n{system_prompt}<|eot_id|>"
                     f"<|start_header_id|>user<|end_header_id|>\n\n{user_content}<|eot_id|>"
                     "<|start_header_id|>assistant<|end_header_id|>\n\n"
                 )
                 stop_tokens = ["<|eot_id|>"]
             
-            output = self.model(
-                prompt, 
-                max_tokens=1024,
-                stop=stop_tokens, 
-                echo=False,
-                temperature=0.3,
-            )
-            return output['choices'][0]['text'].strip()
+            is_mac = sys.platform == "darwin"
+            
+            if is_mac:
+                # --- MLX Execution ---
+                output = self.mlx_generate(
+                    self.model, 
+                    self.tokenizer, 
+                    prompt=prompt, 
+                    max_tokens=1024,
+                    verbose=False
+                )
+                # MLX generate returns the text directly (it strips prompt usually, but we strip to be safe)
+                return output.strip()
+            else:
+                # --- Windows Llama CPP Execution ---
+                output = self.model(
+                    prompt, 
+                    max_tokens=1024,
+                    stop=stop_tokens, 
+                    echo=False,
+                    temperature=0.3,
+                )
+                return output['choices'][0]['text'].strip()
+                
         except Exception as e:
             log_print(f"Grammar Check Error: {e}")
             return text
@@ -1496,9 +1542,12 @@ class VoiceInputApp:
             self.stop_listening()
 
     def run(self):
-        # Single Instance Mutex Check (Windows)
+        # Single Instance Mutex Check
         self.mutex_handle = None
+        self.mac_lockfile = None
+        
         if sys.platform == 'win32':
+            import ctypes
             mutex_name = "Global\\Privox_SingleInstance_Mutex"
             self.mutex_handle = ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name)
             last_error = ctypes.windll.kernel32.GetLastError()
@@ -1514,6 +1563,22 @@ class VoiceInputApp:
                 sys.exit(0)
             
             log_print("Acquired single-instance mutex.")
+            
+        elif sys.platform == 'darwin':
+            import fcntl
+            import tempfile
+            lockfile_path = os.path.join(tempfile.gettempdir(), 'privox_single_instance.lock')
+            try:
+                self.mac_lockfile = open(lockfile_path, 'w')
+                # LOCK_EX (Exclusive lock) | LOCK_NB (Non-blocking)
+                fcntl.flock(self.mac_lockfile, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                log_print("Acquired macOS single-instance lockfile.")
+            except IOError:
+                log_print("Another instance of Privox is already running on macOS. Exiting.")
+                # We could show an NSAlert here, but stdout log is usually sufficient for macOS background apps.
+                if self.mac_lockfile:
+                    self.mac_lockfile.close()
+                sys.exit(0)
 
         # Setup Tray Menu
         menu = pystray.Menu(

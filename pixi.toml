@@ -4,7 +4,7 @@ version = "1.0"
 description = "Privox AI Assistant"
 authors = ["Mark"]
 channels = ["conda-forge", "pytorch", "nvidia"]
-platforms = ["win-64"]
+platforms = ["win-64", "osx-arm64", "osx-64"]
 
 [tasks]
 start = "python src/voice_input.py"
@@ -12,26 +12,35 @@ start-windowless = "pythonw src/voice_input.py"
 build = "python build_app.py"
 
 [system-requirements]
-cuda = "12"
+# CUDA is only needed/relevant for Windows/Linux
+# We don't define it globally if we want to run on Mac
 
 [dependencies]
-python = ">=3.10,<3.13" # Support Python 3.10-3.12
-# Switch to unpinned channels to let conda-forge align versions (fixes Py3.12 libcublas conflict)
-pytorch = { version = "==2.5.1", channel = "pytorch" }
-pytorch-cuda = { version = "12.4.*", channel = "pytorch" }
-torchaudio = { version = "==2.5.1", channel = "pytorch" }
+python = ">=3.10,<3.13" 
+pytorch = { version = "*", channel = "pytorch" }
+torchaudio = { version = "*", channel = "pytorch" }
 torchvision = { version = "*", channel = "pytorch" }
-cuda-toolkit = { version = "12.4.*", channel = "nvidia" }
-cudnn = { version = "9.*", channel = "nvidia" }
 pip = "*"
 cmake = "*"
 ninja = "*"
 numpy = "<2.0.0" 
-pywin32 = "*"
 pyinstaller = "*"
 setuptools = "==69.5.1"
-llama-cpp-python = "*"
 
+[target.win-64.dependencies]
+pytorch-cuda = { version = "12.4.*", channel = "pytorch" }
+cuda-toolkit = { version = "12.4.*", channel = "nvidia" }
+cudnn = { version = "9.*", channel = "nvidia" }
+llama-cpp-python = "*"
+pywin32 = "*"
+
+[target.osx-arm64.dependencies]
+# No CUDA on Mac. 
+# We don't strictly need llama-cpp-python if we use MLX
+
+[target.osx-64.dependencies]
+# Intel Macs (if supported) might still need llama-cpp-python or similar, but MLX is apple-silicon only
+llama-cpp-python = "*"
 
 [pypi-dependencies]
 sounddevice = "*"
@@ -48,4 +57,7 @@ colorama = "*"
 customtkinter = "*"
 diskcache = "*"
 pyside6 = "==6.8.1"
+
+[target.osx-arm64.pypi-dependencies]
+mlx-lm = "*"
 

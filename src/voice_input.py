@@ -416,21 +416,23 @@ class GrammarChecker:
                 # Agent Mode
                 system_prompt = self.command_prompt or (
                     "You are Privox, an intelligent assistant. Execute the user's instruction perfectly. "
-                    "Output ONLY the result. Do not chat."
+                    "Output ONLY the result inside <refined> and </refined> tags. Do not chat."
                 )
                 user_content = text
             else:
-                system_prompt = self.get_effective_prompt()
-                user_content = f"Input Text: {text}\n\nCorrected Text:"
+                # Use the new robust Wrapper Structure
+                core_directive = self.get_effective_prompt()
+                system_prompt = models_config.SYSTEM_FORMATTER
+                user_content = f"[Core Directive]: {core_directive}\n[Transcript]: {text}\nOutput: "
 
             # Format based on model type
             if prompt_type == "t5":
-                # CoEdit / T5 style: simple instruction + input
+                # CoEdit / T5 style: simple instruction + input (Does not use XML wrapping naturally)
                 action = "Polish" if self.tone != "Natural" else "Fix grammar"
                 prompt = f"{action}: {text}"
                 stop_tokens = ["\n"]
             else:
-                # Llama 3 / Chat style
+                # Llama 3 / Qwen / Mistral style format
                 prompt = (
                     f"<|start_header_id|>system<|end_header_id|>\n\n{system_prompt}<|eot_id|>"
                     f"<|start_header_id|>user<|end_header_id|>\n\n{user_content}<|eot_id|>"
@@ -445,7 +447,22 @@ class GrammarChecker:
                 echo=False,
                 temperature=0.3,
             )
-            return output['choices'][0]['text'].strip()
+            raw_response = output['choices'][0]['text'].strip()
+                
+            # If standard instruction model (T5), just return the raw string
+            if prompt_type == "t5":
+                return raw_response
+
+            # If Llama/Qwen, extract text purely from inside the <refined> tags 
+            import re
+            match = re.search(r'<refined>(.*?)</refined>', raw_response, flags=re.DOTALL | re.IGNORECASE)
+            if match:
+                log_print("Regex extracted <refined> block successfully.")
+                return match.group(1).strip()
+            
+            # Fallback if the model hallucinated and forgot the tags.
+            log_print("Warning: Model failed to use <refined> tags. Returning raw output.")
+            return raw_response
         except Exception as e:
             log_print(f"Grammar Check Error: {e}")
             return text

@@ -105,16 +105,36 @@ CRITICAL RULES:
 3. PUNCTUATION: Use appropriate punctuation for clarity.
 4. NO HALLUCINATION: Do not add information not present in the original transcript.
 5. REMOVE FILLERS: Delete unnecessary filler words (uh, um, yeah, etc.).
-6. **ABSOLUTE NO CONVERSATION**: Output ONLY the corrected text. Never add commentary, greetings, or questions.
-7. IF UNCLEAR: If the input consists purely of noise, mirror it exactly.
+6. **ABSOLUTE NO CONVERSATION**: Output ONLY the corrected text inside the tags. Never add commentary, greetings, or questions.
 """
 
-# --- Default User Prompts ---
+# --- System API Formatter (Few-Shot Alignment) ---
+SYSTEM_FORMATTER = f"""
+You are a precise text-processing API. Your job is to process the user's transcript according to the Core Directive.
+You MUST wrap your final processed text perfectly inside <refined> and </refined> XML tags. Do NOT output anything outside of these tags.
+
+{CRITICAL_RULES}
+
+<example_1>
+[Core Directive]: Refine this text for clarity.
+[Transcript]: uhh i think i wanna go to the the store
+Output: <refined>I think I want to go to the store.</refined>
+</example_1>
+
+<example_2>
+[Core Directive]: Rewrite as a Pirate.
+[Transcript]: hello there my friend
+Output: <refined>Ahoy there, me hearty!</refined>
+</example_2>
+"""
+
+# --- Default User Prompts (Core Directives) ---
 DEFAULT_PROMPTS = {
-    "Writing Assistant|Professional": f"Refine the provided transcript into clear, professional, and grammatically correct business text. Focus on executive clarity, precision, and a formal tone.\n\n{CRITICAL_RULES}",
-    "Writing Assistant|Natural": f"Refine the provided transcript into clean, professional, and grammatically correct text, while maintaining a natural and conversational flow.\n\n{CRITICAL_RULES}",
-    "Writing Assistant|Concise": f"Summarize the provided transcript into the most essential points, removing all fluff and redundancy while ensuring logical flow.\n\n{CRITICAL_RULES}",
-    "Code Expert|Natural": f"Refine this technical explanation or code description. Ensure terminology is accurate, the flow is logical, and the tone is helpful yet professional.\n\n{CRITICAL_RULES}",
-    "Code Expert|Concise": f"Convert this technical speech into a concise summary. Use markdown where helpful to highlight key terms or snippets.\n\n{CRITICAL_RULES}",
-    "Executive Secretary|Polite": f"Draft a formal and highly respectful response based on this transcript. Organize the thoughts into a polished executive format.\n\n{CRITICAL_RULES}",
+    "Writing Assistant|Professional": "Refine the provided transcript into clear, professional, and grammatically correct business text. Focus on executive clarity, precision, and a formal tone.",
+    "Writing Assistant|Natural": "Refine the provided transcript into clean, professional, and grammatically correct text, while maintaining a natural and conversational flow.",
+    "Writing Assistant|Concise": "Summarize the provided transcript into the most essential points, removing all fluff and redundancy while ensuring logical flow.",
+    "Code Expert|Natural": "Refine this technical explanation or code description. Ensure terminology is accurate, the flow is logical, and the tone is helpful yet professional.",
+    "Code Expert|Concise": "Convert this technical speech into a concise summary. Use markdown where helpful to highlight key terms or snippets.",
+    "Executive Secretary|Polite": "Draft a formal and highly respectful response based on this transcript. Organize the thoughts into a polished executive format.",
 }
+

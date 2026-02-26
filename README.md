@@ -1,64 +1,69 @@
 # Privox 🎙️
 
-**Privox** is a powerful, private, and local voice input assistant for Windows. It captures your speech and refines it into clean, grammatically perfect text, typing it directly into any application for you.
+**Stop typing, start speaking.**
 
-> [!IMPORTANT]
-> **100% Private & Local**: Privox runs entirely on your own computer. Your voice and text never leave your machine and are never sent to the cloud.
+Privox is your private AI writing assistant. It listens to your voice and instantly types out clear, perfectly written text in any app—from emails to chat—just like you had a professional editor by your side.
+
+> [!TIP]
+> **Total Privacy**: Everything stays on your computer. Your voice and your words are never shared with anyone and never leave your machine.
 
 ---
 
-## ✨ Key Features
+## ✨ Why You'll Love Privox
 
-- **Smart Dictation**: Turn your speech into professional, ready-to-use text instantly.
-- **AI-Powered Grammar**: Automatically fixes spelling, grammar, and punctuation as you speak.
-- **Multilingual Support**: Works across English, Mandarin, Japanese, Korean, and many other languages.
-- **One-Key Control**: Start and stop dictation with a single hotkey (Default: `F8`).
-- **Filler Word Removal**: Automatically cleans up "uh", "um", "ah", and other speech disfluencies.
-- **Auto-Silence Detection**: Automatically stops recording when you finish speaking.
-- **Resource Efficient**: Smart memory management keeps your computer fast when the app is idle.
+- **Beautiful & Simple**: A clean, modern design that is easy to read and stays out of your way.
+- **Speaks Your Language**: Intelligent support for English, Cantonese, Mandarin, Japanese, Korean, Hindi, Spanish, Arabic, and more.
+- **Writes Like You**: Choose a "Persona" (like a Professional Writer or an Engineer) to match your writing style perfectly.
+- **Forget Grammar Stress**: Privox automatically fixes spelling, grammar, and even removes those "uh" and "um" moments while you talk.
+- **One-Key Magic**: Just tap your chosen hotkey to start talking and tap it again when you're done. Privox does the typing for you.
+- **Smart Stays Smart**: It remembers what you just said so it can follow your train of thought across multiple sentences.
+- **Self-Fixing**: If anything goes wrong with the internal files, the app is smart enough to fix itself automatically.
 
 ## 🚀 Getting Started
 
 ### 1. Installation
 
-1. Download the latest **Privox.exe** from the [Releases](https://github.com/markyip/Privox/releases) page.
-2. Run the installer and choose your installation folder.
-3. The app will automatically set up the necessary components during the first run.
+1. Download **Privox.exe** from our [Releases](https://github.com/markyip/Privox/releases) page.
+2. Run the program and follow the simple on-screen instructions.
+3. On your first run, Privox will take a few minutes to set up its "AI Brains"—then you're ready to go!
 
-### 2. Usage
+### 2. How to Use
 
-- **Press F8**: Start recording.
-- **Speak Normally**: Just talk like you are chatting with a friend.
-- **Press F8 again**: Stop and watch as Privox types the polished text into your current window.
+- **Tap your hotkey** (default: `F8`): The app starts listening (you'll see a small animation in your taskbar).
+- **Just Talk**: Speak naturally, as if you were talking to a friend.
+- **Tap your hotkey again**: Stop talking and watch your words appear on the screen, perfectly polished!
 
-## ⚙️ Configuration
+> [!TIP]
+> **Your Hotkey, Your Way**: Don't like `F8`? You can change it to any key or combination (like `Ctrl+Shift+Space`) in **Settings**. Open Settings by right-clicking the Privox icon in your taskbar.
 
-Privox is ready to use "out of the box," but you can customize it by right-clicking the **Privox icon** in your system tray:
+## ⚙️ Simple Controls
 
-- **Run at Startup**: Let Privox be ready as soon as you turn on your computer.
-- **Settings Dashboard**: Access the full graphical settings menu to change models, hotkeys, and prompts without touching any files.
-- **Advanced Tweaks**: For power users, the `config.json` file is still available for manual overrides.
+You don't need to be a computer expert to customize Privox. Just right-click the **Privox icon** near your clock (the system tray):
 
-## 🖥️ System Requirements
+- **Settings**: Change your hotkey, your writing style, or which language you want to use.
+- **Run at Startup**: Have Privox ready for you as soon as you turn on your computer.
 
-- **OS**: Windows 10 or 11.
-- **Disk Space**: At least **15GB** of free space (required for the high-quality local AI "brains").
-- **Hardware**: An NVIDIA GPU is recommended for the fastest speed, but it can also run on most modern CPUs.
+## 🖥️ What You Need
 
-## 🛠️ Troubleshooting
+- **Windows 10 or 11**.
+- **A bit of space**: About **15GB** of space for the high-quality AI models.
+- **Modern Hardware**: Works best on computers with an NVIDIA graphics card, but also runs on most modern desktop and laptop PCs.
 
-- **Audio Issues**: If the mic isn't responding, use the **"Reconnect Audio"** option in the system tray menu.
-- **Accuracy**: You can add specific names or technical terms to the `custom_dictionary` in `config.json` to help the AI recognize them better.
+## ⚠️ Known Issues
 
-## 📄 License
+- **Mixed-language sentences are not supported**: Privox works best when you speak in a single language per recording. Mixing two languages within the same sentence (e.g., switching between English and Cantonese mid-sentence) may produce unexpected results.
 
-Privox is provided under the **PolyForm Noncommercial License 1.0.0**.
+## 🗺️ What's Coming
 
-- **Personal & Research Use**: Allowed and encouraged.
-- **Commercial Use**: Strictly prohibited. You may not sell, rent, or use this software for profit without explicit permission from the author.
+We're actively working on making Privox even better:
 
-See the [LICENSE](LICENSE) file for the full terms.
+- **🍎 Mac Version**: A native macOS version is currently in development.
+- **♿ Accessibility Version**: A dedicated high-contrast, screen-reader-friendly version is under active development for users with accessibility needs.
+
+## 📄 A Note on Usage
+
+Privox is free for your **Personal & Research use**. Commercial or business use is not allowed without permission. See the [LICENSE](LICENSE) file for more details.
 
 ---
 
-_Privox is built for speed, privacy, and clarity. Stop typing, start speaking._
+_Privox: Your voice, perfectly written._

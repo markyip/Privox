@@ -17,8 +17,8 @@ set "TEMP_SCRIPT=%TEMP%\uninstall_privox_%RANDOM%.bat"
 copy /y "%~f0" "%TEMP_SCRIPT%" >nul
 
 :: Launch the second stage HIDDEN via PowerShell
-:: This ensures the cleanup happens silently in the background.
-powershell -WindowStyle Hidden -Command "Start-Process cmd.exe -ArgumentList '/c \"\"%TEMP_SCRIPT%\" __CLEANUP__ \"%BASE_DIR%\"\"' -WindowStyle Hidden"
+set "EXE_CMD=powershell.exe -WindowStyle Hidden -Command \"& '%TEMP_SCRIPT%' __CLEANUP__ '%BASE_DIR%'\""
+start "" %EXE_CMD%
 exit /b
 
 :CLEANUP
@@ -69,4 +69,5 @@ if exist "%TARGET_DIR%" (
 )
 
 :: 7. Vanish (Self-delete the temp script)
+del /f /q "%TEMP%\uninstall_privox_*.vbs" >nul 2>&1
 (goto) 2>nul & del "%~f0"

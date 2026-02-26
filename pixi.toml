@@ -48,4 +48,3 @@ colorama = "*"
 customtkinter = "*"
 diskcache = "*"
 pyside6 = "==6.8.1"
-

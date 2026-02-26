@@ -25,12 +25,15 @@ venv/
 env/
 .env
 .venv
+.pixi/
 pip-log.txt
 pip-delete-this-directory.txt
 
 # Logs
 *.log
-privox_*.log
+privox_app.log
+dist_error.log
+build_log.txt
 
 # Build Artifacts
 build/
@@ -41,9 +44,12 @@ _internal_libs/
 
 # Models
 models/
-*.gguf
-*.bin
-*.onnx
+**/*.gguf
+**/*.bin
+**/*.onnx
+**/*.json
+!config.json
+!.user_prefs.json
 
 # IDEs
 .vscode/
@@ -63,13 +69,12 @@ Thumbs.db
 ehthumbs.db
 Desktop.ini
 .DS_Store
-IDEAS.md
 
-# Agent
+# Misc / Cleanup
+IDEAS.md
+design-system/
 .agent/
+.cursor/
 
 # User Prefs
 .user_prefs.json
-
-# Local scripts
-run_dev.bat

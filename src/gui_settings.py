@@ -57,6 +57,80 @@ if sys.platform == 'win32':
     import winreg
 
 # SVG Icons for the dropdown arrow
+import re
+from PySide6.QtCore import QObject, QThread, Signal, Slot
+
+# --- Model Update Worker & Signals ---
+class ModelUpdateSignals(QObject):
+    progress = Signal(int)
+    status = Signal(str)
+    finished = Signal(bool, str)
+
+class StderrInterceptor:
+    def __init__(self, orig, signal_callback):
+        self.orig = orig
+        self.callback = signal_callback
+        self.buffer = ""
+        self.pct_re = re.compile(r"(\d+(?:\.\d+)?)%")
+        
+    def write(self, s):
+        self.orig.write(s)
+        self.buffer += s
+        if '\r' in self.buffer or '\n' in self.buffer:
+            matches = self.pct_re.findall(self.buffer)
+            if matches:
+                self.callback(int(matches[-1]))
+            self.buffer = ""
+            
+    def flush(self):
+        self.orig.flush()
+
+class ModelUpdateWorker(QObject):
+    def __init__(self, signals):
+        super().__init__()
+        self.signals = signals
+
+    @Slot()
+    def run(self):
+        # Ensure we can import download_models
+        if "download_models" not in sys.modules:
+            try:
+                import download_models
+            except ImportError:
+                # Add current script's directory to path to find sibling modules
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+                if script_dir not in sys.path:
+                    sys.path.append(script_dir)
+                import download_models
+        else:
+            import download_models
+
+        def ui_log(msg):
+            self.signals.status.emit(msg)
+            # print to original stderr for debugging
+            try:
+                sys.__stderr__.write(f"[UI LOG] {msg}\n")
+            except: pass
+
+        # Initial heartbeat
+        print("[DEBUG] Worker thread started. Emitting heartbeat...", flush=True)
+        ui_log("Starting model setup engine...")
+
+        print("[DEBUG] Redirecting stderr...", flush=True)
+        old_stderr = sys.stderr
+        sys.stderr = StderrInterceptor(old_stderr, self.signals.progress.emit)
+        
+        try:
+            print("[DEBUG] Calling download_models.main()...", flush=True)
+            # Re-ensure path for download_models internal imports if any
+            download_models.main(log_callback=ui_log)
+            print("[DEBUG] download_models.main() finished successfully.", flush=True)
+            self.signals.finished.emit(True, "")
+        except Exception as e:
+            self.signals.finished.emit(False, str(e))
+        finally:
+            sys.stderr = old_stderr
+
 ARROW_DOWN_SVG = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path fill='%23aaaaaa' d='M2 4l4 4 4-4z'/></svg>"
 ARROW_UP_SVG = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path fill='%23ffffff' d='M2 8l4-4 4 4z'/></svg>"
 
@@ -109,8 +183,9 @@ class ModernComboBox(QComboBox):
             }}
         """)
 
-class ModernConfirmDialog(QDialog):
-    def __init__(self, parent=None, title="Confirm", message="Save changes?"):
+class ModernDialog(QDialog):
+    """Refined generic dialog for alerts and confirmations with a premium feel."""
+    def __init__(self, parent=None, title="PRIVOX", message="", subtext="", buttons=["OK"]):
         super().__init__(parent)
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -121,100 +196,215 @@ class ModernConfirmDialog(QDialog):
         self.container = QFrame()
         self.container.setStyleSheet("""
             QFrame {
-                background-color: rgba(18, 18, 18, 0.95);
+                background-color: rgba(18, 18, 18, 0.98);
                 border: 1px solid rgba(255, 255, 255, 0.1);
-                border-radius: 12px;
+                border-radius: 16px;
             }
         """)
         container_layout = QVBoxLayout(self.container)
-        container_layout.setContentsMargins(32, 24, 32, 24)
-        container_layout.setSpacing(20)
+        container_layout.setContentsMargins(32, 28, 32, 28)
+        container_layout.setSpacing(18)
         
-        # Title bar (Minimal)
+        # Title Bar
         title_bar = QHBoxLayout()
         title_lbl = QLabel(title.upper())
-        title_lbl.setStyleSheet("font-weight: 800; color: #ffffff; font-size: 11px; letter-spacing: 1px; border: none;")
+        title_lbl.setStyleSheet("font-weight: 900; color: rgba(255, 255, 255, 0.4); font-size: 10px; letter-spacing: 2px; border: none;")
         title_bar.addWidget(title_lbl)
         title_bar.addStretch()
         
         close_btn = QPushButton("✕")
-        close_btn.setFixedSize(20, 20)
-        close_btn.setStyleSheet("QPushButton { border: none; color: #666666; font-size: 14px; } QPushButton:hover { color: #ffffff; }")
+        close_btn.setFixedSize(24, 24)
+        close_btn.setStyleSheet("QPushButton { border: none; color: #666666; font-size: 16px; background: transparent; } QPushButton:hover { color: #ffffff; }")
         close_btn.clicked.connect(self.reject)
         title_bar.addWidget(close_btn)
         container_layout.addLayout(title_bar)
         
         # Content
         msg_lbl = QLabel(message)
-        msg_lbl.setStyleSheet("color: #ffffff; font-size: 15px; font-weight: 400; border: none;")
+        msg_lbl.setStyleSheet("color: #ffffff; font-size: 16px; font-weight: 500; border: none;")
         msg_lbl.setWordWrap(True)
         container_layout.addWidget(msg_lbl)
         
-        sub_lbl = QLabel("Unsaved changes will be lost.")
-        sub_lbl.setStyleSheet("color: #888888; font-size: 13px; border: none;")
-        container_layout.addWidget(sub_lbl)
+        if subtext:
+            sub_lbl = QLabel(subtext)
+            sub_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.5); font-size: 13px; border: none;")
+            sub_lbl.setWordWrap(True)
+            container_layout.addWidget(sub_lbl)
         
         # Buttons
         btn_layout = QHBoxLayout()
-        btn_layout.setSpacing(12)
+        btn_layout.setSpacing(10)
+        btn_layout.addStretch()
         
-        self.btn_save = QPushButton("Save")
-        self.btn_save.setFixedSize(140, 42)
-        self.btn_save.setStyleSheet("""
+        for btn_text in buttons:
+            btn = QPushButton(btn_text)
+            btn.setMinimumHeight(42)
+            btn.setMinimumWidth(100)
+            btn.setCursor(Qt.PointingHandCursor)
+            
+            # Highlight primary button (last or "Save"/"OK")
+            is_primary = btn_text in ["Save", "OK", "INSTALL", "Launch"] or (btn_text == buttons[-1] and len(buttons) > 1)
+            
+            if is_primary:
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #ffffff;
+                        color: #000000;
+                        border-radius: 8px;
+                        font-weight: 800;
+                        padding: 0 24px;
+                        font-size: 13px;
+                    }
+                    QPushButton:hover {
+                        background-color: rgba(255, 255, 255, 0.85);
+                    }
+                """)
+            else:
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: rgba(255, 255, 255, 0.05);
+                        border: 1px solid rgba(255, 255, 255, 0.1);
+                        color: #ffffff;
+                        border-radius: 8px;
+                        font-weight: 600;
+                        padding: 0 20px;
+                        font-size: 13px;
+                    }
+                    QPushButton:hover {
+                        background-color: rgba(255, 255, 255, 0.1);
+                        border: 1px solid rgba(255, 255, 255, 0.2);
+                    }
+                """)
+            
+            # Map results
+            if btn_text == "Save" or btn_text == "OK":
+                btn.clicked.connect(lambda: self.done(1))
+            elif btn_text == "Discard":
+                btn.clicked.connect(lambda: self.done(2))
+            elif btn_text == "Cancel":
+                btn.clicked.connect(self.reject)
+            else:
+                # Direct result based on button order if not matched
+                btn.clicked.connect(lambda checked=False, b=btn_text: self.done(buttons.index(b) + 1))
+            
+            btn_layout.addWidget(btn)
+        
+        container_layout.addLayout(btn_layout)
+        layout.addWidget(self.container)
+        
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() == Qt.LeftButton and hasattr(self, 'drag_pos'):
+            self.move(event.globalPosition().toPoint() - self.drag_pos)
+            event.accept()
+
+class ModernProgressDialog(QDialog):
+    """Premium Centered Progress Update with Liquid Glass styling."""
+    def __init__(self, parent=None, title="UPDATING MODELS"):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setFixedSize(480, 260)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.container = QFrame()
+        self.container.setStyleSheet("""
+            QFrame {
+                background-color: rgba(18, 18, 18, 0.98);
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                border-radius: 20px;
+            }
+        """)
+        container_layout = QVBoxLayout(self.container)
+        container_layout.setContentsMargins(40, 32, 40, 32)
+        container_layout.setSpacing(0)
+        
+        container_layout.addStretch()
+
+        # Title Bar (Small, centered)
+        title_lbl = QLabel(title.upper())
+        title_lbl.setAlignment(Qt.AlignCenter)
+        title_lbl.setStyleSheet("font-weight: 900; color: rgba(255, 255, 255, 0.3); font-size: 10px; letter-spacing: 3px; border: none;")
+        container_layout.addWidget(title_lbl)
+        
+        container_layout.addSpacing(30)
+        
+        # Center Stack (Progress + Status)
+        center_layout = QVBoxLayout()
+        center_layout.setSpacing(15)
+        center_layout.setAlignment(Qt.AlignCenter)
+        
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setFixedHeight(8)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setMinimumWidth(300)
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                background-color: rgba(255, 255, 255, 0.03);
+                border: 1px solid rgba(255, 255, 255, 0.05);
+                border-radius: 4px;
+            }
+            QProgressBar::chunk {
+                background-color: #ffffff;
+                border-radius: 4px;
+            }
+        """)
+        center_layout.addWidget(self.progress_bar)
+        self.main_status = QLabel("Downloading models...")
+        self.main_status.setAlignment(Qt.AlignCenter)
+        self.main_status.setStyleSheet("color: white; font-size: 18px; font-weight: 700; border: none;")
+        center_layout.addWidget(self.main_status)
+        
+        self.sub_status = QLabel("Preparing environment...")
+        self.sub_status.setAlignment(Qt.AlignCenter)
+        self.sub_status.setStyleSheet("color: rgba(255, 255, 255, 0.5); font-size: 13px; font-style: italic; border: none;")
+        center_layout.addWidget(self.sub_status)
+        
+        # --- Restart Button (Initially Hidden) ---
+        self.restart_btn = QPushButton("RESTART NOW")
+        self.restart_btn.setFixedSize(160, 42)
+        self.restart_btn.setCursor(Qt.PointingHandCursor)
+        self.restart_btn.setVisible(False)
+        self.restart_btn.setStyleSheet("""
             QPushButton {
                 background-color: #ffffff;
                 color: #000000;
-                border-radius: 6px;
-                font-weight: 700;
-                font-size: 14px;
+                border-radius: 8px;
+                font-weight: 800;
+                font-size: 13px;
             }
             QPushButton:hover {
-                background-color: rgba(255, 255, 255, 0.9);
+                background-color: rgba(255, 255, 255, 0.85);
             }
         """)
-        self.btn_save.clicked.connect(lambda: self.done(1))
+        self.restart_btn.clicked.connect(self.accept)
+        center_layout.addWidget(self.restart_btn, alignment=Qt.AlignCenter)
         
-        self.btn_discard = QPushButton("Discard")
-        self.btn_discard.setFixedSize(110, 42)
-        self.btn_discard.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(255, 255, 255, 0.05);
-                border: 1px solid rgba(255, 255, 255, 0.1);
-                color: #ffffff;
-                border-radius: 6px;
-                font-weight: 600;
-                font-size: 14px;
-            }
-            QPushButton:hover {
-                background-color: rgba(255, 255, 255, 0.1);
-            }
-        """)
-        self.btn_discard.clicked.connect(lambda: self.done(2))
-        
-        self.btn_cancel = QPushButton("Cancel")
-        self.btn_cancel.setFixedSize(110, 42)
-        self.btn_cancel.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(255, 255, 255, 0.05);
-                border: 1px solid rgba(255, 255, 255, 0.1);
-                color: #ffffff;
-                border-radius: 6px;
-                font-weight: 600;
-                font-size: 14px;
-            }
-            QPushButton:hover {
-                background-color: rgba(255, 255, 255, 0.1);
-            }
-        """)
-        self.btn_cancel.clicked.connect(self.reject)
-        
-        btn_layout.addWidget(self.btn_save)
-        btn_layout.addWidget(self.btn_discard)
-        btn_layout.addWidget(self.btn_cancel)
-        container_layout.addLayout(btn_layout)
+        container_layout.addLayout(center_layout)
+        container_layout.addStretch()
         
         layout.addWidget(self.container)
-        
+
+    def set_status(self, main_text, sub_text=None):
+        self.main_status.setText(main_text)
+        if sub_text:
+            self.sub_status.setText(sub_text)
+
+    def set_progress(self, value):
+        self.progress_bar.setValue(int(value))
+
+    def show_completion(self, main_text="Download Complete", sub_text="Restart required to apply changes."):
+        self.progress_bar.setVisible(False)
+        self.main_status.setText(main_text)
+        self.sub_status.setText(sub_text)
+        self.restart_btn.setVisible(True)
+
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             self.drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
@@ -319,6 +509,11 @@ class SettingsGUI(QMainWindow):
             self.tech_config["whisper_model"] = "Distil-Whisper Large v3 (English)"
         if self.tech_config.get("current_refiner") == "Standard (Llama 3.2)":
             self.tech_config["current_refiner"] = "Llama 3.2 3B Instruct"
+            
+        # --- Migration: Force default transition to Llama 3.2 if on old CoEdit default (ONE-TIME) ---
+        if self.prefs.get("current_refiner") == "CoEdit Large (T5)" and not self.prefs.get("_migrate_llama_3_2"):
+            self.prefs["current_refiner"] = "Llama 3.2 3B Instruct"
+            self.prefs["_migrate_llama_3_2"] = True
 
     CRITICAL_RULES = models_config.CRITICAL_RULES
     DEFAULT_PROMPTS = models_config.DEFAULT_PROMPTS
@@ -335,9 +530,9 @@ class SettingsGUI(QMainWindow):
 
     def closeEvent(self, event):
         if self.is_dirty:
-            dialog = ModernConfirmDialog(self, "EXIT SETTINGS", "Save changes before exiting?")
+            dialog = ModernDialog(self, "EXIT SETTINGS", "Save changes before exiting?", "Unsaved changes will be lost.", buttons=["Cancel", "Discard", "Save"])
             result = dialog.exec()
-            if result == 1: # Save
+            if result == 3: # Save (based on button index + 1, Save is last)
                 self.save_config()
                 event.accept()
             elif result == 2: # Discard
@@ -558,6 +753,33 @@ class SettingsGUI(QMainWindow):
         self.btn_dict.clicked.connect(lambda: self.switch_tab(2))
 
         sidebar_layout.addStretch()
+
+        self.btn_save_all = QPushButton("SAVE ALL SETTINGS")
+        self.btn_save_all.setFixedSize(200, 44)
+        self.btn_save_all.setCursor(Qt.PointingHandCursor)
+        self.btn_save_all.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(255, 255, 255, 0.03);
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                color: rgba(255, 255, 255, 0.5);
+                border-radius: 8px;
+                font-weight: 700;
+                font-size: 11px;
+                letter-spacing: 1.5px;
+                margin-left: 20px;
+                margin-bottom: 20px;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.2);
+                color: #ffffff;
+            }
+            QPushButton:pressed {
+                background-color: rgba(255, 255, 255, 0.12);
+            }
+        """)
+        self.btn_save_all.clicked.connect(self.save_config)
+        sidebar_layout.addWidget(self.btn_save_all)
         
         footer_label = QLabel("v1.0")
         footer_label.setStyleSheet("color: #444444; padding-left: 20px;")
@@ -596,19 +818,6 @@ class SettingsGUI(QMainWindow):
     def mark_dirty(self):
         self.is_dirty = True
         
-    def closeEvent(self, event):
-        if self.is_dirty:
-            dlg = ModernConfirmDialog(self, "Unsaved Changes", "You have unsaved changes.")
-            res = dlg.exec()
-            if res == 1: # Save
-                self.save_config()
-                event.accept()
-            elif res == 2: # Discard
-                event.accept()
-            else: # Cancel
-                event.ignore()
-        else:
-            event.accept()
 
     def load_initial_state(self):
         # Load initial values from unified config (honors global defaults if no user prefs)
@@ -745,7 +954,7 @@ class SettingsGUI(QMainWindow):
         # Persona Group
         persona_layout = QHBoxLayout()
         self.char_combo = ModernComboBox()
-        self.char_combo.addItems(["Writing Assistant", "Code Expert", "Executive Secretary", "Personal Buddy", "Custom"])
+        self.char_combo.addItems(["Writing Assistant", "Code Expert", "Academic", "Executive Secretary", "Personal Buddy", "Custom"])
         self.char_combo.currentTextChanged.connect(self.on_prompt_change)
         
         self.tone_combo = ModernComboBox()
@@ -1123,8 +1332,8 @@ class SettingsGUI(QMainWindow):
             # Fallback to defaults if no user prompt saved
             default_text = self.DEFAULT_PROMPTS.get(new_key)
             if not default_text:
-                # Generate a generic prompt with CRITICAL_RULES if key is missing
-                default_text = f"Refine the provided transcript according to the {tone} tone and {character} persona.\n\n{self.CRITICAL_RULES}"
+                # Generate a generic prompt if key is missing completely
+                default_text = f"Refine the provided transcript according to the '{tone}' tone and '{char}' persona."
             saved_prompt = default_text
             
         self.prompt_editor.setPlainText(saved_prompt)
@@ -1154,7 +1363,7 @@ class SettingsGUI(QMainWindow):
         self.prefs["current_refiner"] = self.llm_combo.currentText()
         self.prefs["sound_enabled"] = self.check_sound.isChecked()
         self.prefs["auto_stop_enabled"] = True 
-        self.prefs["hotkey"] = self.hk_val.text().lower()
+        
         # Capture current prompt edits before saving
         char = self.char_combo.currentText()
         tone = self.tone_combo.currentText()
@@ -1204,8 +1413,32 @@ class SettingsGUI(QMainWindow):
         self.is_dirty = False
         
         # 5. Check for changes
-        if (new_asr != old_asr) or (new_llm != old_llm):
-            self.handle_model_change_and_restart()
+        new_asr = self.prefs.get("whisper_model", "")
+        new_llm = self.prefs.get("current_refiner", "")
+        
+        models_changed = (old_asr != new_asr) or (old_llm != new_llm)
+        
+        if models_changed:
+            dialog = ModernDialog(
+                self, 
+                "DOWNLOAD REQUIRED", 
+                "New models require downloading.",
+                f"ASR: {new_asr}\nLLM: {new_llm}\n\nThis will trigger a multi-GB download. Proceed?",
+                buttons=["Cancel", "OK"]
+            )
+            if dialog.exec() == 1: # OK
+                self.handle_model_change_and_restart(old_asr, old_llm)
+            else:
+                # Revert selection in UI and prefs
+                self.prefs["whisper_model"] = old_asr
+                self.prefs["current_refiner"] = old_llm
+                self.asr_combo.setCurrentText(old_asr)
+                self.llm_combo.setCurrentText(old_llm)
+                with open(self.prefs_path, "w", encoding="utf-8") as f:
+                    json.dump(self.prefs, f, indent=4)
+                self.is_dirty = False
+        else:
+            self.show_toast("Settings saved successfully!")
 
     def start_hotkey_record(self):
         self.btn_rec.setText("RECORDING...")
@@ -1308,7 +1541,7 @@ class SettingsGUI(QMainWindow):
             self.prefs["custom_dictionary"] = words
             self.dict_input.clear()
             self.refresh_dict_list()
-            self.is_dirty = True
+            self.mark_dirty()
 
     def show_toast(self, message):
         toast = QLabel(message, self)
@@ -1350,7 +1583,7 @@ class SettingsGUI(QMainWindow):
             words.remove(word)
             self.prefs["custom_dictionary"] = words
             self.refresh_dict_list()
-            self.is_dirty = True
+            self.mark_dirty()
 
     def refresh_dict_list(self):
         # Clear layout
@@ -1444,92 +1677,70 @@ class SettingsGUI(QMainWindow):
         return reg_exists or shortcut_exists
 
 
-    def handle_model_change_and_restart(self):
+    def handle_model_change_and_restart(self, old_asr, old_llm):
         """
-        Updates models via download_models.py and prompts for restart.
+        Updates models via download_models.py using a thread-safe QThread/Signal approach.
         """
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Updating Models")
-        dlg.setFixedSize(400, 150)
-        dlg.setWindowFlags(Qt.Dialog | Qt.CustomizeWindowHint | Qt.WindowTitleHint) # No close button
+        # --- Premium Dialog Setup ---
+        dlg = ModernProgressDialog(self)
         
-        layout = QVBoxLayout(dlg)
-        lbl = QLabel("Downloading/Verifying model files...\nPlease wait, this may take a few minutes.")
-        lbl.setWordWrap(True)
-        lbl.setStyleSheet("color: white; font-size: 13px;")
-        layout.addWidget(lbl)
-        
-        pbar = QProgressBar()
-        pbar.setRange(0, 0) # Indeterminate
-        pbar.setStyleSheet("""
-            QProgressBar {
-                background-color: rgba(255, 255, 255, 0.1);
-                border: none;
-                border-radius: 4px;
-                height: 6px;
-            }
-            QProgressBar::chunk {
-                background-color: #4CAF50;
-                border-radius: 4px;
-            }
-        """)
-        layout.addWidget(pbar)
-        
-        status_lbl = QLabel("Initializing...")
-        status_lbl.setStyleSheet("color: #888888; font-size: 11px;")
-        layout.addWidget(status_lbl)
-        
-        dlg.setStyleSheet("background-color: #1a1a1a; border: 1px solid #333;")
-        
-        # Worker Thread
-        import threading
-        # Ensure we can import download_models
-        try:
-            import download_models
-        except ImportError:
-            sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-            import download_models
-        
-        def run_update():
-            # Redirect log
-            original_log = download_models.log
-            def ui_log(msg):
-                print(msg) 
-            
-            download_models.log = ui_log
-            try:
-                download_models.main()
-                QTimer.singleShot(500, dlg.accept)
-            except Exception as e:
-                print(f"Update failed: {e}")
-                QTimer.singleShot(500, dlg.reject)
-            finally:
-                download_models.log = original_log
+        # --- Thread and Signal Wiring ---
+        dlg.signals = ModelUpdateSignals() # Attach to dialog to prevent GC
+        worker = ModelUpdateWorker(dlg.signals)
+        thread = QThread(dlg) # Attach to dialog
+        worker.moveToThread(thread)
+        dlg.worker = worker # Keep reference
 
-        threading.Thread(target=run_update, daemon=True).start()
+        def on_status(msg):
+            # If we see "Downloading" in status, update main label
+            if "downloading" in msg.lower():
+                dlg.set_status("Downloading Model Files", msg)
+            else:
+                dlg.set_status("Updating Models", msg)
         
-        res = dlg.exec()
+        def on_progress(val):
+            if val > 0:
+                dlg.set_progress(val)
+            if val == 100:
+                dlg.set_status("Download Complete", "Verifying files...")
+
+        def on_finished(success, error_msg):
+            thread.quit()
+            thread.wait()
+            if success:
+                dlg.show_completion()
+            else:
+                # REVERT CONFIGURATION
+                try:
+                    self.prefs["whisper_model"] = old_asr
+                    self.prefs["current_refiner"] = old_llm
+                    with open(self.prefs_path, "w", encoding="utf-8") as f:
+                        json.dump(self.prefs, f, indent=4)
+                except: pass
+
+                dlg.reject()
+                # Use ModernDialog for Error
+                err_dlg = ModernDialog(
+                    self, 
+                    "Update Failed", 
+                    "Model setup encountered an error.", 
+                    f"{error_msg[:300]}\n\nPrevious settings have been restored.",
+                    buttons=["OK"]
+                )
+                err_dlg.exec()
+
+        dlg.signals.status.connect(on_status)
+        dlg.signals.progress.connect(on_progress)
+        dlg.signals.finished.connect(on_finished)
+        thread.started.connect(worker.run)
         
-        if res == QDialog.Accepted:
-            # Prompt Restart
-            restart = QMessageBox.question(
-                self, 
-                "Restart Required", 
-                "Models updated successfully.\nPrivox needs to restart to apply changes.\n\nRestart now?",
-                QMessageBox.Yes | QMessageBox.No
-            )
-            
-            if restart == QMessageBox.Yes:
-                # Launch new instance
-                if getattr(sys, "frozen", False):
-                    subprocess.Popen([sys.executable])
-                else:
-                    # Dev mode
-                    subprocess.Popen([sys.executable] + sys.argv)
-                
-                QApplication.quit()
-        else:
-            QMessageBox.warning(self, "Update Failed", "Model update failed. Check logs.")
+        thread.start()
+        
+        # Block until thread finishes (success or revert)
+        if dlg.exec() == QDialog.Accepted:
+            print("Restarting application to apply model changes...")
+            # Use exit code 10 to signal a restart requirement with settings recovery
+            sys.exit(10)
 
 
 if __name__ == "__main__":

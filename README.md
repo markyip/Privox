@@ -8,7 +8,7 @@
 
 **Stop typing, start speaking.**
 
-Privox is a powerful, private, and local voice input assistant for Windows. It captures your speech, transcribes it using **Faster-Whisper**, and refines the text using **Llama 3** for perfect grammar and formatting—instantly typing the result into any application.
+A powerful, private, and fully local voice input assistant for Windows. Privox captures your speech, transcribes it, and refines the text using a locally running AI model — ensuring maximum privacy and complete data control.
 
 > [!TIP]
 > **Total Privacy**: Everything stays on your computer. Your voice and your words are never shared with anyone and never leave your machine.

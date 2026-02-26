@@ -333,6 +333,9 @@ class SoundManager:
 # Dictionaries CHARACTER_LENSES and TONE_OVERLAYS are now imported from models_config.
 
 class GrammarChecker:
+    _llama_imported = False  # Class-level flag to avoid redundant imports/diagnostics
+    _Llama = None            # Cached Llama class reference
+
     def __init__(self, refiner_profile=None, custom_dictionary=None, custom_prompts=None, command_prompt=None, character=None, tone=None):
         self.model = None
         self.profile = refiner_profile or {}
@@ -344,6 +347,7 @@ class GrammarChecker:
         self.tone = tone or "Natural"
         self.icon = None # Placeholder
         self.context_buffer = "" # Max 2000 chars of conversation history
+        self._has_loaded_once = False  # Instance-level: tracks if we've loaded before (for verbose control)
 
     def load_model(self):
         if self.model:
@@ -351,15 +355,17 @@ class GrammarChecker:
 
         repo_id = self.profile.get("repo_id", GRAMMAR_REPO)
         file_name = self.profile.get("file_name", GRAMMAR_FILE)
+        is_reload = self._has_loaded_once  # True on wake-from-idle, False on first boot
 
-        # 1. Check Local "models" folder (Offline Mode)
+        # --- Optimization 3: Skip HF cache probe if local file already exists ---
         local_model_path = os.path.join(BASE_DIR, "models", file_name)
         if os.path.exists(local_model_path):
-            log_print(f"Found local model: {local_model_path}")
+            if not is_reload:
+                log_print(f"Found local model: {local_model_path}")
             model_path = local_model_path
         else:
             try:
-                # 2. Check/Download from Hugging Face
+                # Check/Download from Hugging Face
                 log_print(f"Checking Hugging Face for Refiner Model ({repo_id})...")
                 
                 # First try to get it from cache or defined local dir
@@ -400,23 +406,30 @@ class GrammarChecker:
                 return
 
         try:
-            # Heavy Import: Llama
-            log_print("Importing llama_cpp...")
-            try:
-                import llama_cpp
-                log_print(f"llama-cpp-python Version: {getattr(llama_cpp, '__version__', 'Unknown')}")
-                # Log the system info string - this tells us if CUDA is actually compiled in
-                sys_info = llama_cpp.llama_print_system_info()
-                log_print(f"llama-cpp-python System Info: {sys_info}")
-                if "CUDA = 1" in str(sys_info) or "BLAS = 1" in str(sys_info):
-                    log_print("GPU Backend detected in llama-cpp-python.")
-                else:
-                    log_print("WARNING: llama-cpp-python appears to be CPU-ONLY.")
-            except ImportError as ie:
-                log_print(f"CRITICAL: Failed to import llama_cpp: {ie}")
-                raise ie
+            # --- Optimization 2: Cache llama_cpp import, skip diagnostics on reload ---
+            if not GrammarChecker._llama_imported:
+                log_print("Importing llama_cpp...")
+                try:
+                    import llama_cpp
+                    log_print(f"llama-cpp-python Version: {getattr(llama_cpp, '__version__', 'Unknown')}")
+                    sys_info = llama_cpp.llama_print_system_info()
+                    log_print(f"llama-cpp-python System Info: {sys_info}")
+                    if "CUDA = 1" in str(sys_info) or "BLAS = 1" in str(sys_info):
+                        log_print("GPU Backend detected in llama-cpp-python.")
+                    else:
+                        log_print("WARNING: llama-cpp-python appears to be CPU-ONLY.")
+                except ImportError as ie:
+                    log_print(f"CRITICAL: Failed to import llama_cpp: {ie}")
+                    raise ie
                 
-            from llama_cpp import Llama
+                from llama_cpp import Llama
+                GrammarChecker._Llama = Llama
+                GrammarChecker._llama_imported = True
+            
+            Llama = GrammarChecker._Llama
+
+            # --- Optimization 1: verbose=False on reloads to skip Llama's console dump ---
+            use_verbose = not is_reload
 
             def _safe_llama_init(m_path, n_gpu):
                 try:
@@ -424,7 +437,7 @@ class GrammarChecker:
                         model_path=m_path,
                         n_ctx=2048,
                         n_gpu_layers=n_gpu,
-                        verbose=True,
+                        verbose=use_verbose,
                         n_threads=os.cpu_count() // 2 if os.cpu_count() else 4
                     )
                 except (AssertionError, RuntimeError) as e:
@@ -442,7 +455,7 @@ class GrammarChecker:
             is_gpu = torch.cuda.is_available()
             n_gpu = 99 if is_gpu else 0
             
-            log_print(f"Loading Llama (GPU={is_gpu}, layers={n_gpu})...")
+            log_print(f"Loading Llama (GPU={is_gpu}, layers={n_gpu}){'  [Quick Reload]' if is_reload else ''}...")
             self.model = _safe_llama_init(model_path, n_gpu)
             
             if self.model is None:
@@ -450,9 +463,7 @@ class GrammarChecker:
                 log_print("Model file removed. Restarting load sequence to trigger redownload...")
                 return self.load_model()
 
-            # Handle internal llama-cpp failure that might have returned without raising but broke state
-            # (Though _safe_llama_init usually catches the actual error)
-            
+            self._has_loaded_once = True
             log_print(f"Done. (GPU Acceleration: {'ENABLED' if is_gpu else 'DISABLED'})")
         except Exception as e:
             err_trace = traceback.format_exc()
@@ -494,8 +505,9 @@ class GrammarChecker:
         if dict_str:
             prompt += f"Specific Jargon/Hints: {dict_str}\n"
 
-        if self.context_buffer:
-            prompt += f"\n[Previous Context (For Continuity Only - Do NOT transcribe this again)]:\n{self.context_buffer}\n"
+        # [DISABLED] Contextual memory — currently interferes with output quality
+        # if self.context_buffer:
+        #     prompt += f"\n[Previous Context (For Continuity Only - Do NOT transcribe this again)]:\n{self.context_buffer}\n"
 
         # Layer 2: User-Edited Instructions
         if user_text:
@@ -527,7 +539,7 @@ class GrammarChecker:
             return text
             
         if len(clean_text) < 8 and clean_text.lower() not in [d.lower() for d in self.custom_dictionary]:
-            log_print(f" [Short Input Skip - Mirroring: '{clean_text}']")
+            log_print(f" [Short Input Skip] Input too short ({len(clean_text)} chars). Mirroring.")
             return text
 
         try:
@@ -578,7 +590,7 @@ class GrammarChecker:
                 
             # If standard instruction model (T5), just return the raw string
             if prompt_type == "t5":
-                self.context_buffer = (self.context_buffer + " " + raw_response).strip()[-2000:]
+                # self.context_buffer = (self.context_buffer + " " + raw_response).strip()[-2000:]  # [DISABLED]
                 return raw_response
 
             # If Llama/Qwen, extract text purely from inside the <refined> tags 
@@ -594,14 +606,54 @@ class GrammarChecker:
                 log_print("Warning: Model failed to use <refined> tags. Using raw output.")
                 result = raw_response
 
-            # 3. Post-generation Hallucination Validator
+            # 3a. Strip trailing meta-commentary ("Note:", "I've preserved...", etc.)
+            result = self._strip_meta_commentary(result)
+
+            # 3b. Post-generation Hallucination Validator
             result = self._validate_output(clean_text, result)
 
-            self.context_buffer = (self.context_buffer + " " + result).strip()[-2000:]
+            # self.context_buffer = (self.context_buffer + " " + result).strip()[-2000:]  # [DISABLED]
             return result
         except Exception as e:
             log_print(f"Grammar Check Error: {e}")
             return text
+
+    # --- LLM self-commentary patterns that get embedded inside <refined> output ---
+    _META_COMMENTARY_PATTERNS = [
+        "\nnote:", "\nnote -", "\nnotes:",
+        "\nplease note", "\np.s.", "\nps:",
+        "\ni've preserved", "\ni have preserved",
+        "\ni've maintained", "\ni have maintained",
+        "\ni've replaced", "\ni have replaced",
+        "\ni've improved", "\ni have improved",
+        "\ni've also", "\ni also",
+        "\ni've ensured", "\ni have ensured",
+        "\nspecifically,",
+        "\nadditionally,",
+        "\nin this version",
+        "\nchanges made:",
+        "\nexplanation:",
+    ]
+
+    def _strip_meta_commentary(self, text):
+        """Remove trailing LLM self-commentary that leaks inside <refined> tags."""
+        if not text:
+            return text
+
+        text_lower = text.lower()
+        earliest_cut = len(text)
+
+        for pattern in self._META_COMMENTARY_PATTERNS:
+            idx = text_lower.find(pattern)
+            if idx > 0 and idx < earliest_cut:
+                earliest_cut = idx
+
+        if earliest_cut < len(text):
+            stripped = text[:earliest_cut].rstrip()
+            log_print(f" [Meta-Commentary Strip] Removed {len(text) - earliest_cut} chars of LLM self-commentary.")
+            return stripped
+
+        return text
 
     # --- Prompt-echo fingerprints (substrings the LLM may regurgitate) ---
     _PROMPT_FINGERPRINTS = [
@@ -619,6 +671,27 @@ class GrammarChecker:
         "output only the processed text",
         "remove fillers",
         "absolute no conversation",
+        # Assistant-behavior fingerprints (chatbot preambles / meta-talk)
+        "as an ai",
+        "as a language model",
+        "i'd be happy to",
+        "i can help",
+        "let me help",
+        "i'll do my best",
+        "here's the corrected",
+        "here is the refined",
+        "here is the corrected",
+        "here's the refined",
+        "below is the",
+        "i've refined",
+        "i have refined",
+    ]
+
+    # Chatbot preamble patterns (output STARTS WITH these → assistant behavior)
+    _ASSISTANT_PREFIXES = [
+        "sure,", "sure!", "certainly,", "certainly!", "of course,", "of course!",
+        "here is", "here's", "here are", "i'd be", "i can", "let me",
+        "absolutely,", "absolutely!", "no problem",
     ]
 
     def _validate_output(self, original, refined):
@@ -639,6 +712,12 @@ class GrammarChecker:
         for fp in self._PROMPT_FINGERPRINTS:
             if fp in refined_lower:
                 log_print(f" [Hallucination Guard] Prompt echo detected: '{fp}'. Returning original.")
+                return original
+
+        # Check 3: Assistant-behavior detection (output starts with chatbot preambles)
+        for prefix in self._ASSISTANT_PREFIXES:
+            if refined_lower.startswith(prefix):
+                log_print(f" [Hallucination Guard] Assistant preamble detected: '{prefix}'. Returning original.")
                 return original
 
         return refined
@@ -1526,13 +1605,13 @@ class VoiceInputApp:
                 # Collect segments and log each one
                 seg_results = []
                 for segment in segments:
-                    log_print(f"  Segment: [{segment.start:.2f}s -> {segment.end:.2f}s] '{segment.text}'")
+                    log_print(f"  Segment: [{segment.start:.2f}s -> {segment.end:.2f}s] ({len(segment.text)} chars)")
                     seg_results.append(segment.text)
                 
                 raw_text = " ".join(seg_results).strip()
             
             t1 = time.time()
-            log_print(f" [ASR Total Time: {t1 - t0:.3f}s] Joined Result: '{raw_text}'")
+            log_print(f" [ASR Total Time: {t1 - t0:.3f}s] Result: {len(raw_text)} chars")
             
             if not raw_text:
                 log_print(" [Empty Transcription Result]")
@@ -1556,7 +1635,7 @@ class VoiceInputApp:
             t3 = time.time()
             log_print(f" [Grammar Time: {t3 - t2:.3f}s]")
             
-            log_print(f"Output: {final_text}")
+            log_print(f" [Refined Output: {len(final_text)} chars]")
             log_print(f" [Total Time: {t3 - t0:.3f}s]")
             
             try:

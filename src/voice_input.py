@@ -526,7 +526,7 @@ class GrammarChecker:
         if not self.model or not clean_text:
             return text
             
-        if len(clean_text) < 4 and clean_text.lower() not in [d.lower() for d in self.custom_dictionary]:
+        if len(clean_text) < 8 and clean_text.lower() not in [d.lower() for d in self.custom_dictionary]:
             log_print(f" [Short Input Skip - Mirroring: '{clean_text}']")
             return text
 
@@ -562,9 +562,14 @@ class GrammarChecker:
                 )
                 stop_tokens = ["<|eot_id|>"]
             
+            # 2. Proportional max_tokens cap to prevent runaway generation
+            # A refined output should never be drastically longer than the input.
+            input_tokens_est = max(len(clean_text) // 3, len(clean_text.split()))
+            max_tokens = min(1024, max(64, input_tokens_est * 4))
+
             output = self.model(
                 prompt, 
-                max_tokens=1024,
+                max_tokens=max_tokens,
                 stop=stop_tokens, 
                 echo=False,
                 temperature=0.3,
@@ -579,19 +584,64 @@ class GrammarChecker:
             # If Llama/Qwen, extract text purely from inside the <refined> tags 
             import re
             match = re.search(r'<refined>(.*?)</refined>', raw_response, flags=re.DOTALL | re.IGNORECASE)
+            
+            result = None
             if match:
                 log_print("Regex extracted <refined> block successfully.")
-                extracted = match.group(1).strip()
-                self.context_buffer = (self.context_buffer + " " + extracted).strip()[-2000:]
-                return extracted
-            
-            # Fallback if the model hallucinated and forgot the tags.
-            log_print("Warning: Model failed to use <refined> tags. Returning raw output.")
-            self.context_buffer = (self.context_buffer + " " + raw_response).strip()[-2000:]
-            return raw_response
+                result = match.group(1).strip()
+            else:
+                # Fallback if the model hallucinated and forgot the tags.
+                log_print("Warning: Model failed to use <refined> tags. Using raw output.")
+                result = raw_response
+
+            # 3. Post-generation Hallucination Validator
+            result = self._validate_output(clean_text, result)
+
+            self.context_buffer = (self.context_buffer + " " + result).strip()[-2000:]
+            return result
         except Exception as e:
             log_print(f"Grammar Check Error: {e}")
             return text
+
+    # --- Prompt-echo fingerprints (substrings the LLM may regurgitate) ---
+    _PROMPT_FINGERPRINTS = [
+        "core directive",
+        "strict identity override",
+        "strict style override",
+        "additional user instructions",
+        "previous context",
+        "fix grammar",
+        "no hallucination",
+        "maintain the speaker's original cadence",
+        "focus on software engineering jargon",
+        "do not simplify technical abbreviations",
+        "do not add new semantic information",
+        "output only the processed text",
+        "remove fillers",
+        "absolute no conversation",
+    ]
+
+    def _validate_output(self, original, refined):
+        """Post-generation hallucination check. Returns original if output looks fabricated."""
+        if not refined:
+            return original
+
+        orig_len = len(original)
+        ref_len = len(refined)
+
+        # Check 1: Output explosion (refined is absurdly longer than input)
+        if orig_len > 0 and ref_len > max(200, orig_len * 5):
+            log_print(f" [Hallucination Guard] Output explosion: {orig_len} -> {ref_len} chars. Returning original.")
+            return original
+
+        # Check 2: Prompt-echo detection (output contains system prompt fragments)
+        refined_lower = refined.lower()
+        for fp in self._PROMPT_FINGERPRINTS:
+            if fp in refined_lower:
+                log_print(f" [Hallucination Guard] Prompt echo detected: '{fp}'. Returning original.")
+                return original
+
+        return refined
 
     def unload_model(self):
         if self.model:
@@ -896,7 +946,7 @@ class VoiceInputApp:
                 
             # --- 3b. Force transition for the new default if still on old default (ONE-TIME) ---
             if prefs.get("current_refiner") == "CoEdit Large (T5)" and not prefs.get("_migrate_llama_3_2"):
-                prefs["current_refiner"] = "Llama 3.2 3B Instruct"
+                prefs["current_refiner"] = models_config.DEFAULT_LLM
                 prefs["_migrate_llama_3_2"] = True
                 with open(prefs_path, "w", encoding="utf-8") as f:
                     json.dump(prefs, f, indent=4)
@@ -957,7 +1007,7 @@ class VoiceInputApp:
             self.character = prefs.get("character", "Writing Assistant")
             self.tone = prefs.get("tone", "Natural")
             self.custom_prompts = prefs.get("custom_prompts", {})
-            self.current_refiner = prefs.get("current_refiner", "Llama 3.2 3B Instruct")
+            self.current_refiner = prefs.get("current_refiner", models_config.DEFAULT_LLM)
             
             # Library Loading (Prefer User Prefs > Config > Default)
             self.asr_library = prefs.get("asr_library", config.get("asr_library", models_config.ASR_LIBRARY))
@@ -995,7 +1045,7 @@ class VoiceInputApp:
             # ASR Model resolution
             global WHISPER_SIZE, WHISPER_REPO, ASR_BACKEND
             old_whisper = WHISPER_SIZE
-            self.active_asr_name = prefs.get("whisper_model", "Distil-Whisper Large v3 (English)")
+            self.active_asr_name = prefs.get("whisper_model", models_config.DEFAULT_ASR)
             active_asr = self.active_asr_name
             
             # Find in library

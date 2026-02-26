@@ -16,8 +16,6 @@ Privox is your private AI writing assistant. It listens to your voice and instan
 - **Writes Like You**: Choose a "Persona" (like a Professional Writer or an Engineer) to match your writing style perfectly.
 - **Forget Grammar Stress**: Privox automatically fixes spelling, grammar, and even removes those "uh" and "um" moments while you talk.
 - **One-Key Magic**: Just tap your chosen hotkey to start talking and tap it again when you're done. Privox does the typing for you.
-- **Smart Stays Smart**: It remembers what you just said so it can follow your train of thought across multiple sentences.
-- **Self-Fixing**: If anything goes wrong with the internal files, the app is smart enough to fix itself automatically.
 
 ## 🚀 Getting Started
 
@@ -51,6 +49,7 @@ You don't need to be a computer expert to customize Privox. Just right-click the
 
 ## ⚠️ Known Issues
 
+- **Very short sentences may not be refined**: To prevent hallucination, Privox will skip AI grammar correction if your spoken input is very short (roughly a few words). The original transcription will be typed out as-is. This is a deliberate safety measure to ensure quality output.
 - **Mixed-language sentences are not supported**: Privox works best when you speak in a single language per recording. Mixing two languages within the same sentence (e.g., switching between English and Cantonese mid-sentence) may produce unexpected results.
 
 ## 🗺️ What's Coming

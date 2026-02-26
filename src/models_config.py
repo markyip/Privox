@@ -41,6 +41,10 @@ LLM_LIBRARY = [
     }
 ]
 
+# --- Default Model Names (derived from library lists, never hardcode elsewhere) ---
+DEFAULT_ASR = ASR_LIBRARY[0]["name"]
+DEFAULT_LLM = LLM_LIBRARY[0]["name"]
+
 # --- Persona Lenses ---
 # These are the systematic instructions applied to each persona
 CHARACTER_LENSES = {

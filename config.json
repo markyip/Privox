@@ -1,8 +1,8 @@
 {
     "asr_backend": "whisper",
-    "whisper_repo": "ylpeter/faster-whisper-large-v3-turbo-cantonese-16",
-    "grammar_repo": "bartowski/Qwen2.5-3B-Instruct-GGUF",
-    "grammar_file": "Qwen2.5-3B-Instruct-Q4_K_M.gguf",
+    "whisper_repo": "Systran/faster-distil-whisper-large-v3",
+    "grammar_repo": "bartowski/Llama-3.2-3B-Instruct-GGUF",
+    "grammar_file": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
     "refiner_profiles": {
         "English Specialist (CoEdit)": {
             "repo_id": "nvhf/coedit-large-Q6_K-GGUF",

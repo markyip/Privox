@@ -25,9 +25,9 @@ if sys.platform == 'win32':
         os.add_dll_directory(dll_path)
 
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QLineEdit, QProgressBar, QPlainTextEdit,
-    QStackedWidget, QFileDialog, QMessageBox, QFrame, QSizePolicy
+    QStackedWidget, QFileDialog, QMessageBox, QFrame, QSizePolicy, QDialog
 )
 from PySide6.QtGui import QIcon, QFont, QColor, QPalette
 from PySide6.QtCore import Qt, QSize, Signal, QObject, QThread, QPropertyAnimation, QEasingCurve, QSequentialAnimationGroup, QParallelAnimationGroup, QPoint
@@ -166,41 +166,6 @@ def apply_dark_title_bar(window):
     except:
         pass
 
-class InstallerGUI(QMainWindow):
-    def __init__(self, mode="install"):
-        super().__init__()
-        self.mode = mode
-        self.setWindowTitle("Privox " + ("Uninstall" if mode == "uninstall" else "Setup"))
-        self.setFixedSize(700, 600) # Slightly larger for Swiss spacing
-        
-        # Favicon
-        icon_path = os.path.join(BUNDLE_DIR, "assets", "icon.ico")
-        if os.path.exists(icon_path):
-            self.setWindowIcon(QIcon(icon_path))
-            
-        # Absolute Frameless Window for Swiss Style
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint if mode == "uninstall" else Qt.FramelessWindowHint)
-        self.setAttribute(Qt.WA_TranslucentBackground)
-        
-        self.init_ui()
-        self.load_styles()
-        # Removed apply_mica_or_acrylic to prevent "Square Blur" artifacts on rounded corners.
-        # We now rely solely on setAttribute(Qt.WA_TranslucentBackground) for transparency.
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self.drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
-            event.accept()
-
-    def mouseMoveEvent(self, event):
-        if event.buttons() == Qt.LeftButton:
-            self.move(event.globalPosition().toPoint() - self.drag_pos)
-            event.accept()
-
-    def showEvent(self, event):
-        super().showEvent(event)
-        # Removed apply_mica_or_acrylic
-
 class ModernDialog(QDialog):
     """Simplified ModernDialog for Bootstrap bootstrap to maintain standalone nature."""
     def __init__(self, parent=None, title="PRIVOX", message="", subtext="", buttons=["OK"]):
@@ -293,6 +258,42 @@ class ModernDialog(QDialog):
             self.move(event.globalPosition().toPoint() - self.drag_pos)
             event.accept()
 
+
+class InstallerGUI(QMainWindow):
+    def __init__(self, mode="install"):
+        super().__init__()
+        self.mode = mode
+        self.setWindowTitle("Privox " + ("Uninstall" if mode == "uninstall" else "Setup"))
+        self.setFixedSize(700, 600) # Slightly larger for Swiss spacing
+        
+        # Favicon
+        icon_path = os.path.join(BUNDLE_DIR, "assets", "icon.ico")
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
+            
+        # Absolute Frameless Window for Swiss Style
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint if mode == "uninstall" else Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        
+        self.init_ui()
+        self.load_styles()
+        # Removed apply_mica_or_acrylic to prevent "Square Blur" artifacts on rounded corners.
+        # We now rely solely on setAttribute(Qt.WA_TranslucentBackground) for transparency.
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() == Qt.LeftButton:
+            self.move(event.globalPosition().toPoint() - self.drag_pos)
+            event.accept()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Removed apply_mica_or_acrylic
+
     def init_ui(self):
         self.main_container = QWidget()
         self.main_container.setObjectName("main_container")
@@ -343,7 +344,7 @@ class ModernDialog(QDialog):
         self.bottom_bar = QFrame()
         self.bottom_bar.setObjectName("bottom_bar")
         self.bottom_bar.setFixedHeight(80)
-        self.bottom_bar.setStyleSheet("QFrame#bottom_bar { background-color: rgba(20, 20, 20, 0.4); border-top: 1px solid rgba(255, 255, 255, 0.05); }")
+        self.bottom_bar.setStyleSheet("QFrame#bottom_bar { background-color: rgba(20, 20, 20, 0.4); border-top: 1px solid rgba(255, 255, 255, 0.05); border-bottom-left-radius: 12px; border-bottom-right-radius: 12px; }")
         bottom_layout = QHBoxLayout(self.bottom_bar)
         bottom_layout.setContentsMargins(40, 0, 40, 0)
         bottom_layout.setSpacing(16)

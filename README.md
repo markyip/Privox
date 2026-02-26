@@ -33,9 +33,13 @@ A powerful, private, and fully local voice input assistant for Windows. Privox c
 
 ### 2. How to Use
 
+- **Always Ready**: Once launched, Privox lives in your **System Tray** (near the clock). You can right-click the icon to access Settings or exit the app.
 - **Tap your hotkey** (default: `F8`): The app starts listening (you'll see a small animation in your taskbar).
 - **Just Talk**: Speak naturally, as if you were talking to a friend.
 - **Tap your hotkey again**: Stop talking and watch your words appear on the screen, perfectly polished!
+
+> [!TIP]
+> **Set it and forget it**: Open **Settings** from the tray icon and enable **Launch at Startup**. This way, Privox is always ready to help as soon as you turn on your computer.
 
 > [!TIP]
 > **Your Hotkey, Your Way**: Don't like `F8`? You can change it to any key or combination (like `Ctrl+Shift+Space`) in **Settings**. Open Settings by right-clicking the Privox icon in your taskbar.

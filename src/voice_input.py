@@ -584,17 +584,18 @@ class GrammarChecker:
             
             # 2. Proportional max_tokens cap to prevent runaway generation
             input_tokens_est = max(len(clean_text) // 3, len(clean_text.split()))
-            max_tokens = min(1024, max(64, input_tokens_est * 4))
+            max_tokens = min(2048, max(128, input_tokens_est * 4)) # Increased caps slightly for complex edits
 
             output = self.model(
                 prompt, 
                 max_tokens=max_tokens,
                 stop=stop_tokens, 
                 echo=False,
-                temperature=0.3,
-                repeat_penalty=1.2,  # Prevents "GGGG" loops
-                top_p=0.9,           # Standard nucleus sampling
-                min_p=0.05,          # High-quality filtering
+                temperature=0.4,     # Increased from 0.3 to reduce determinism
+                repeat_penalty=1.2,  # Prevents token-level loops
+                frequency_penalty=0.5, # Specifically discourages character repetition
+                top_p=0.9,
+                min_p=0.01,
             )
             raw_response = output['choices'][0]['text'].strip()
                 
@@ -729,6 +730,21 @@ class GrammarChecker:
             if refined_lower.startswith(prefix):
                 log_print(f" [Hallucination Guard] Assistant preamble detected: '{prefix}'. Returning original.")
                 return original
+
+        # Check 4: Character-level repetition guard (e.g., "GGGGGGGG")
+        # Matches any non-whitespace character repeated 4 or more times
+        import re
+        if re.search(r'([^\s\w])\1{4,}', refined) or re.search(r'([a-zA-Z])\1{6,}', refined):
+            log_print(f" [Hallucination Guard] Excessive character repetition detected. Returning original.")
+            return original
+
+        # Check 5: Word-level repetition guard
+        words = refined.split()
+        if len(words) > 10:
+            for i in range(len(words) - 5):
+                if words[i:i+3] == words[i+3:i+6]:
+                    log_print(f" [Hallucination Guard] Phrase repetition detected. Returning original.")
+                    return original
 
         return refined
 

@@ -19,6 +19,7 @@ if sys.platform == 'win32':
         os.add_dll_directory(bin_path)
 
 import json
+import models_config
 from PySide6.QtGui import QColor, QPainter, QFont, QIcon, QAction, QLinearGradient, QBrush, QPen
 from PySide6.QtCore import Qt, QSize, QPropertyAnimation, QEasingCurve, QPoint, Signal, QRect, QParallelAnimationGroup, Property, QTimer
 from PySide6.QtWidgets import (
@@ -57,6 +58,80 @@ if sys.platform == 'win32':
     import winreg
 
 # SVG Icons for the dropdown arrow
+import re
+from PySide6.QtCore import QObject, QThread, Signal, Slot
+
+# --- Model Update Worker & Signals ---
+class ModelUpdateSignals(QObject):
+    progress = Signal(int)
+    status = Signal(str)
+    finished = Signal(bool, str)
+
+class StderrInterceptor:
+    def __init__(self, orig, signal_callback):
+        self.orig = orig
+        self.callback = signal_callback
+        self.buffer = ""
+        self.pct_re = re.compile(r"(\d+(?:\.\d+)?)%")
+        
+    def write(self, s):
+        self.orig.write(s)
+        self.buffer += s
+        if '\r' in self.buffer or '\n' in self.buffer:
+            matches = self.pct_re.findall(self.buffer)
+            if matches:
+                self.callback(int(matches[-1]))
+            self.buffer = ""
+            
+    def flush(self):
+        self.orig.flush()
+
+class ModelUpdateWorker(QObject):
+    def __init__(self, signals):
+        super().__init__()
+        self.signals = signals
+
+    @Slot()
+    def run(self):
+        # Ensure we can import download_models
+        if "download_models" not in sys.modules:
+            try:
+                import download_models
+            except ImportError:
+                # Add current script's directory to path to find sibling modules
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+                if script_dir not in sys.path:
+                    sys.path.append(script_dir)
+                import download_models
+        else:
+            import download_models
+
+        def ui_log(msg):
+            self.signals.status.emit(msg)
+            # print to original stderr for debugging
+            try:
+                sys.__stderr__.write(f"[UI LOG] {msg}\n")
+            except: pass
+
+        # Initial heartbeat
+        print("[DEBUG] Worker thread started. Emitting heartbeat...", flush=True)
+        ui_log("Starting model setup engine...")
+
+        print("[DEBUG] Redirecting stderr...", flush=True)
+        old_stderr = sys.stderr
+        sys.stderr = StderrInterceptor(old_stderr, self.signals.progress.emit)
+        
+        try:
+            print("[DEBUG] Calling download_models.main()...", flush=True)
+            # Re-ensure path for download_models internal imports if any
+            download_models.main(log_callback=ui_log)
+            print("[DEBUG] download_models.main() finished successfully.", flush=True)
+            self.signals.finished.emit(True, "")
+        except Exception as e:
+            self.signals.finished.emit(False, str(e))
+        finally:
+            sys.stderr = old_stderr
+
 ARROW_DOWN_SVG = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path fill='%23aaaaaa' d='M2 4l4 4 4-4z'/></svg>"
 ARROW_UP_SVG = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path fill='%23ffffff' d='M2 8l4-4 4 4z'/></svg>"
 
@@ -228,6 +303,11 @@ class AccessibleToggleGroup(QWidget):
 
 class ModernConfirmDialog(QDialog):
     def __init__(self, parent=None, title="Confirm", message="Save changes?"):
+=======
+class ModernDialog(QDialog):
+    """Refined generic dialog for alerts and confirmations with a premium feel."""
+    def __init__(self, parent=None, title="PRIVOX", message="", subtext="", buttons=["OK"]):
+>>>>>>> main
         super().__init__(parent)
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -238,100 +318,215 @@ class ModernConfirmDialog(QDialog):
         self.container = QFrame()
         self.container.setStyleSheet("""
             QFrame {
-                background-color: rgba(18, 18, 18, 0.95);
+                background-color: rgba(18, 18, 18, 0.98);
                 border: 1px solid rgba(255, 255, 255, 0.1);
-                border-radius: 12px;
+                border-radius: 16px;
             }
         """)
         container_layout = QVBoxLayout(self.container)
-        container_layout.setContentsMargins(32, 24, 32, 24)
-        container_layout.setSpacing(20)
+        container_layout.setContentsMargins(32, 28, 32, 28)
+        container_layout.setSpacing(18)
         
-        # Title bar (Minimal)
+        # Title Bar
         title_bar = QHBoxLayout()
         title_lbl = QLabel(title.upper())
-        title_lbl.setStyleSheet("font-weight: 800; color: #ffffff; font-size: 11px; letter-spacing: 1px; border: none;")
+        title_lbl.setStyleSheet("font-weight: 900; color: rgba(255, 255, 255, 0.4); font-size: 10px; letter-spacing: 2px; border: none;")
         title_bar.addWidget(title_lbl)
         title_bar.addStretch()
         
         close_btn = QPushButton("✕")
-        close_btn.setFixedSize(20, 20)
-        close_btn.setStyleSheet("QPushButton { border: none; color: #666666; font-size: 14px; } QPushButton:hover { color: #ffffff; }")
+        close_btn.setFixedSize(24, 24)
+        close_btn.setStyleSheet("QPushButton { border: none; color: #666666; font-size: 16px; background: transparent; } QPushButton:hover { color: #ffffff; }")
         close_btn.clicked.connect(self.reject)
         title_bar.addWidget(close_btn)
         container_layout.addLayout(title_bar)
         
         # Content
         msg_lbl = QLabel(message)
-        msg_lbl.setStyleSheet("color: #ffffff; font-size: 15px; font-weight: 400; border: none;")
+        msg_lbl.setStyleSheet("color: #ffffff; font-size: 16px; font-weight: 500; border: none;")
         msg_lbl.setWordWrap(True)
         container_layout.addWidget(msg_lbl)
         
-        sub_lbl = QLabel("Unsaved changes will be lost.")
-        sub_lbl.setStyleSheet("color: #888888; font-size: 13px; border: none;")
-        container_layout.addWidget(sub_lbl)
+        if subtext:
+            sub_lbl = QLabel(subtext)
+            sub_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.5); font-size: 13px; border: none;")
+            sub_lbl.setWordWrap(True)
+            container_layout.addWidget(sub_lbl)
         
         # Buttons
         btn_layout = QHBoxLayout()
-        btn_layout.setSpacing(12)
+        btn_layout.setSpacing(10)
+        btn_layout.addStretch()
         
-        self.btn_save = QPushButton("Save")
-        self.btn_save.setFixedSize(140, 42)
-        self.btn_save.setStyleSheet("""
+        for btn_text in buttons:
+            btn = QPushButton(btn_text)
+            btn.setMinimumHeight(42)
+            btn.setMinimumWidth(100)
+            btn.setCursor(Qt.PointingHandCursor)
+            
+            # Highlight primary button (last or "Save"/"OK")
+            is_primary = btn_text in ["Save", "OK", "INSTALL", "Launch"] or (btn_text == buttons[-1] and len(buttons) > 1)
+            
+            if is_primary:
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #ffffff;
+                        color: #000000;
+                        border-radius: 8px;
+                        font-weight: 800;
+                        padding: 0 24px;
+                        font-size: 13px;
+                    }
+                    QPushButton:hover {
+                        background-color: rgba(255, 255, 255, 0.85);
+                    }
+                """)
+            else:
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: rgba(255, 255, 255, 0.05);
+                        border: 1px solid rgba(255, 255, 255, 0.1);
+                        color: #ffffff;
+                        border-radius: 8px;
+                        font-weight: 600;
+                        padding: 0 20px;
+                        font-size: 13px;
+                    }
+                    QPushButton:hover {
+                        background-color: rgba(255, 255, 255, 0.1);
+                        border: 1px solid rgba(255, 255, 255, 0.2);
+                    }
+                """)
+            
+            # Map results
+            if btn_text == "Save" or btn_text == "OK":
+                btn.clicked.connect(lambda: self.done(1))
+            elif btn_text == "Discard":
+                btn.clicked.connect(lambda: self.done(2))
+            elif btn_text == "Cancel":
+                btn.clicked.connect(self.reject)
+            else:
+                # Direct result based on button order if not matched
+                btn.clicked.connect(lambda checked=False, b=btn_text: self.done(buttons.index(b) + 1))
+            
+            btn_layout.addWidget(btn)
+        
+        container_layout.addLayout(btn_layout)
+        layout.addWidget(self.container)
+        
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() == Qt.LeftButton and hasattr(self, 'drag_pos'):
+            self.move(event.globalPosition().toPoint() - self.drag_pos)
+            event.accept()
+
+class ModernProgressDialog(QDialog):
+    """Premium Centered Progress Update with Liquid Glass styling."""
+    def __init__(self, parent=None, title="UPDATING MODELS"):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setFixedSize(480, 260)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.container = QFrame()
+        self.container.setStyleSheet("""
+            QFrame {
+                background-color: rgba(18, 18, 18, 0.98);
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                border-radius: 20px;
+            }
+        """)
+        container_layout = QVBoxLayout(self.container)
+        container_layout.setContentsMargins(40, 32, 40, 32)
+        container_layout.setSpacing(0)
+        
+        container_layout.addStretch()
+
+        # Title Bar (Small, centered)
+        title_lbl = QLabel(title.upper())
+        title_lbl.setAlignment(Qt.AlignCenter)
+        title_lbl.setStyleSheet("font-weight: 900; color: rgba(255, 255, 255, 0.3); font-size: 10px; letter-spacing: 3px; border: none;")
+        container_layout.addWidget(title_lbl)
+        
+        container_layout.addSpacing(30)
+        
+        # Center Stack (Progress + Status)
+        center_layout = QVBoxLayout()
+        center_layout.setSpacing(15)
+        center_layout.setAlignment(Qt.AlignCenter)
+        
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setFixedHeight(8)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setMinimumWidth(300)
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                background-color: rgba(255, 255, 255, 0.03);
+                border: 1px solid rgba(255, 255, 255, 0.05);
+                border-radius: 4px;
+            }
+            QProgressBar::chunk {
+                background-color: #ffffff;
+                border-radius: 4px;
+            }
+        """)
+        center_layout.addWidget(self.progress_bar)
+        self.main_status = QLabel("Downloading models...")
+        self.main_status.setAlignment(Qt.AlignCenter)
+        self.main_status.setStyleSheet("color: white; font-size: 18px; font-weight: 700; border: none;")
+        center_layout.addWidget(self.main_status)
+        
+        self.sub_status = QLabel("Preparing environment...")
+        self.sub_status.setAlignment(Qt.AlignCenter)
+        self.sub_status.setStyleSheet("color: rgba(255, 255, 255, 0.5); font-size: 13px; font-style: italic; border: none;")
+        center_layout.addWidget(self.sub_status)
+        
+        # --- Restart Button (Initially Hidden) ---
+        self.restart_btn = QPushButton("RESTART NOW")
+        self.restart_btn.setFixedSize(160, 42)
+        self.restart_btn.setCursor(Qt.PointingHandCursor)
+        self.restart_btn.setVisible(False)
+        self.restart_btn.setStyleSheet("""
             QPushButton {
                 background-color: #ffffff;
                 color: #000000;
-                border-radius: 6px;
-                font-weight: 700;
-                font-size: 14px;
+                border-radius: 8px;
+                font-weight: 800;
+                font-size: 13px;
             }
             QPushButton:hover {
-                background-color: rgba(255, 255, 255, 0.9);
+                background-color: rgba(255, 255, 255, 0.85);
             }
         """)
-        self.btn_save.clicked.connect(lambda: self.done(1))
+        self.restart_btn.clicked.connect(self.accept)
+        center_layout.addWidget(self.restart_btn, alignment=Qt.AlignCenter)
         
-        self.btn_discard = QPushButton("Discard")
-        self.btn_discard.setFixedSize(110, 42)
-        self.btn_discard.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(255, 255, 255, 0.05);
-                border: 1px solid rgba(255, 255, 255, 0.1);
-                color: #ffffff;
-                border-radius: 6px;
-                font-weight: 600;
-                font-size: 14px;
-            }
-            QPushButton:hover {
-                background-color: rgba(255, 255, 255, 0.1);
-            }
-        """)
-        self.btn_discard.clicked.connect(lambda: self.done(2))
-        
-        self.btn_cancel = QPushButton("Cancel")
-        self.btn_cancel.setFixedSize(110, 42)
-        self.btn_cancel.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(255, 255, 255, 0.05);
-                border: 1px solid rgba(255, 255, 255, 0.1);
-                color: #ffffff;
-                border-radius: 6px;
-                font-weight: 600;
-                font-size: 14px;
-            }
-            QPushButton:hover {
-                background-color: rgba(255, 255, 255, 0.1);
-            }
-        """)
-        self.btn_cancel.clicked.connect(self.reject)
-        
-        btn_layout.addWidget(self.btn_save)
-        btn_layout.addWidget(self.btn_discard)
-        btn_layout.addWidget(self.btn_cancel)
-        container_layout.addLayout(btn_layout)
+        container_layout.addLayout(center_layout)
+        container_layout.addStretch()
         
         layout.addWidget(self.container)
-        
+
+    def set_status(self, main_text, sub_text=None):
+        self.main_status.setText(main_text)
+        if sub_text:
+            self.sub_status.setText(sub_text)
+
+    def set_progress(self, value):
+        self.progress_bar.setValue(int(value))
+
+    def show_completion(self, main_text="Download Complete", sub_text="Restart required to apply changes."):
+        self.progress_bar.setVisible(False)
+        self.main_status.setText(main_text)
+        self.sub_status.setText(sub_text)
+        self.restart_btn.setVisible(True)
+
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             self.drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
@@ -406,11 +601,11 @@ class SettingsGUI(QMainWindow):
         if "custom_dictionary" not in self.prefs:
             self.prefs["custom_dictionary"] = self.tech_config.get("custom_dictionary", [])
             
-        # Library Loading (Ported from models_config)
-        self.asr_library = models_config.ASR_LIBRARY
-        self.llm_library = models_config.LLM_LIBRARY
+        # Library Loading (Prefer User Prefs > Config > Default Fallback)
+        self.asr_library = self.prefs.get("asr_library", self.tech_config.get("asr_library", models_config.ASR_LIBRARY))
+        self.llm_library = self.prefs.get("llm_library", self.tech_config.get("llm_library", models_config.LLM_LIBRARY))
 
-        self.custom_prompts = self.prefs.get("custom_prompts", self.tech_config.get("custom_prompts", {}))
+        self.custom_prompts = self.prefs.get("custom_prompts", self.tech_config.get("custom_prompts", models_config.DEFAULT_PROMPTS))
         
         char = self.prefs.get("character", self.tech_config.get("character", "Writing Assistant"))
         tone = self.prefs.get("tone", self.tech_config.get("tone", "Natural"))
@@ -429,32 +624,20 @@ class SettingsGUI(QMainWindow):
         if self.prefs.get("whisper_model") == "distil-large-v3":
             self.prefs["whisper_model"] = "Distil-Whisper Large v3 (English)"
         if self.prefs.get("current_refiner") == "Standard (Llama 3.2)":
-            self.prefs["current_refiner"] = "Llama 3.2 3B Instruct"
+            self.prefs["current_refiner"] = models_config.DEFAULT_LLM
         # If any of the above were found in tech_config but not yet in prefs, this ensures sync
         if self.tech_config.get("whisper_model") == "distil-large-v3":
             self.tech_config["whisper_model"] = "Distil-Whisper Large v3 (English)"
         if self.tech_config.get("current_refiner") == "Standard (Llama 3.2)":
-            self.tech_config["current_refiner"] = "Llama 3.2 3B Instruct"
+            self.tech_config["current_refiner"] = models_config.DEFAULT_LLM
+            
+        # --- Migration: Force default transition to Llama 3.2 if on old CoEdit default (ONE-TIME) ---
+        if self.prefs.get("current_refiner") == "CoEdit Large (T5)" and not self.prefs.get("_migrate_llama_3_2"):
+            self.prefs["current_refiner"] = models_config.DEFAULT_LLM
+            self.prefs["_migrate_llama_3_2"] = True
 
-    CRITICAL_RULES = """
-CRITICAL RULES:
-1. FIX GRAMMAR: Correct English grammar and spelling errors.
-2. IMPROVE FLOW: Make the text more readable while preserving its original meaning.
-3. PUNCTUATION: Use appropriate punctuation for clarity.
-4. NO HALLUCINATION: Do not add information not present in the original transcript.
-5. REMOVE FILLERS: Delete unnecessary filler words (uh, um, yeah, etc.).
-6. **ABSOLUTE NO CONVERSATION**: Output ONLY the corrected text. Never add commentary, greetings, or questions. This rule overrides all persona and tone settings.
-7. IF UNCLEAR: If the input consists purely of noise, mirror it exactly without explanation."""
-
-    DEFAULT_PROMPTS = {
-        "Writing Assistant|Professional": f"Refine the provided transcript into clear, professional, and grammatically correct business text. Focus on executive clarity, precision, and a formal tone.\n\n{CRITICAL_RULES}",
-        "Writing Assistant|Natural": f"Refine the provided transcript into clean, professional, and grammatically correct text, while maintaining a natural and conversational flow.\n\n{CRITICAL_RULES}",
-        "Writing Assistant|Concise": f"Summarize the provided transcript into the most essential points, removing all fluff and redundancy while ensuring logical flow.\n\n{CRITICAL_RULES}",
-        "Code Expert|Natural": f"Refine this technical explanation or code description. Ensure terminology is accurate, the flow is logical, and the tone is helpful yet professional.\n\n{CRITICAL_RULES}",
-        "Code Expert|Concise": f"Convert this technical speech into a concise summary. Use markdown where helpful to highlight key terms or snippets.\n\n{CRITICAL_RULES}",
-        "Executive Secretary|Polite": f"Draft a formal and highly respectful response based on this transcript. Organize the thoughts into a polished executive format.\n\n{CRITICAL_RULES}",
-        "Personal Buddy|Casual": f"Clean up this transcript while keeping the relaxed, casual vibe and slang intact. Only fix major clarity and readability issues.\n\n{CRITICAL_RULES}"
-    }
+    CRITICAL_RULES = models_config.CRITICAL_RULES
+    DEFAULT_PROMPTS = models_config.DEFAULT_PROMPTS
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -468,9 +651,9 @@ CRITICAL RULES:
 
     def closeEvent(self, event):
         if self.is_dirty:
-            dialog = ModernConfirmDialog(self, "EXIT SETTINGS", "Save changes before exiting?")
+            dialog = ModernDialog(self, "EXIT SETTINGS", "Save changes before exiting?", "Unsaved changes will be lost.", buttons=["Cancel", "Discard", "Save"])
             result = dialog.exec()
-            if result == 1: # Save
+            if result == 3: # Save (based on button index + 1, Save is last)
                 self.save_config()
                 event.accept()
             elif result == 2: # Discard
@@ -481,7 +664,7 @@ CRITICAL RULES:
             event.accept()
 
     def init_ui(self):
-        self.setWindowTitle("Privox Settings")
+        self.setWindowTitle("Privox_Settings_GUI")
         self.resize(1000, 750)
         self.setMinimumSize(900, 700)
         
@@ -706,6 +889,33 @@ CRITICAL RULES:
         self.btn_dict.clicked.connect(lambda: self.switch_tab(2))
 
         sidebar_layout.addStretch()
+
+        self.btn_save_all = QPushButton("SAVE ALL SETTINGS")
+        self.btn_save_all.setFixedSize(200, 44)
+        self.btn_save_all.setCursor(Qt.PointingHandCursor)
+        self.btn_save_all.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(255, 255, 255, 0.03);
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                color: rgba(255, 255, 255, 0.5);
+                border-radius: 8px;
+                font-weight: 700;
+                font-size: 11px;
+                letter-spacing: 1.5px;
+                margin-left: 20px;
+                margin-bottom: 20px;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.2);
+                color: #ffffff;
+            }
+            QPushButton:pressed {
+                background-color: rgba(255, 255, 255, 0.12);
+            }
+        """)
+        self.btn_save_all.clicked.connect(self.save_config)
+        sidebar_layout.addWidget(self.btn_save_all)
         
         footer_label = QLabel("v1.0")
         footer_label.setStyleSheet("color: #444444; padding-left: 20px;")
@@ -744,19 +954,6 @@ CRITICAL RULES:
     def mark_dirty(self):
         self.is_dirty = True
         
-    def closeEvent(self, event):
-        if self.is_dirty:
-            dlg = ModernConfirmDialog(self, "Unsaved Changes", "You have unsaved changes.")
-            res = dlg.exec()
-            if res == 1: # Save
-                self.save_config()
-                event.accept()
-            elif res == 2: # Discard
-                event.accept()
-            else: # Cancel
-                event.ignore()
-        else:
-            event.accept()
 
     def load_initial_state(self):
         # Load initial values from unified config (honors global defaults if no user prefs)
@@ -787,13 +984,12 @@ CRITICAL RULES:
 
         self.asr_combo.blockSignals(True)
         self.llm_combo.blockSignals(True)
-
-        # Restore Persona & Tone (toggle groups don't need blockSignals — they emit on _select)
+        # Restore Persona & Tone (Accessibility Toggles)
         self.char_group.setCurrentText(self.config.get("character", "Writing Assistant"))
         self.tone_group.setCurrentText(self.config.get("tone", "Natural"))
 
-        set_combo_safe(self.asr_combo, self.config.get("whisper_model", "Distil-Whisper Large v3 (English)"))
-        set_combo_safe(self.llm_combo, self.config.get("current_refiner", "Llama 3.2 3B Instruct"))
+        set_combo_safe(self.asr_combo, self.config.get("whisper_model", models_config.DEFAULT_ASR))
+        set_combo_safe(self.llm_combo, self.config.get("current_refiner", models_config.DEFAULT_LLM))
 
         # Initialize descriptions
         self.update_asr_desc(self.asr_combo.currentText())
@@ -901,7 +1097,7 @@ CRITICAL RULES:
         layout.addWidget(persona_lbl)
 
         self.char_group = AccessibleToggleGroup(
-            ["Writing Assistant", "Code Expert", "Executive Secretary", "Personal Buddy", "Custom"],
+            ["Writing Assistant", "Code Expert", "Academic", "Executive Secretary", "Personal Buddy", "Custom"],
             accessible_label="Persona",
             columns=3
         )
@@ -1309,8 +1505,7 @@ CRITICAL RULES:
             }
         """)
         
-        layout.addWidget(self.dict_scroll)
-        layout.addStretch()
+        layout.addWidget(self.dict_scroll, 1)  # Stretch to fill available height
 
     def on_prompt_change(self):
         """Handle persona or tone change. Save current prompt and load new one."""
@@ -1364,7 +1559,6 @@ CRITICAL RULES:
         self.prefs["readback_enabled"] = self.check_readback.isChecked()
         self.prefs["auto_stop_enabled"] = True
         self.prefs["hotkey"] = self.hk_val.text().lower()
-
         # Capture current prompt edits before saving
         char = self.char_group.currentText()
         tone = self.tone_group.currentText()
@@ -1414,9 +1608,33 @@ CRITICAL RULES:
             
         self.is_dirty = False
         
-        # 5. Check for changes (Non-empty and actually different)
-        if (old_asr and new_asr != old_asr) or (old_llm and new_llm != old_llm):
-            self.handle_model_change_and_restart()
+        # 5. Check for changes
+        new_asr = self.prefs.get("whisper_model", "")
+        new_llm = self.prefs.get("current_refiner", "")
+        
+        models_changed = (old_asr != new_asr) or (old_llm != new_llm)
+        
+        if models_changed:
+            dialog = ModernDialog(
+                self, 
+                "DOWNLOAD REQUIRED", 
+                "New models require downloading.",
+                f"ASR: {new_asr}\nLLM: {new_llm}\n\nThis will trigger a multi-GB download. Proceed?",
+                buttons=["Cancel", "OK"]
+            )
+            if dialog.exec() == 1: # OK
+                self.handle_model_change_and_restart(old_asr, old_llm)
+            else:
+                # Revert selection in UI and prefs
+                self.prefs["whisper_model"] = old_asr
+                self.prefs["current_refiner"] = old_llm
+                self.asr_combo.setCurrentText(old_asr)
+                self.llm_combo.setCurrentText(old_llm)
+                with open(self.prefs_path, "w", encoding="utf-8") as f:
+                    json.dump(self.prefs, f, indent=4)
+                self.is_dirty = False
+        else:
+            self.show_toast("Settings saved successfully!")
 
     def start_hotkey_record(self):
         self.btn_rec.setText("RECORDING...")
@@ -1479,19 +1697,29 @@ CRITICAL RULES:
                 
             parts.append(main_key)
             hk_str = "+".join(parts)
-            
-            # Save and finalize
+
+            # --- Conflict check ---
+            if hk_str.lower() in self.CONFLICTING_HOTKEYS:
+                disp_conflict = " + ".join([p.upper() for p in parts])
+                # Reset display to old hotkey and keep recording mode active
+                old_hk = self.prefs.get("hotkey", "F8").upper()
+                self.hk_val.setText(old_hk)
+                self.hk_val.setToolTip("")
+                self.show_toast(f"⚠  {disp_conflict} conflicts with a system shortcut — try another.", toast_type="warning")
+                # Stay in recording mode so the user can immediately try again
+                return
+
             # Save and finalize
             disp_full = " + ".join([p.upper() for p in parts])
-            
-            # Elide if too long (approx 12 chars?)
+
+            # Elide if too long
             disp_elided = disp_full
             if len(disp_full) > 16:
                 disp_elided = disp_full[:14] + ".."
-            
+
             self.hk_val.setText(disp_elided)
             self.hk_val.setToolTip(disp_full) # Tooltip for full hotkey
-            
+
             self.prefs["hotkey"] = hk_str
             self.stop_hotkey_recording()
             self.is_dirty = True
@@ -1519,41 +1747,57 @@ CRITICAL RULES:
             self.prefs["custom_dictionary"] = words
             self.dict_input.clear()
             self.refresh_dict_list()
-            self.is_dirty = True
+            self.mark_dirty()
 
-    def show_toast(self, message):
+    def show_toast(self, message, toast_type="info"):
         toast = QLabel(message, self)
-        toast.setStyleSheet("""
-            QLabel {
-                background-color: rgba(20, 20, 20, 0.95);
-                color: #ffffff;
-                border-radius: 6px;
-                padding: 12px 24px;
-                font-size: 13px;
-                font-weight: 600;
-                border: 1px solid rgba(255, 255, 255, 0.15);
-            }
-        """)
+
+        if toast_type == "warning":
+            toast.setStyleSheet("""
+                QLabel {
+                    background-color: rgba(20, 20, 20, 0.96);
+                    color: #ffffff;
+                    border-radius: 8px;
+                    padding: 12px 20px 12px 20px;
+                    font-size: 13px;
+                    font-weight: 600;
+                    border: 1px solid rgba(255, 255, 255, 0.30);
+                    border-left: 3px solid rgba(255, 255, 255, 0.90);
+                }
+            """)
+        else:
+            toast.setStyleSheet("""
+                QLabel {
+                    background-color: rgba(20, 20, 20, 0.95);
+                    color: #ffffff;
+                    border-radius: 6px;
+                    padding: 12px 24px;
+                    font-size: 13px;
+                    font-weight: 600;
+                    border: 1px solid rgba(255, 255, 255, 0.15);
+                }
+            """)
+
         toast.setAlignment(Qt.AlignCenter)
         toast.adjustSize()
-        
+
         # Position at bottom center with some margin
         x = (self.width() - toast.width()) // 2
         y = self.height() - toast.height() - 60
         toast.move(x, y)
-        
+
         # Shadow effect
         shadow = QGraphicsDropShadowEffect(toast)
         shadow.setBlurRadius(20)
-        shadow.setColor(QColor(0, 0, 0, 100))
+        shadow.setColor(QColor(0, 0, 0, 120))
         shadow.setOffset(0, 4)
         toast.setGraphicsEffect(shadow)
-        
+
         toast.show()
         toast.raise_()
-        
+
         # Auto dismiss
-        QTimer.singleShot(2500, toast.deleteLater)
+        QTimer.singleShot(3000, toast.deleteLater)
 
     def remove_dict_word(self, word):
         words = self.prefs.get("custom_dictionary", [])
@@ -1561,7 +1805,7 @@ CRITICAL RULES:
             words.remove(word)
             self.prefs["custom_dictionary"] = words
             self.refresh_dict_list()
-            self.is_dirty = True
+            self.mark_dirty()
 
     def refresh_dict_list(self):
         # Clear layout
@@ -1630,7 +1874,11 @@ CRITICAL RULES:
         key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
         app_name = "Privox"
         
-        # If frozen, use executable. If script, use python + script path.
+        # Paths for Startup Folder Shortcut
+        startup_folder = os.path.join(os.environ.get('APPDATA', ''), 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup')
+        shortcut_path = os.path.join(startup_folder, "Privox.lnk")
+
+        # Use Privox.exe (the installer/launcher) with --run flag
         if getattr(sys, 'frozen', False):
             exe_path = f'"{sys.executable}"'
         else:
@@ -1646,10 +1894,16 @@ CRITICAL RULES:
                 winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, exe_path)
                 log_print(f"Registry: Auto-launch enabled.")
             else:
+                # 1. Remove Registry Key
                 try: 
                     winreg.DeleteValue(key, app_name)
                     log_print("Registry: Auto-launch entry removed.")
                 except FileNotFoundError: pass
+                
+                # 2. Remove Startup Folder Shortcut (Installer discrepancy fix)
+                if os.path.exists(shortcut_path):
+                    try: os.remove(shortcut_path)
+                    except Exception as e: print(f"Error removing startup shortcut: {e}")
             winreg.CloseKey(key)
             
             # 2. ALSO manage the Start Menu Startup shortcut (if any) to prevent override
@@ -1689,102 +1943,89 @@ CRITICAL RULES:
 
     def check_startup_status(self):
         if sys.platform != 'win32': return False
+        
+        # 1. Check Registry
         key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
         app_name = "Privox"
+        reg_exists = False
         try:
             key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_READ)
             winreg.QueryValueEx(key, app_name)
             winreg.CloseKey(key)
-            return True
-        except: return False
+            reg_exists = True
+        except: pass
+        
+        # 2. Check Startup Folder Shortcut
+        startup_folder = os.path.join(os.environ.get('APPDATA', ''), 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup')
+        shortcut_exists = os.path.exists(os.path.join(startup_folder, "Privox.lnk"))
+        
+        return reg_exists or shortcut_exists
 
 
-    def handle_model_change_and_restart(self):
+    def handle_model_change_and_restart(self, old_asr, old_llm):
         """
-        Updates models via download_models.py and prompts for restart.
+        Updates models via download_models.py using a thread-safe QThread/Signal approach.
         """
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Updating Models")
-        dlg.setFixedSize(400, 150)
-        dlg.setWindowFlags(Qt.Dialog | Qt.CustomizeWindowHint | Qt.WindowTitleHint) # No close button
+        # --- Premium Dialog Setup ---
+        dlg = ModernProgressDialog(self)
         
-        layout = QVBoxLayout(dlg)
-        lbl = QLabel("Downloading/Verifying model files...\nPlease wait, this may take a few minutes.")
-        lbl.setWordWrap(True)
-        lbl.setStyleSheet("color: white; font-size: 13px;")
-        layout.addWidget(lbl)
-        
-        pbar = QProgressBar()
-        pbar.setRange(0, 0) # Indeterminate
-        pbar.setStyleSheet("""
-            QProgressBar {
-                background-color: rgba(255, 255, 255, 0.1);
-                border: none;
-                border-radius: 4px;
-                height: 6px;
-            }
-            QProgressBar::chunk {
-                background-color: #4CAF50;
-                border-radius: 4px;
-            }
-        """)
-        layout.addWidget(pbar)
-        
-        status_lbl = QLabel("Initializing...")
-        status_lbl.setStyleSheet("color: #888888; font-size: 11px;")
-        layout.addWidget(status_lbl)
-        
-        dlg.setStyleSheet("background-color: #1a1a1a; border: 1px solid #333;")
-        
-        # Worker Thread
-        import threading
-        # Ensure we can import download_models
-        try:
-            import download_models
-        except ImportError:
-            sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-            import download_models
-        
-        def run_update():
-            # Redirect log
-            original_log = download_models.log
-            def ui_log(msg):
-                print(msg) 
-            
-            download_models.log = ui_log
-            try:
-                download_models.main()
-                QTimer.singleShot(500, dlg.accept)
-            except Exception as e:
-                print(f"Update failed: {e}")
-                QTimer.singleShot(500, dlg.reject)
-            finally:
-                download_models.log = original_log
+        # --- Thread and Signal Wiring ---
+        dlg.signals = ModelUpdateSignals() # Attach to dialog to prevent GC
+        worker = ModelUpdateWorker(dlg.signals)
+        thread = QThread(dlg) # Attach to dialog
+        worker.moveToThread(thread)
+        dlg.worker = worker # Keep reference
 
-        threading.Thread(target=run_update, daemon=True).start()
+        def on_status(msg):
+            # If we see "Downloading" in status, update main label
+            if "downloading" in msg.lower():
+                dlg.set_status("Downloading Model Files", msg)
+            else:
+                dlg.set_status("Updating Models", msg)
         
-        res = dlg.exec()
+        def on_progress(val):
+            if val > 0:
+                dlg.set_progress(val)
+            if val == 100:
+                dlg.set_status("Download Complete", "Verifying files...")
+
+        def on_finished(success, error_msg):
+            thread.quit()
+            thread.wait()
+            if success:
+                dlg.show_completion()
+            else:
+                # REVERT CONFIGURATION
+                try:
+                    self.prefs["whisper_model"] = old_asr
+                    self.prefs["current_refiner"] = old_llm
+                    with open(self.prefs_path, "w", encoding="utf-8") as f:
+                        json.dump(self.prefs, f, indent=4)
+                except: pass
+
+                dlg.reject()
+                # Use ModernDialog for Error
+                err_dlg = ModernDialog(
+                    self, 
+                    "Update Failed", 
+                    "Model setup encountered an error.", 
+                    f"{error_msg[:300]}\n\nPrevious settings have been restored.",
+                    buttons=["OK"]
+                )
+                err_dlg.exec()
+
+        dlg.signals.status.connect(on_status)
+        dlg.signals.progress.connect(on_progress)
+        dlg.signals.finished.connect(on_finished)
+        thread.started.connect(worker.run)
         
-        if res == QDialog.Accepted:
-            # Prompt Restart
-            restart = QMessageBox.question(
-                self, 
-                "Restart Required", 
-                "Models updated successfully.\nPrivox needs to restart to apply changes.\n\nRestart now?",
-                QMessageBox.Yes | QMessageBox.No
-            )
-            
-            if restart == QMessageBox.Yes:
-                # Launch new instance
-                if getattr(sys, "frozen", False):
-                    subprocess.Popen([sys.executable])
-                else:
-                    # Dev mode
-                    subprocess.Popen([sys.executable] + sys.argv)
-                
-                QApplication.quit()
-        else:
-            QMessageBox.warning(self, "Update Failed", "Model update failed. Check logs.")
+        thread.start()
+        
+        # Block until thread finishes (success or revert)
+        if dlg.exec() == QDialog.Accepted:
+            print("Restarting application to apply model changes...")
+            # Use exit code 10 to signal a restart requirement with settings recovery
+            sys.exit(10)
 
 
 if __name__ == "__main__":

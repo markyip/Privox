@@ -25,9 +25,9 @@ if sys.platform == 'win32':
         os.add_dll_directory(dll_path)
 
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QLineEdit, QProgressBar, QPlainTextEdit,
-    QStackedWidget, QFileDialog, QMessageBox, QFrame, QSizePolicy
+    QStackedWidget, QFileDialog, QMessageBox, QFrame, QSizePolicy, QDialog
 )
 from PySide6.QtGui import QIcon, QFont, QColor, QPalette
 from PySide6.QtCore import Qt, QSize, Signal, QObject, QThread, QPropertyAnimation, QEasingCurve, QSequentialAnimationGroup, QParallelAnimationGroup, QPoint
@@ -42,8 +42,10 @@ os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 # Paths
 if getattr(sys, 'frozen', False):
     EXE_DIR = os.path.dirname(sys.executable)
+    BUNDLE_DIR = sys._MEIPASS
 else:
     EXE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    BUNDLE_DIR = EXE_DIR
 
 os.chdir(EXE_DIR)
 
@@ -164,6 +166,99 @@ def apply_dark_title_bar(window):
     except:
         pass
 
+class ModernDialog(QDialog):
+    """Simplified ModernDialog for Bootstrap bootstrap to maintain standalone nature."""
+    def __init__(self, parent=None, title="PRIVOX", message="", subtext="", buttons=["OK"]):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.container = QFrame()
+        self.container.setStyleSheet("""
+            QFrame {
+                background-color: rgba(18, 18, 18, 0.98);
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                border-radius: 16px;
+            }
+        """)
+        container_layout = QVBoxLayout(self.container)
+        container_layout.setContentsMargins(32, 28, 32, 28)
+        container_layout.setSpacing(18)
+        
+        # Title Bar
+        title_bar = QHBoxLayout()
+        title_lbl = QLabel(title.upper())
+        title_lbl.setStyleSheet("font-weight: 900; color: rgba(255, 255, 255, 0.4); font-size: 10px; letter-spacing: 2px; border: none;")
+        title_bar.addWidget(title_lbl)
+        title_bar.addStretch()
+        
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(24, 24)
+        close_btn.setStyleSheet("QPushButton { border: none; color: #666666; font-size: 16px; background: transparent; } QPushButton:hover { color: #ffffff; }")
+        close_btn.clicked.connect(self.reject)
+        title_bar.addWidget(close_btn)
+        container_layout.addLayout(title_bar)
+        
+        # Content
+        msg_lbl = QLabel(message)
+        msg_lbl.setStyleSheet("color: #ffffff; font-size: 16px; font-weight: 500; border: none;")
+        msg_lbl.setWordWrap(True)
+        container_layout.addWidget(msg_lbl)
+        
+        if subtext:
+            sub_lbl = QLabel(subtext)
+            sub_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.5); font-size: 13px; border: none;")
+            sub_lbl.setWordWrap(True)
+            container_layout.addWidget(sub_lbl)
+        
+        # Buttons
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(10)
+        btn_layout.addStretch()
+        
+        for btn_text in buttons:
+            btn = QPushButton(btn_text)
+            btn.setMinimumHeight(42)
+            btn.setMinimumWidth(100)
+            btn.setCursor(Qt.PointingHandCursor)
+            
+            is_primary = btn_text in ["Save", "OK", "INSTALL", "Launch", "Yes"] or (btn_text == buttons[-1] and len(buttons) > 1)
+            
+            if is_primary:
+                btn.setStyleSheet("""
+                    QPushButton { background-color: #ffffff; color: #000000; border-radius: 8px; font-weight: 800; padding: 0 24px; font-size: 13px; }
+                    QPushButton:hover { background-color: rgba(255, 255, 255, 0.85); }
+                """)
+            else:
+                btn.setStyleSheet("""
+                    QPushButton { background-color: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1); color: #ffffff; border-radius: 8px; font-weight: 600; padding: 0 20px; font-size: 13px; }
+                    QPushButton:hover { background-color: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.2); }
+                """)
+            
+            if btn_text in ["Yes", "OK", "INSTALL", "Launch"]:
+                btn.clicked.connect(lambda ch=None, b=btn_text: self.done(1))
+            else:
+                btn.clicked.connect(self.reject)
+            
+            btn_layout.addWidget(btn)
+        
+        container_layout.addLayout(btn_layout)
+        layout.addWidget(self.container)
+        
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() == Qt.LeftButton and hasattr(self, 'drag_pos'):
+            self.move(event.globalPosition().toPoint() - self.drag_pos)
+            event.accept()
+
+
 class InstallerGUI(QMainWindow):
     def __init__(self, mode="install"):
         super().__init__()
@@ -172,9 +267,7 @@ class InstallerGUI(QMainWindow):
         self.setFixedSize(700, 600) # Slightly larger for Swiss spacing
         
         # Favicon
-        icon_path = os.path.join(EXE_DIR, "assets", "icon.ico")
-        if not os.path.exists(icon_path) and getattr(sys, 'frozen', False):
-             icon_path = os.path.join(sys._MEIPASS, "assets", "icon.ico")
+        icon_path = os.path.join(BUNDLE_DIR, "assets", "icon.ico")
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
             
@@ -251,7 +344,7 @@ class InstallerGUI(QMainWindow):
         self.bottom_bar = QFrame()
         self.bottom_bar.setObjectName("bottom_bar")
         self.bottom_bar.setFixedHeight(80)
-        self.bottom_bar.setStyleSheet("QFrame#bottom_bar { background-color: rgba(20, 20, 20, 0.4); border-top: 1px solid rgba(255, 255, 255, 0.05); }")
+        self.bottom_bar.setStyleSheet("QFrame#bottom_bar { background-color: rgba(20, 20, 20, 0.4); border-top: 1px solid rgba(255, 255, 255, 0.05); border-bottom-left-radius: 12px; border-bottom-right-radius: 12px; }")
         bottom_layout = QHBoxLayout(self.bottom_bar)
         bottom_layout.setContentsMargins(40, 0, 40, 0)
         bottom_layout.setSpacing(16)
@@ -380,7 +473,7 @@ class InstallerGUI(QMainWindow):
                 text-align: center; 
             }
             QProgressBar::chunk { 
-                background-color: #ffffff; 
+                background-color: #ffffff;
                 border-radius: 6px;
             }
             QPlainTextEdit { 
@@ -521,10 +614,9 @@ class InstallerGUI(QMainWindow):
 
     def on_cancel_clicked(self):
         if hasattr(self, 'worker') and self.worker and self.thread.isRunning():
-            res = QMessageBox.question(self, "Cancel Installation", "Are you sure you want to stop the installation?", QMessageBox.Yes | QMessageBox.No)
-            if res == QMessageBox.Yes:
+            dlg = ModernDialog(self, "Cancel Setup", "Are you sure you want to stop?", "Progress will be lost.", buttons=["No", "Yes"])
+            if dlg.exec() == 1:
                 self.worker.stop()
-                # Close immediately to feel responsive
                 self.close()
         else:
             self.close()
@@ -549,7 +641,8 @@ class InstallerGUI(QMainWindow):
             if hasattr(self, 'worker') and self.worker.cancelled:
                 self.close()
                 return
-            QMessageBox.critical(self, "Error", "Installation failed. Check logs.")
+            dlg = ModernDialog(self, "Error", "Setup failed.", f"{error_msg[:300]}\n\nPlease check logs for details.", buttons=["Close"])
+            dlg.exec()
             self.btn_next.setText("Failed")
             self.btn_next.setEnabled(False)
             self.btn_cancel.setEnabled(True)
@@ -558,7 +651,7 @@ class InstallerGUI(QMainWindow):
     def launch_app(self):
         target_exe = os.path.join(self.path_edit.text(), "Privox.exe")
         if os.path.exists(target_exe):
-            subprocess.Popen([target_exe, "--run"])
+            subprocess.Popen([target_exe, "--run"], creationflags=subprocess.CREATE_NO_WINDOW)
         self.close()
 
 # --- Helper Functions (Migrated from legacy bootstrap.py) ---
@@ -604,7 +697,10 @@ def install_app_files(target_dir, log_cb):
         # Kill running instances
         try:
             my_pid = os.getpid()
-            subprocess.run(["taskkill", "/F", "/IM", "python.exe", "/T"], creationflags=subprocess.CREATE_NO_WINDOW, capture_output=True, timeout=5)
+            # Precisely target Privox background processes instead of all python.exe
+            kill_cmd = "Get-CimInstance Win32_Process -Filter \"Name = 'python.exe' OR Name = 'pythonw.exe'\" | Where-Object { $_.CommandLine -match 'voice_input\.py' -or $_.CommandLine -match 'gui_settings\.py' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
+            subprocess.run(["powershell", "-Command", kill_cmd], creationflags=subprocess.CREATE_NO_WINDOW, capture_output=True, timeout=5)
+            
             subprocess.run(["taskkill", "/F", "/IM", "Privox.exe", "/FI", f"PID ne {my_pid}"], creationflags=subprocess.CREATE_NO_WINDOW, capture_output=True, timeout=5)
             time.sleep(2.0)
         except: pass
@@ -615,13 +711,13 @@ def install_app_files(target_dir, log_cb):
         
         # Copy Configs
         for f in ["config.json", "pixi.toml", "pixi.lock", "uninstall.bat"]:
-            src = os.path.join(EXE_DIR, f)
+            src = os.path.join(BUNDLE_DIR, f)
             if os.path.exists(src):
                 shutil.copy2(src, os.path.join(target_dir, f))
 
         # Copy Assets & Models
         for folder in ["models", "assets", "src"]:
-            src = os.path.join(EXE_DIR, folder)
+            src = os.path.join(BUNDLE_DIR, folder)
             dst = os.path.join(target_dir, folder)
             if os.path.exists(src):
                 log_cb(f"Syncing {folder}...")
@@ -646,7 +742,8 @@ def install_app_files(target_dir, log_cb):
 def create_shortcut(target_exe, target_dir):
     try:
         app_name = "Privox"
-        icon_path = os.path.join(target_dir, "assets", "icon.ico")
+        # Since Privox.exe already has the icon bundled in, refer directly to it for the shortcut icon.
+        icon_path = target_exe
         
         # 1. Start Menu Shortcut
         start_menu = os.path.join(os.environ['APPDATA'], 'Microsoft', 'Windows', 'Start Menu', 'Programs')
@@ -665,7 +762,8 @@ def create_shortcut(target_exe, target_dir):
 def create_lnk(target_exe, target_dir, icon_path, lnk_path):
     try:
         # Added --run flag to shortcut Arguments (NOT TargetPath)
-        vbs_script = f'Set oWS = WScript.CreateObject("WScript.Shell")\nsLinkFile = "{lnk_path}"\nSet oLink = oWS.CreateShortcut(sLinkFile)\noLink.TargetPath = "{target_exe}"\noLink.Arguments = "--run"\noLink.WorkingDirectory = "{target_dir}"\noLink.IconLocation = "{icon_path},0"\noLink.Save'
+        # oLink.WindowStyle = 7 ensures it runs minimized (hides initial flashes)
+        vbs_script = f'Set oWS = WScript.CreateObject("WScript.Shell")\nsLinkFile = "{lnk_path}"\nSet oLink = oWS.CreateShortcut(sLinkFile)\noLink.TargetPath = "{target_exe}"\noLink.Arguments = "--run"\noLink.WorkingDirectory = "{target_dir}"\noLink.IconLocation = "{icon_path},0"\noLink.WindowStyle = 7\noLink.Save'
         vbs_file = os.path.join(os.environ['TEMP'], f"mkshortcut_{os.getpid()}_{hash(lnk_path)}.vbs")
         with open(vbs_file, "w") as f: f.write(vbs_script)
         subprocess.call(["cscript", "//nologo", vbs_file], creationflags=subprocess.CREATE_NO_WINDOW)
@@ -693,12 +791,16 @@ def register_uninstaller(install_dir, exe_path):
     if sys.platform != 'win32': return
     try:
         key_path = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Privox"
-        icon_path = os.path.join(install_dir, "assets", "icon.ico")
+        icon_path = exe_path
         install_date = time.strftime("%Y%m%d")
         
         uninst_path = os.path.join(install_dir, "uninstall.bat")
-        # Use PowerShell to launch the batch file hidden to avoid initial console flicker
-        silent_cmd = f'powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -Command "& \'{uninst_path}\'"'
+        vbs_path = os.path.join(install_dir, "uninstall.vbs")
+        if os.path.exists(vbs_path):
+             try: os.remove(vbs_path)
+             except: pass
+        
+        silent_cmd = f'powershell.exe -WindowStyle Hidden -Command "& \'{uninst_path}\' __CLEANUP__ \'{install_dir}\'"'
         
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path) as key:
             winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, "Privox")
@@ -730,17 +832,24 @@ def register_uninstaller(install_dir, exe_path):
         print(f"Failed to register uninstaller: {e}")
 
 def run_app():
-    """ Launches the main application using Pixi. """
-    internal_dir = os.path.join(EXE_DIR, "_internal")
-    pixi_exe = os.path.join(internal_dir, "pixi", "pixi.exe")
+    """ Launches the main application using Pixi environment directly to avoid terminal flash. """
+    env_pythonw = os.path.join(EXE_DIR, ".pixi", "envs", "default", "pythonw.exe")
     
-    if os.path.exists(pixi_exe):
-        # We use 'pixi run start-windowless' to ensure no terminal window is created
-        subprocess.Popen([pixi_exe, "run", "start-windowless"], cwd=EXE_DIR, creationflags=subprocess.CREATE_NO_WINDOW)
+    if os.path.exists(env_pythonw):
+        # Run pythonw directly to ensure no console flashes from 'pixi run' invoking a shell
+        script_path = os.path.join(EXE_DIR, "src", "voice_input.py")
+        subprocess.Popen([env_pythonw, script_path], cwd=EXE_DIR, creationflags=subprocess.CREATE_NO_WINDOW)
     else:
-        # Fallback if somehow Pixi is missing but we're trying to run
-        print("Error: Pixi environment not found. Please reinstall.")
-        sys.exit(1)
+        # Fallback to pixi run if environment isn't standard
+        internal_dir = os.path.join(EXE_DIR, "_internal")
+        pixi_exe = os.path.join(internal_dir, "pixi", "pixi.exe")
+        
+        if os.path.exists(pixi_exe):
+            # We use 'pixi run start-windowless' here, but it may flash a terminal briefly
+            subprocess.Popen([pixi_exe, "run", "start-windowless"], cwd=EXE_DIR, creationflags=subprocess.CREATE_NO_WINDOW)
+        else:
+            print("Error: Pixi environment not found. Please reinstall.")
+            sys.exit(1)
 
 if __name__ == "__main__":
     if "--run" in sys.argv:

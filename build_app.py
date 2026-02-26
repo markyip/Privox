@@ -16,11 +16,16 @@ PyInstaller.__main__.run([
     '--onefile',
     '--clean',
     '--noconsole',
+    '--noupx', # Disabling UPX often reduces false positives from AV
     '--icon=assets/privox.ico',
     '--add-data=assets;assets',
-    '--add-data=src/voice_input.py;src',
-    '--add-data=src/download_models.py;src',
+    '--add-data=src;src',
     '--add-data=pixi.toml;.',
+    '--add-data=pixi.lock;.',
+    '--add-data=uninstall.bat;.',
+    '--add-data=config.json;.',
+    # Add metadata to look more legitimate (optional but recommended)
+    # '--version-file=version_info.txt', 
     
     # Core Application (NOT bundled as binary, but as data for system-python launch)
     # '--hidden-import=voice_input',

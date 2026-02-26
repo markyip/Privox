@@ -7,10 +7,10 @@ if exist "src\__pycache__" rmdir /s /q src\__pycache__
 if exist "__pycache__" rmdir /s /q __pycache__
 
 echo Regenerating Icons...
-python scripts\generate_icon.py
+pixi run python -s -E scripts\generate_icon.py
 
 echo Building Privox...
-python build_app.py
+pixi run python -s -E build_app.py
 
 if exist "dist\Privox.exe" (
     echo.

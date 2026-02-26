@@ -6,324 +6,666 @@ import threading
 import time
 import logging
 import queue
-import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
 import ctypes
 import zipfile
 import urllib.request
+import json
+import winreg
 
-# Disable Symlinks for Windows (Fixes WinError 1314)
+# --- 0. Hard Environment Isolation (MUST BE FIRST) ---
+os.environ["PYTHONNOUSERSITE"] = "1"
+import site
+site.ENABLE_USER_SITE = False
+
+if sys.platform == 'win32':
+    # Inject pixi environment DLL paths if already present
+    env_path = os.path.join(os.getcwd(), ".pixi", "envs", "default")
+    dll_path = os.path.join(env_path, "Library", "bin")
+    if os.path.exists(dll_path):
+        os.add_dll_directory(dll_path)
+
+from PySide6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
+    QLabel, QPushButton, QLineEdit, QProgressBar, QPlainTextEdit,
+    QStackedWidget, QFileDialog, QMessageBox, QFrame, QSizePolicy
+)
+from PySide6.QtGui import QIcon, QFont, QColor, QPalette
+from PySide6.QtCore import Qt, QSize, Signal, QObject, QThread, QPropertyAnimation, QEasingCurve, QSequentialAnimationGroup, QParallelAnimationGroup, QPoint
+
+# --- Versioning ---
+APP_VERSION = "1.0"
+
+# Disable Symlinks for Windows
 os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 
-# Ensure we are in the same directory as the executable
+# Paths
 if getattr(sys, 'frozen', False):
     EXE_DIR = os.path.dirname(sys.executable)
-    os.chdir(EXE_DIR)
+    BUNDLE_DIR = sys._MEIPASS
 else:
-    EXE_DIR = os.path.dirname(os.path.abspath(__file__))
-    if EXE_DIR.endswith('src'):
-        EXE_DIR = os.path.dirname(EXE_DIR)
-    os.chdir(EXE_DIR)
+    EXE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    BUNDLE_DIR = EXE_DIR
 
-# --- Logging Setup ---
-log_level = logging.INFO
-log_format = '%(asctime)s - %(levelname)s - %(message)s'
+os.chdir(EXE_DIR)
 
-handlers = []
-# Only add StreamHandler if we have a real stdout/stderr (i.e. not running with --noconsole)
-# This prevents 'NoneType has no attribute write' and potential recursion
-if sys.stdout:
-     handlers.append(logging.StreamHandler(sys.stdout))
+class InstallWorker(QObject):
+    finished = Signal(bool)
+    log_signal = Signal(str)
+    progress_signal = Signal(int)
 
-logging.basicConfig(
-    format=log_format,
-    level=log_level,
-    force=True,
-    handlers=handlers
-)
-
-# LoggerWriter removed to prevent recursion in noconsole mode
-
-def log_info(msg):
-    print(msg)
-
-log_info("--- Privox Setup Started (Pixi Mode) ---")
-log_info(f"Platform: {sys.platform}")
-
-class InstallerGUI(tk.Tk):
-    def __init__(self):
+    def __init__(self, target_dir):
         super().__init__()
-        self.title("Privox Setup")
+        self.target_dir = os.path.normpath(target_dir)
+        self.cancelled = False
+
+    def stop(self):
+        self.cancelled = True
+
+    def run(self):
+        try:
+            if self.cancelled: return
+            target_dir = self.target_dir
+            target_exe = os.path.join(target_dir, "Privox.exe")
+            
+            self.log_signal.emit(f"Installing to {target_dir}...")
+            self.progress_signal.emit(10)
+
+            # 1. Install Files
+            if not install_app_files(target_dir, self.log_signal.emit):
+                if not self.cancelled:
+                    self.finished.emit(False)
+                return
+            
+            if self.cancelled: return
+            self.progress_signal.emit(30)
+            
+            # 2. Pixi Setup
+            pixi_exe = ensure_pixi(target_dir, self.log_signal.emit)
+            if not pixi_exe or self.cancelled:
+                if not self.cancelled:
+                    self.finished.emit(False)
+                return
+                
+            self.progress_signal.emit(40)
+            self.log_signal.emit("Setting up environment (Pixi)...")
+            
+            success = run_pixi_command(self, [pixi_exe, "install", "-v"], cwd=target_dir)
+            if not success or self.cancelled:
+                if not self.cancelled:
+                    self.finished.emit(False)
+                return
+                
+            if self.cancelled: return
+            self.progress_signal.emit(80)
+
+            # 3. Models
+            self.log_signal.emit("Checking AI Models...")
+            run_pixi_command(self, [pixi_exe, "run", "python", "src/download_models.py"], cwd=target_dir)
+            
+            if self.cancelled: return
+            self.progress_signal.emit(95)
+            register_uninstaller(target_dir, target_exe)
+            
+            self.progress_signal.emit(100)
+            self.finished.emit(not self.cancelled)
+            
+        except Exception as e:
+            self.log_signal.emit(f"Fatal Error: {e}")
+            self.finished.emit(False)
+
+def run_pixi_command(worker, cmd, cwd):
+    try:
+        process = subprocess.Popen(
+            cmd, cwd=cwd,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding='utf-8', errors='replace',
+            creationflags=subprocess.CREATE_NO_WINDOW
+        )
+        for line in process.stdout:
+            if worker.cancelled:
+                process.terminate()
+                worker.log_signal.emit("Installation cancelled by user.")
+                return False
+            msg = line.strip()
+            if msg:
+                worker.log_signal.emit(msg)
+        process.wait()
+        return process.returncode == 0 and not worker.cancelled
+    except Exception as e:
+        worker.log_signal.emit(f"Command Error: {e}")
+        return False
+
+def apply_dark_title_bar(window):
+    """ Enforces a pitch-black title bar on Windows 10/11 using DWM API. """
+    if sys.platform != 'win32':
+        return
+    try:
+        hwnd = window.effectiveWinId().value()
         
-        # Window Setup
-        width = 600
-        height = 480
-        screen_width = self.winfo_screenwidth()
-        screen_height = self.winfo_screenheight()
-        x = (screen_width - width) // 2
-        y = (screen_height - height) // 2
-        self.geometry(f"{width}x{height}+{x}+{y}")
-        self.resizable(False, False)
+        # Disable Mica/Acrylic (DWMWA_SYSTEMBACKDROP_TYPE = 38, None = 1)
+        none_backdrop = ctypes.c_int(1)
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 38, ctypes.byref(none_backdrop), 4)
+
+        # Force Dark Mode (DWMWA_USE_IMMERSIVE_DARK_MODE = 20)
+        dark = ctypes.c_int(1)
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(dark), 4)
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 19, ctypes.byref(dark), 4)
         
-        # Icon
-        icon_path = os.path.join(EXE_DIR, "assets", "icon.ico")
-        if not os.path.exists(icon_path) and getattr(sys, 'frozen', False):
-             icon_path = os.path.join(sys._MEIPASS, "assets", "icon.ico")
+        # Caption color (BGR: 0x00000000 for pitch black)
+        # This prevents the blue-ish grey focus highlight on Win 11
+        black = ctypes.c_int(0x00000000)
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 35, ctypes.byref(black), 4)
+        
+        # Text color (White)
+        white = ctypes.c_int(0x00FFFFFF)
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 36, ctypes.byref(white), 4)
+        
+        # Redraw
+        ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0027) 
+    except:
+        pass
+
+class InstallerGUI(QMainWindow):
+    def __init__(self, mode="install"):
+        super().__init__()
+        self.mode = mode
+        self.setWindowTitle("Privox " + ("Uninstall" if mode == "uninstall" else "Setup"))
+        self.setFixedSize(700, 600) # Slightly larger for Swiss spacing
+        
+        # Favicon
+        icon_path = os.path.join(BUNDLE_DIR, "assets", "icon.ico")
         if os.path.exists(icon_path):
-            self.iconbitmap(icon_path)
+            self.setWindowIcon(QIcon(icon_path))
+            
+        # Absolute Frameless Window for Swiss Style
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint if mode == "uninstall" else Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        
+        self.init_ui()
+        self.load_styles()
+        # Removed apply_mica_or_acrylic to prevent "Square Blur" artifacts on rounded corners.
+        # We now rely solely on setAttribute(Qt.WA_TranslucentBackground) for transparency.
 
-        # Style using ttk
-        style = ttk.Style()
-        style.theme_use('vista' if sys.platform == 'win32' else 'clam')
-        
-        # Variables
-        default_path = self.get_existing_install_path()
-        if not default_path:
-            default_path = os.path.join(os.environ.get('LOCALAPPDATA', os.environ.get('USERPROFILE', 'C:\\')), "Privox")
-        
-        self.install_dir = tk.StringVar(value=default_path)
-        self.active_process = None
-        self.is_cancelling = False
-        
-        # --- Layout ---
-        self.main_content = ttk.Frame(self, padding="20")
-        self.main_content.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-        
-        ttk.Separator(self, orient='horizontal').pack(fill=tk.X)
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
 
-        self.bottom_bar = ttk.Frame(self, padding="10")
-        self.bottom_bar.pack(side=tk.BOTTOM, fill=tk.X)
+    def mouseMoveEvent(self, event):
+        if event.buttons() == Qt.LeftButton:
+            self.move(event.globalPosition().toPoint() - self.drag_pos)
+            event.accept()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Removed apply_mica_or_acrylic
+
+class ModernDialog(QDialog):
+    """Simplified ModernDialog for Bootstrap bootstrap to maintain standalone nature."""
+    def __init__(self, parent=None, title="PRIVOX", message="", subtext="", buttons=["OK"]):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.container = QFrame()
+        self.container.setStyleSheet("""
+            QFrame {
+                background-color: rgba(18, 18, 18, 0.98);
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                border-radius: 16px;
+            }
+        """)
+        container_layout = QVBoxLayout(self.container)
+        container_layout.setContentsMargins(32, 28, 32, 28)
+        container_layout.setSpacing(18)
+        
+        # Title Bar
+        title_bar = QHBoxLayout()
+        title_lbl = QLabel(title.upper())
+        title_lbl.setStyleSheet("font-weight: 900; color: rgba(255, 255, 255, 0.4); font-size: 10px; letter-spacing: 2px; border: none;")
+        title_bar.addWidget(title_lbl)
+        title_bar.addStretch()
+        
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(24, 24)
+        close_btn.setStyleSheet("QPushButton { border: none; color: #666666; font-size: 16px; background: transparent; } QPushButton:hover { color: #ffffff; }")
+        close_btn.clicked.connect(self.reject)
+        title_bar.addWidget(close_btn)
+        container_layout.addLayout(title_bar)
+        
+        # Content
+        msg_lbl = QLabel(message)
+        msg_lbl.setStyleSheet("color: #ffffff; font-size: 16px; font-weight: 500; border: none;")
+        msg_lbl.setWordWrap(True)
+        container_layout.addWidget(msg_lbl)
+        
+        if subtext:
+            sub_lbl = QLabel(subtext)
+            sub_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.5); font-size: 13px; border: none;")
+            sub_lbl.setWordWrap(True)
+            container_layout.addWidget(sub_lbl)
         
         # Buttons
-        self.btn_next = ttk.Button(self.bottom_bar, text="Next >", command=None)
-        self.btn_next.pack(side=tk.RIGHT)
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(10)
+        btn_layout.addStretch()
         
-        self.btn_cancel = ttk.Button(self.bottom_bar, text="Cancel", command=self.on_cancel)
-        self.btn_cancel.pack(side=tk.RIGHT, padx=10)
-
-        # Pages storage
-        self.pages = {}
-        self.current_page_name = None
-        
-        self.create_pages()
-        self.show_page("welcome")
-
-    def get_existing_install_path(self):
-        try:
-            key_path = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Privox"
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path) as key:
-                install_dir, _ = winreg.QueryValueEx(key, "InstallLocation")
-                if os.path.exists(install_dir):
-                    return os.path.normpath(install_dir)
-        except: pass
-        return None
-
-    def create_pages(self):
-        # --- Welcome Page ---
-        p1 = ttk.Frame(self.main_content)
-        
-        ttk.Label(p1, text="Welcome to Privox Setup", font=("Segoe UI", 16, "bold")).pack(pady=(10, 20))
-        ttk.Label(p1, text="Privox uses Pixi for robust, isolated environment management.\nThis wizard will guide you through the setup process.", justify=tk.CENTER).pack(pady=10)
-        
-        # Path Selection
-        path_frame = ttk.LabelFrame(p1, text="Installation Destination", padding=15)
-        path_frame.pack(fill=tk.X, pady=10)
-        
-        path_input_frame = ttk.Frame(path_frame)
-        path_input_frame.pack(fill=tk.X)
-        
-        self.entry_path = ttk.Entry(path_input_frame, textvariable=self.install_dir)
-        self.entry_path.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        
-        ttk.Button(path_input_frame, text="Browse...", command=self.browse_path).pack(side=tk.LEFT, padx=(5, 0))
-        
-        ttk.Label(path_frame, text="Privox will be installed in the folder above.", font=("Segoe UI", 8), foreground="gray").pack(anchor=tk.W, pady=(5, 0))
-
-        self.pages["welcome"] = p1
-        
-        # --- Progress Page ---
-        p2 = ttk.Frame(self.main_content)
-        ttk.Label(p2, text="Installing Privox...", font=("Segoe UI", 14, "bold")).pack(pady=(10, 20))
-        
-        self.log_box = tk.Text(p2, height=15, state=tk.DISABLED, font=("Consolas", 8))
-        self.log_box.pack(fill=tk.BOTH, expand=True, pady=10)
-        
-        self.pages["progress"] = p2
-        
-        # --- Success Page ---
-        p3 = ttk.Frame(self.main_content)
-        ttk.Label(p3, text="Installation Complete!", font=("Segoe UI", 16, "bold"), foreground="green").pack(pady=(40, 20))
-        ttk.Label(p3, text="Privox has been successfully set up.", justify=tk.CENTER).pack(pady=10)
-        
-        self.pages["success"] = p3
-
-    def show_page(self, name):
-        self.after(0, self._show_page_ui, name)
-
-    def _show_page_ui(self, name):
-        if self.current_page_name:
-            self.pages[self.current_page_name].pack_forget()
+        for btn_text in buttons:
+            btn = QPushButton(btn_text)
+            btn.setMinimumHeight(42)
+            btn.setMinimumWidth(100)
+            btn.setCursor(Qt.PointingHandCursor)
             
-        self.current_page_name = name
-        self.pages[name].pack(fill=tk.BOTH, expand=True)
+            is_primary = btn_text in ["Save", "OK", "INSTALL", "Launch", "Yes"] or (btn_text == buttons[-1] and len(buttons) > 1)
+            
+            if is_primary:
+                btn.setStyleSheet("""
+                    QPushButton { background-color: #ffffff; color: #000000; border-radius: 8px; font-weight: 800; padding: 0 24px; font-size: 13px; }
+                    QPushButton:hover { background-color: rgba(255, 255, 255, 0.85); }
+                """)
+            else:
+                btn.setStyleSheet("""
+                    QPushButton { background-color: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1); color: #ffffff; border-radius: 8px; font-weight: 600; padding: 0 20px; font-size: 13px; }
+                    QPushButton:hover { background-color: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.2); }
+                """)
+            
+            if btn_text in ["Yes", "OK", "INSTALL", "Launch"]:
+                btn.clicked.connect(lambda ch=None, b=btn_text: self.done(1))
+            else:
+                btn.clicked.connect(self.reject)
+            
+            btn_layout.addWidget(btn)
         
-        # Update Buttons based on page
-        if name == "welcome":
-            self.btn_next.config(text="Install", state=tk.NORMAL, command=self.start_installation)
-            self.btn_cancel.config(state=tk.NORMAL)
-        elif name == "progress":
-            self.btn_next.config(text="Installing...", state=tk.DISABLED)
-            self.btn_cancel.config(state=tk.NORMAL)
-        elif name == "success":
-            self.btn_next.config(text="Launch", state=tk.NORMAL, command=self.launch_and_exit)
-            self.btn_cancel.config(text="Close", state=tk.NORMAL, command=self.destroy)
+        container_layout.addLayout(btn_layout)
+        layout.addWidget(self.container)
+        
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() == Qt.LeftButton and hasattr(self, 'drag_pos'):
+            self.move(event.globalPosition().toPoint() - self.drag_pos)
+            event.accept()
+
+    def init_ui(self):
+        self.main_container = QWidget()
+        self.main_container.setObjectName("main_container")
+        self.setCentralWidget(self.main_container)
+        layout = QVBoxLayout(self.main_container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Custom Title Bar
+        title_bar = QWidget()
+        title_bar.setFixedHeight(40)
+        title_bar.setStyleSheet("background: transparent;")
+        title_layout = QHBoxLayout(title_bar)
+        title_layout.setContentsMargins(20, 0, 10, 0)
+        
+        win_title = QLabel("PRIVOX SETUP" if self.mode == "install" else "PRIVOX UNINSTALL")
+        win_title.setStyleSheet("font-size: 10px; font-weight: 900; letter-spacing: 2px; color: rgba(255, 255, 255, 0.4);")
+        title_layout.addWidget(win_title)
+        title_layout.addStretch()
+        
+        btn_close = QPushButton("×")
+        btn_close.setFixedSize(30, 30)
+        btn_close.setStyleSheet("QPushButton { background: transparent; color: white; border: none; font-size: 20px; } QPushButton:hover { color: #ff5555; }")
+        btn_close.clicked.connect(self.close)
+        title_layout.addWidget(btn_close)
+        
+        layout.addWidget(title_bar)
+        
+        self.stack = QStackedWidget()
+        
+        # Welcome Page
+        self.page_welcome = QWidget()
+        self.init_welcome_page()
+        self.stack.addWidget(self.page_welcome)
+        
+        # Progress Page
+        self.page_progress = QWidget()
+        self.init_progress_page()
+        self.stack.addWidget(self.page_progress)
+        
+        # Success Page
+        self.page_success = QWidget()
+        self.init_success_page()
+        self.stack.addWidget(self.page_success)
+        
+        layout.addWidget(self.stack)
+        
+        # Bottom Bar
+        self.bottom_bar = QFrame()
+        self.bottom_bar.setObjectName("bottom_bar")
+        self.bottom_bar.setFixedHeight(80)
+        self.bottom_bar.setStyleSheet("QFrame#bottom_bar { background-color: rgba(20, 20, 20, 0.4); border-top: 1px solid rgba(255, 255, 255, 0.05); }")
+        bottom_layout = QHBoxLayout(self.bottom_bar)
+        bottom_layout.setContentsMargins(40, 0, 40, 0)
+        bottom_layout.setSpacing(16)
+        
+        self.btn_cancel = QPushButton("CANCEL")
+        self.btn_cancel.setObjectName("btn_cancel")
+        self.btn_cancel.setFixedSize(120, 44)
+        self.btn_cancel.clicked.connect(self.close)
+        self.btn_cancel.setCursor(Qt.PointingHandCursor)
+        
+        self.btn_next = QPushButton("INSTALL")
+        self.btn_next.setObjectName("btn_next")
+        self.btn_next.setFixedSize(140, 44)
+        self.btn_next.setCursor(Qt.PointingHandCursor)
+        self.btn_next.setStyleSheet("QPushButton#btn_next { background-color: #ffffff; color: #000000; border-radius: 6px; font-weight: 900; }")
+        self.btn_next.clicked.connect(self.start_install)
+        
+        self.btn_cancel.clicked.disconnect()
+        self.btn_cancel.clicked.connect(self.on_cancel_clicked)
+        
+        bottom_layout.addStretch()
+        bottom_layout.addWidget(self.btn_cancel)
+        bottom_layout.addWidget(self.btn_next)
+        
+        layout.addWidget(self.bottom_bar)
+
+    def load_styles(self):
+        self.setStyleSheet("""
+            QMainWindow {
+                background: transparent;
+            }
+            QWidget#main_container { 
+                background-color: rgba(18, 18, 18, 0.92); 
+                border-radius: 12px;
+                border: 1px solid rgba(255, 255, 255, 0.1);
+            }
+            QWidget { 
+                color: #ffffff; 
+                font-family: 'Inter', 'Segoe UI Variable Text', 'Segoe UI', Arial; 
+            }
+            QLabel#title { 
+                font-size: 36px; 
+                font-weight: 800; 
+                letter-spacing: -1px; 
+                color: #ffffff;
+            }
+            QLabel#desc { 
+                color: rgba(255, 255, 255, 0.6); 
+                font-size: 14px;
+                line-height: 160%; 
+            }
+            QLineEdit { 
+                background-color: rgba(255, 255, 255, 0.05); 
+                border: 1px solid rgba(255, 255, 255, 0.1); 
+                padding: 12px; 
+                border-radius: 6px; 
+                font-size: 13px;
+            }
+            QPushButton { 
+                background-color: rgba(255, 255, 255, 0.05); 
+                border: 1px solid rgba(255, 255, 255, 0.1); 
+                border-radius: 6px; 
+                padding: 10px; 
+                font-weight: 800;
+                font-size: 12px; 
+                color: #ffffff; 
+            }
+            QPushButton:hover { 
+                background-color: rgba(255, 255, 255, 0.1); 
+                border: 1px solid rgba(255, 255, 255, 0.2);
+            }
+            QPushButton#btn_next { 
+                background-color: #ffffff !important; 
+                color: #000000 !important; 
+                border: 1px solid #ffffff; 
+                border-radius: 6px;
+                font-weight: 900;
+            }
+            QPushButton#btn_next:hover { 
+                background-color: rgba(255, 255, 255, 0.8) !important; 
+            }
+            QPushButton#btn_next:pressed {
+                background-color: rgba(255, 255, 255, 0.6);
+            }
+            QPushButton#btn_next:disabled { 
+                background-color: transparent !important; 
+                border: 1px solid rgba(255, 255, 255, 0.1) !important; 
+                color: rgba(255, 255, 255, 0.2) !important; 
+            }
+            QScrollBar:vertical {
+                border: none;
+                background: transparent;
+                width: 10px;
+                margin: 0px;
+            }
+            QScrollBar::handle:vertical {
+                background: rgba(255, 255, 255, 0.1);
+                min-height: 20px;
+                border-radius: 5px;
+                margin: 2px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: rgba(255, 255, 255, 0.2);
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background: transparent;
+            }
+            QPushButton#btn_cancel { 
+                background-color: transparent; 
+                border: 1px solid rgba(255, 255, 255, 0.3); 
+                color: #ffffff; 
+                font-weight: 800;
+            }
+            QPushButton#btn_cancel:hover {
+                background-color: rgba(255, 255, 255, 0.05);
+                border: 1px solid rgba(255, 255, 255, 0.5);
+            }
+            QProgressBar { 
+                background-color: rgba(255, 255, 255, 0.05); 
+                border: 1px solid rgba(255, 255, 255, 0.1); 
+                border-radius: 6px; 
+                height: 12px; 
+                text-align: center; 
+            }
+            QProgressBar::chunk { 
+                background-color: #ffffff;
+                border-radius: 6px;
+            }
+            QPlainTextEdit { 
+                background-color: rgba(0, 0, 0, 0.3); 
+                border: 1px solid rgba(255, 255, 255, 0.05); 
+                border-radius: 8px;
+                font-family: 'Consolas', 'Cascadia Code', monospace; 
+                font-size: 11px; 
+                color: rgba(255, 255, 255, 0.4); 
+                padding: 12px;
+            }
+        """)
+
+    def init_welcome_page(self):
+        layout = QVBoxLayout(self.page_welcome)
+        layout.setContentsMargins(40, 40, 40, 40)
+        layout.setSpacing(20)
+        
+        title = QLabel("Ready to Install" if self.mode == "install" else "Ready to Uninstall")
+        title.setObjectName("title")
+        layout.addWidget(title)
+        
+        desc_text = "Privox provides robust AI voice input while keeping your data private.\nThis setup will install the required models and dependencies."
+        if self.mode == "uninstall":
+            desc_text = "Uninstalling Privox will remove all local models, settings, and application files.\nYour custom prompts and dictionary will also be deleted."
+            
+        desc = QLabel(desc_text)
+        desc.setObjectName("desc")
+        desc.setWordWrap(True)
+        layout.addWidget(desc)
+        
+        path_box = QFrame()
+        path_box.setStyleSheet("background-color: transparent; border: none; border-radius: 12px;")
+        path_layout = QVBoxLayout(path_box)
+        path_layout.setContentsMargins(24, 24, 24, 24)
+        
+        path_label = QLabel("INSTALLATION DIRECTORY:" if self.mode == "install" else "DETECTION LOCATION:")
+        path_label.setStyleSheet("color: rgba(255, 255, 255, 0.4); font-weight: 800; font-size: 11px; letter-spacing: 1px;")
+        path_layout.addWidget(path_label)
+        
+        row = QHBoxLayout()
+        self.path_edit = QLineEdit()
+        default_path = os.path.join(os.environ.get('LOCALAPPDATA', 'C:'), "Privox")
+        if self.mode == "uninstall":
+            # In uninstall mode, try to detect where we are running from
+            # If frozen (exe), we are likely in the install dir.
+            if getattr(sys, 'frozen', False):
+                default_path = os.path.dirname(sys.executable)
+            else:
+                default_path = EXE_DIR
+            
+            # Make Read Only for Uninstaller to prevent user error
+            self.path_edit.setReadOnly(True)
+            self.path_edit.setStyleSheet("color: rgba(255, 255, 255, 0.5); background-color: rgba(0, 0, 0, 0.2); border: 1px solid rgba(255, 255, 255, 0.05);")
+
+        self.path_edit.setText(os.path.normpath(default_path))
+        
+        btn_browse = QPushButton("Browse...")
+        btn_browse.setFixedSize(80, 34)
+        btn_browse.clicked.connect(self.browse_path)
+        
+        # Hide browse button in uninstall mode
+        if self.mode == "uninstall":
+            btn_browse.setVisible(False)
+        
+        row.addWidget(self.path_edit)
+        row.addWidget(btn_browse)
+        path_layout.addLayout(row)
+        
+        layout.addWidget(path_box)
+        layout.addStretch()
 
     def browse_path(self):
-        new_dir = filedialog.askdirectory(initialdir=self.install_dir.get(), title="Select Installation Folder")
-        if new_dir:
-            self.install_dir.set(os.path.normpath(new_dir))
+        path = QFileDialog.getExistingDirectory(self, "Select Install Folder", self.path_edit.text())
+        if path:
+            self.path_edit.setText(os.path.normpath(path))
 
-    def on_cancel(self):
-        if self.current_page_name == "progress":
-            if not messagebox.askyesno("Cancel Setup", "Do you want to stop the installation?"):
-                return
-            
-            self.is_cancelling = True
-            if self.active_process:
-                try:
-                    self.log("Stopping active processes...")
-                    # Force kill process tree (handle pixi -> python grandchildren)
-                    subprocess.run(
-                        ["taskkill", "/F", "/T", "/PID", str(self.active_process.pid)],
-                        creationflags=subprocess.CREATE_NO_WINDOW,
-                        capture_output=True
-                    )
-                except: pass
+    def init_progress_page(self):
+        layout = QVBoxLayout(self.page_progress)
+        layout.setContentsMargins(40, 40, 40, 40)
         
-        self.destroy()
-        os._exit(0) # Force exit main process
-
-    def log(self, msg):
-        log_info(msg)
-        self.after(0, self._log_ui, msg)
-
-    def _log_ui(self, msg):
-        self.log_box.config(state=tk.NORMAL)
-        # Auto-scroll if at bottom
-        # output is often multiline
-        self.log_box.insert(tk.END, msg + "\n")
-        self.log_box.see(tk.END)
-        self.log_box.config(state=tk.DISABLED)
-
-    def start_installation(self):
-        # 1. Disk Space Check
-        target_dir = os.path.normpath(self.install_dir.get())
-        drive = os.path.splitdrive(target_dir)[0] or "C:"
+        title = QLabel("Installing..." if self.mode == "install" else "Uninstalling...")
+        title.setObjectName("title")
+        layout.addWidget(title)
         
-        try:
-            total, used, free = shutil.disk_usage(drive)
-            free_gb = free / (1024**3)
-            log_info(f"Disk Check: {drive} has {free_gb:.2f} GB free.")
-            
-            if free_gb < 15.0:
-                msg = (f"The selected drive ({drive}) has only {free_gb:.1f} GB of free space.\n\n"
-                       f"Privox require approximately 13-15 GB for AI models and dependencies.\n"
-                       f"You may run out of disk space during installation.\n\n"
-                       f"Do you want to continue anyway?")
-                if not messagebox.askyesno("Low Disk Space", msg):
-                    return
-        except Exception as e:
-            log_info(f"Disk check failed: {e}")
-            # Non-critical, just log and continue
-            
-        self.show_page("progress")
-        threading.Thread(target=self.run_install_process, daemon=True).start()
+        self.percent_label = QLabel("0%")
+        self.percent_label.setObjectName("percent")
+        self.percent_label.setAlignment(Qt.AlignRight)
+        self.percent_label.setStyleSheet("font-size: 18px; font-weight: 800; color: #ffffff;")
+        layout.addWidget(self.percent_label)
 
-    def run_install_process(self):
-        try:
-            log_info("Starting installation thread...")
-            target_dir = os.path.normpath(self.install_dir.get())
-            self.target_dir = target_dir
-            self.target_exe = os.path.join(target_dir, "Privox.exe")
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setTextVisible(False)
+        layout.addWidget(self.progress_bar)
+        
+        self.log_box = QPlainTextEdit()
+        self.log_box.setReadOnly(True)
+        self.log_box.setFixedHeight(200)
+        layout.addWidget(self.log_box)
+
+    def init_success_page(self):
+        layout = QVBoxLayout(self.page_success)
+        layout.setContentsMargins(40, 40, 40, 40)
+        layout.setAlignment(Qt.AlignCenter)
+        
+        title = QLabel("App Removed" if self.mode == "uninstall" else "Success!")
+        title.setObjectName("title")
+        title.setStyleSheet("color: #ffffff; font-size: 48px; font-weight: 800; letter-spacing: -2px;")
+        layout.addWidget(title)
+        
+        desc_text = "Privox has been installed successfully."
+        if self.mode == "uninstall":
+            desc_text = "Privox has been removed from your system."
             
-            # 1. Install Files (EXE)
-            self.log(f"Installing application files to {target_dir}...")
-            new_path = install_app_files(target_dir, self.log)
-            if not new_path:
-                self.log("Installation failed (File Copy Error).")
-                self.after(0, self.show_failure_state)
+        desc = QLabel(desc_text)
+        desc.setStyleSheet("font-size: 16px; color: rgba(255, 255, 255, 0.6);")
+        layout.addWidget(desc)
+
+    def start_install(self):
+        self.stack.setCurrentIndex(1)
+        self.btn_next.setEnabled(False)
+        self.btn_next.setText("INSTALLING...")
+        self.btn_next.setCursor(Qt.ArrowCursor)
+        # Keep cancel enabled to allow user to stop
+        self.btn_cancel.setEnabled(True)
+        self.btn_cancel.setText("CANCEL")
+        
+        self.thread = QThread()
+        self.worker = InstallWorker(self.path_edit.text())
+        self.worker.moveToThread(self.thread)
+        
+        self.thread.started.connect(self.worker.run)
+        self.worker.finished.connect(self.on_finished)
+        self.worker.log_signal.connect(self.append_log)
+        self.worker.progress_signal.connect(self.update_progress)
+        
+        self.thread.start()
+
+    def on_cancel_clicked(self):
+        if hasattr(self, 'worker') and self.worker and self.thread.isRunning():
+            dlg = ModernDialog(self, "Cancel Setup", "Are you sure you want to stop?", "Progress will be lost.", buttons=["No", "Yes"])
+            if dlg.exec() == 1:
+                self.worker.stop()
+                self.close()
+        else:
+            self.close()
+
+    def update_progress(self, val):
+        self.progress_bar.setValue(val)
+        self.percent_label.setText(f"{val}%")
+
+    def append_log(self, text):
+        self.log_box.appendPlainText(text)
+
+    def on_finished(self, success):
+        self.thread.quit()
+        if success:
+            self.stack.setCurrentIndex(2)
+            self.btn_next.setText("Launch")
+            self.btn_next.setEnabled(True)
+            self.btn_next.clicked.disconnect()
+            self.btn_next.clicked.connect(self.launch_app)
+            self.btn_cancel.hide()
+        else:
+            if hasattr(self, 'worker') and self.worker.cancelled:
+                self.close()
                 return
-            
-            # Switch context to installed location if needed
-            self.pixi_exe = ensure_pixi(target_dir, self.log)
-            if not self.pixi_exe:
-                self.log("Failed to setup Pixi.")
-                self.after(0, self.show_failure_state)
-                return
+            dlg = ModernDialog(self, "Error", "Setup failed.", f"{error_msg[:300]}\n\nPlease check logs for details.", buttons=["Close"])
+            dlg.exec()
+            self.btn_next.setText("Failed")
+            self.btn_next.setEnabled(False)
+            self.btn_cancel.setEnabled(True)
+            self.btn_cancel.setText("Close")
 
-            # 2. Run Pixi Install
-            self.log("Setting up environment (this may take a while)...")
-            
-            # Force verbose to see what's happening
-            success = run_pixi_command(self, [self.pixi_exe, "install", "-v"], cwd=target_dir)
-            if not success:
-                self.log("Environment setup failed!")
-                self.after(0, self.show_failure_state)
-                return
-            
-            # 3. Download Models
-            # We run the script inside the pixi environment
-            self.log("Checking AI Models...")
-            model_script = os.path.join(target_dir, "src", "download_models.py")
-            if os.path.exists(model_script):
-                success = run_pixi_command(self, [self.pixi_exe, "run", "python", "src/download_models.py"], cwd=target_dir)
-                if not success:
-                    self.log("Model download failed (non-critical, can retry later).")
-            else:
-                 self.log("Model setup script missing. Skipping.")
+    def launch_app(self):
+        target_exe = os.path.join(self.path_edit.text(), "Privox.exe")
+        if os.path.exists(target_exe):
+            subprocess.Popen([target_exe, "--run"], creationflags=subprocess.CREATE_NO_WINDOW)
+        self.close()
 
-            # Register Uninstaller
-            self.log("Registering uninstaller...")
-            register_uninstaller(target_dir, self.target_exe)
+# --- Helper Functions (Migrated from legacy bootstrap.py) ---
 
-            self.log("Setup Finished.")
-            
-            # 4. Finalize
-            self.after(500, lambda: self.show_page("success"))
-            
-        except Exception as e:
-            msg = f"A fatal error occurred during installation:\n\n{e}"
-            log_info(f"FATAL INSTALL ERROR: {e}")
-            self.after(0, self.show_failure_state)
-
-    def show_failure_state(self):
-        self.btn_next.config(text="Exit", state=tk.NORMAL, command=self.destroy)
-        self.btn_cancel.config(state=tk.DISABLED)
-        messagebox.showerror("Installation Failed", "Privox setup could not complete.\nCheck the logs for details.")
-
-    def launch_and_exit(self):
-        try:
-            # We always launch the installed EXE now
-            subprocess.Popen([self.target_exe, "--run"])
-            self.destroy()
-            sys.exit(0)
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to launch: {e}")
-
-# --- Helper Functions ---
-
-def ensure_pixi(base_dir, log_callback):
+def ensure_pixi(base_dir, log_cb):
     """ Checks for local pixi executable, downloads if missing. """
     internal_dir = os.path.join(base_dir, "_internal")
     pixi_dir = os.path.join(internal_dir, "pixi")
     pixi_exe = os.path.join(pixi_dir, "pixi.exe")
     
     if os.path.exists(pixi_exe):
-        log_callback("Pixi detected.")
+        log_cb("Pixi detected.")
         return pixi_exe
         
-    log_callback("Downloading Pixi (Standalone packages)...")
+    log_cb("Downloading Pixi (Standalone packages)...")
     if not os.path.exists(pixi_dir):
         os.makedirs(pixi_dir)
         
@@ -331,312 +673,207 @@ def ensure_pixi(base_dir, log_callback):
     zip_path = os.path.join(pixi_dir, "pixi.zip")
     
     try:
-        def reporthook(blocknum, blocksize, totalsize):
-            pass # simplified progress
-            
-        urllib.request.urlretrieve(url, zip_path, reporthook)
-        log_callback("Extracting Pixi...")
-        
+        urllib.request.urlretrieve(url, zip_path)
+        log_cb("Extracting Pixi...")
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
             zip_ref.extractall(pixi_dir)
-            
         os.remove(zip_path)
-            
-        if os.path.exists(pixi_exe):
-             log_callback("Pixi installed successfully.")
-             return pixi_exe
-        else:
-             log_callback("Error: pixi.exe not found in extracted archive.")
-             return None
+        return pixi_exe if os.path.exists(pixi_exe) else None
     except Exception as e:
-        log_callback(f"Pixi download error: {e}")
+        log_cb(f"Pixi download error: {e}")
         return None
 
-def run_pixi_command(gui_instance, cmd, cwd):
-    """ Runs a pixi command and streams output to GUI log. """
-    log_callback = gui_instance.log
+def install_app_files(target_dir, log_cb):
+    """ Copies the EXE and resources to the target directory. """
     try:
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        
-        process = subprocess.Popen(
-            cmd, 
-            cwd=cwd,
-            stdout=subprocess.PIPE, 
-            stderr=subprocess.STDOUT, 
-            text=True, 
-            encoding='utf-8',
-            errors='replace',
-            startupinfo=startupinfo,
-            creationflags=subprocess.CREATE_NO_WINDOW
-        )
-        gui_instance.active_process = process
-        
-        for line in process.stdout:
-            # Pixi output can be verbose, maybe filter?
-            # For now, show everything as requested
-            msg = line.strip()
-            if msg:
-                if log_callback: log_callback(msg)
-
-        process.wait()
-        gui_instance.active_process = None
-        
-        return process.returncode == 0
-    except Exception as e:
-        if log_callback: log_callback(f"Command Error: {e}")
-        return False
-
-def install_app_files(target_dir, log_callback=None):
-    """ Copies the EXE and resources to the target directory. Does NOT launch the app. """
-    try:
-        app_name = "Privox"
         exe_name = "Privox.exe"
         target_exe = os.path.join(target_dir, exe_name)
+        if not os.path.exists(target_dir): os.makedirs(target_dir)
         
-        if not os.path.exists(target_dir):
-            os.makedirs(target_dir)
-            
         current_exe = sys.executable
-        if log_callback: log_callback(f"Terminating old instances...")
+        log_cb("Preparing installation directory...")
+        
+        # Kill running instances
         try:
             my_pid = os.getpid()
-            subprocess.run(["taskkill", "/F", "/IM", "Privox.exe", "/FI", f"PID ne {my_pid}"], 
-                           creationflags=subprocess.CREATE_NO_WINDOW, capture_output=True)
-            time.sleep(1.0) 
+            # Precisely target Privox background processes instead of all python.exe
+            kill_cmd = "Get-CimInstance Win32_Process -Filter \"Name = 'python.exe' OR Name = 'pythonw.exe'\" | Where-Object { $_.CommandLine -match 'voice_input\.py' -or $_.CommandLine -match 'gui_settings\.py' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
+            subprocess.run(["powershell", "-Command", kill_cmd], creationflags=subprocess.CREATE_NO_WINDOW, capture_output=True, timeout=5)
+            
+            subprocess.run(["taskkill", "/F", "/IM", "Privox.exe", "/FI", f"PID ne {my_pid}"], creationflags=subprocess.CREATE_NO_WINDOW, capture_output=True, timeout=5)
+            time.sleep(2.0)
         except: pass
         
-        if log_callback: log_callback(f"Copying to {target_dir}...")
-        
-        import shutil
+        # Copy Core Files
         if os.path.normpath(current_exe) != os.path.normpath(target_exe):
-            try:
-                shutil.copy2(current_exe, target_exe)
-            except Exception as e:
-                # If we can't overwrite the exe, it might be running.
-                if log_callback: log_callback(f"Copy Warning (continuing): {e}")
+            shutil.copy2(current_exe, target_exe)
         
-        # Copy Assets & Config
-        config_path = os.path.join(EXE_DIR, "config.json")
-        if not os.path.exists(config_path) and getattr(sys, 'frozen', False):
-             config_path = os.path.join(sys._MEIPASS, "config.json")
-             
-        if os.path.exists(config_path):
-             shutil.copy2(config_path, os.path.join(target_dir, "config.json"))
+        # Copy Configs
+        for f in ["config.json", "pixi.toml", "pixi.lock", "uninstall.bat"]:
+            src = os.path.join(BUNDLE_DIR, f)
+            if os.path.exists(src):
+                shutil.copy2(src, os.path.join(target_dir, f))
 
-        # Copy pixi.toml (CRITICAL)
-        pixi_toml = os.path.join(EXE_DIR, "pixi.toml")
-        if not os.path.exists(pixi_toml) and getattr(sys, 'frozen', False):
-             pixi_toml = os.path.join(sys._MEIPASS, "pixi.toml")
-        
-        if os.path.exists(pixi_toml):
-            shutil.copy2(pixi_toml, os.path.join(target_dir, "pixi.toml"))
-            
-        # Copy pixi.lock if exists
-        pixi_lock = os.path.join(EXE_DIR, "pixi.lock")
-        if not os.path.exists(pixi_lock) and getattr(sys, 'frozen', False):
-             pixi_lock = os.path.join(sys._MEIPASS, "pixi.lock")
-             
-        if os.path.exists(pixi_lock):
-            shutil.copy2(pixi_lock, os.path.join(target_dir, "pixi.lock"))
-
-        for folder in ["models", "assets"]: 
-            src = os.path.join(EXE_DIR, folder)
-            if not os.path.exists(src) and getattr(sys, 'frozen', False):
-                 src = os.path.join(sys._MEIPASS, folder)
-            
+        # Copy Assets & Models
+        for folder in ["models", "assets", "src"]:
+            src = os.path.join(BUNDLE_DIR, folder)
             dst = os.path.join(target_dir, folder)
             if os.path.exists(src):
-                if log_callback: log_callback(f"Merging {folder}...")
-                if folder == "models":
-                    if not os.path.exists(dst): os.makedirs(dst)
-                    for item in os.listdir(src):
-                        s = os.path.join(src, item)
-                        d = os.path.join(dst, item)
-                        if os.path.isdir(s):
-                            if not os.path.exists(d): shutil.copytree(s, d)
-                        else:
-                            if not os.path.exists(d): shutil.copy2(s, d)
-                else:
-                    if os.path.exists(dst): 
-                        try: shutil.rmtree(dst)
-                        except: pass
-                    shutil.copytree(src, dst)
+                log_cb(f"Syncing {folder}...")
+                # use dirs_exist_ok=True to merge/overwrite files but keep existing user files
+                try:
+                    shutil.copytree(src, dst, dirs_exist_ok=True)
+                except Exception as e:
+                    log_cb(f"Warning syncing {folder}: {e}")
         
-        # Copy Source Code (needed for pixi run python ...)
-        src_dir = os.path.join(target_dir, "src")
-        if not os.path.exists(src_dir): os.makedirs(src_dir)
-        
-        for script in ["voice_input.py", "download_models.py"]:
-            script_src = os.path.join(EXE_DIR, "src", script)
-            if not os.path.exists(script_src) and getattr(sys, 'frozen', False):
-                 script_src = os.path.join(sys._MEIPASS, "src", script)
-            if os.path.exists(script_src):
-                shutil.copy2(script_src, os.path.join(src_dir, script))
-
-        # Shortcuts
-        if log_callback: log_callback("Creating Shortcuts...")
         create_shortcut(target_exe, target_dir)
         
-        return target_exe
+        # Register in Windows Settings (Add/Remove Programs)
+        log_cb("Registering uninstaller...")
+        register_uninstaller(target_dir, target_exe)
+        
+        return True
     except Exception as e:
-        if log_callback: log_callback(f"Install error: {e}")
-        return None
+        log_cb(f"Install error: {e}")
+        return False
+
 
 def create_shortcut(target_exe, target_dir):
     try:
         app_name = "Privox"
-        icon_path = os.path.join(target_dir, "assets", "icon.ico")
+        # Since Privox.exe already has the icon bundled in, refer directly to it for the shortcut icon.
+        icon_path = target_exe
+        
+        # 1. Start Menu Shortcut
         start_menu = os.path.join(os.environ['APPDATA'], 'Microsoft', 'Windows', 'Start Menu', 'Programs')
         if not os.path.exists(start_menu): os.makedirs(start_menu)
+        create_lnk(target_exe, target_dir, icon_path, os.path.join(start_menu, f"{app_name}.lnk"))
         
-        shortcut_path = os.path.join(start_menu, f"{app_name}.lnk")
-        
-        vbs_script = f"""
-        Set oWS = WScript.CreateObject("WScript.Shell")
-        sLinkFile = "{shortcut_path}"
-        Set oLink = oWS.CreateShortcut(sLinkFile)
-        oLink.TargetPath = "{target_exe}"
-        oLink.Description = "Privox AI Voice Input"
-        oLink.WorkingDirectory = "{target_dir}"
-        oLink.IconLocation = "{icon_path}"
-        oLink.Save
-        """
-        vbs_file = os.path.join(os.environ['TEMP'], f"mkshortcut_{os.getpid()}.vbs")
-        with open(vbs_file, "w") as f:
-            f.write(vbs_script)
+        # 2. Startup Folder Shortcut (Auto-Launch)
+        startup_folder = os.path.join(os.environ['APPDATA'], 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup')
+        if not os.path.exists(startup_folder): os.makedirs(startup_folder)
+        create_lnk(target_exe, target_dir, icon_path, os.path.join(startup_folder, f"{app_name}.lnk"))
+
+    except Exception as e:
+        print(f"Shortcut creation failed: {e}")
+
+
+def create_lnk(target_exe, target_dir, icon_path, lnk_path):
+    try:
+        # Added --run flag to shortcut Arguments (NOT TargetPath)
+        # oLink.WindowStyle = 7 ensures it runs minimized (hides initial flashes)
+        vbs_script = f'Set oWS = WScript.CreateObject("WScript.Shell")\nsLinkFile = "{lnk_path}"\nSet oLink = oWS.CreateShortcut(sLinkFile)\noLink.TargetPath = "{target_exe}"\noLink.Arguments = "--run"\noLink.WorkingDirectory = "{target_dir}"\noLink.IconLocation = "{icon_path},0"\noLink.WindowStyle = 7\noLink.Save'
+        vbs_file = os.path.join(os.environ['TEMP'], f"mkshortcut_{os.getpid()}_{hash(lnk_path)}.vbs")
+        with open(vbs_file, "w") as f: f.write(vbs_script)
         subprocess.call(["cscript", "//nologo", vbs_file], creationflags=subprocess.CREATE_NO_WINDOW)
-        os.remove(vbs_file)
+        if os.path.exists(vbs_file): os.remove(vbs_file)
     except: pass
 
-import winreg
-
-def is_app_running():
-    if sys.platform != 'win32': return None
-    mutex_name = "Global\\Privox_SingleInstance_Mutex"
-    handle = ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name)
-    last_error = ctypes.windll.kernel32.GetLastError()
-    if last_error == 183: # ERROR_ALREADY_EXISTS
-        return None
-    return handle
+def apply_mica_or_acrylic(window, acrylic=True):
+    if sys.platform != 'win32': return
+    try:
+        hwnd = window.effectiveWinId().value()
+        # DWMWA_SYSTEMBACKDROP_TYPE: 1=None, 2=Mica, 3=Acrylic (Tabbed), 4=MicaAlt
+        backdrop_type = ctypes.c_int(3 if acrylic else 2)
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 38, ctypes.byref(backdrop_type), 4)
+        
+        # Dark Mode Force
+        dark = ctypes.c_int(1)
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(dark), 4)
+        
+        # Caption color to black/transparent
+        black = ctypes.c_int(0x00000000)
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 35, ctypes.byref(black), 4)
+    except: pass
 
 def register_uninstaller(install_dir, exe_path):
+    if sys.platform != 'win32': return
     try:
         key_path = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Privox"
-        icon_path = os.path.join(install_dir, "assets", "icon.ico")
+        icon_path = exe_path
+        install_date = time.strftime("%Y%m%d")
+        
+        uninst_path = os.path.join(install_dir, "uninstall.bat")
+        vbs_path = os.path.join(install_dir, "uninstall.vbs")
+        if os.path.exists(vbs_path):
+             try: os.remove(vbs_path)
+             except: pass
+        
+        silent_cmd = f'powershell.exe -WindowStyle Hidden -Command "& \'{uninst_path}\' __CLEANUP__ \'{install_dir}\'"'
         
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path) as key:
             winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, "Privox")
             winreg.SetValueEx(key, "DisplayIcon", 0, winreg.REG_SZ, icon_path)
-            winreg.SetValueEx(key, "DisplayVersion", 0, winreg.REG_SZ, "1.0.0")
-            winreg.SetValueEx(key, "UninstallString", 0, winreg.REG_SZ, f"\"{exe_path}\" --uninstall")
-            winreg.SetValueEx(key, "Publisher", 0, winreg.REG_SZ, "Privox")
+            winreg.SetValueEx(key, "DisplayVersion", 0, winreg.REG_SZ, APP_VERSION)
+            winreg.SetValueEx(key, "UninstallString", 0, winreg.REG_SZ, silent_cmd)
+            winreg.SetValueEx(key, "QuietUninstallString", 0, winreg.REG_SZ, silent_cmd)
             winreg.SetValueEx(key, "InstallLocation", 0, winreg.REG_SZ, install_dir)
+            winreg.SetValueEx(key, "Publisher", 0, winreg.REG_SZ, "Privox Team")
+            winreg.SetValueEx(key, "InstallDate", 0, winreg.REG_SZ, install_date)
+            winreg.SetValueEx(key, "URLInfoAbout", 0, winreg.REG_SZ, "https://github.com/markyip/Privox")
+            winreg.SetValueEx(key, "HelpLink", 0, winreg.REG_SZ, "https://github.com/markyip/Privox")
             winreg.SetValueEx(key, "NoModify", 0, winreg.REG_DWORD, 1)
             winreg.SetValueEx(key, "NoRepair", 0, winreg.REG_DWORD, 1)
+            winreg.SetValueEx(key, "Language", 0, winreg.REG_DWORD, 1033) # US English
+            winreg.SetValueEx(key, "WindowsInstaller", 0, winreg.REG_DWORD, 0)
+            winreg.SetValueEx(key, "EstimatedSize", 0, winreg.REG_DWORD, 250000) # KB
             
-        log_info("Uninstaller registered in Registry.")
+        # Broadcast environment change to refresh Shell/Settings
+        # HWND_BROADCAST = 0xFFFF, WM_SETTINGCHANGE = 0x001A
+        # SMTO_ABORTIFHUNG = 0x0002
+        # Use SendMessageTimeoutW to avoid hanging on non-responsive applications
+        result = ctypes.wintypes.DWORD()
+        ctypes.windll.user32.SendMessageTimeoutW(
+            0xFFFF, 0x001A, 0, "Environment", 
+            0x0002, 1000, ctypes.byref(result)
+        )
     except Exception as e:
-        log_info(f"Failed to register uninstaller: {e}")
+        print(f"Failed to register uninstaller: {e}")
 
-def uninstall_app():
-    if not messagebox.askyesno("Uninstall Privox", "Are you sure you want to completely remove Privox?"):
-        sys.exit(0)
-        
-    install_dir = os.path.dirname(sys.executable)
+def run_app():
+    """ Launches the main application using Pixi environment directly to avoid terminal flash. """
+    env_pythonw = os.path.join(EXE_DIR, ".pixi", "envs", "default", "pythonw.exe")
     
-    # 0. Kill Running Instances
-    try:
-        # Kill Python (The App Logic)
-        subprocess.run(["taskkill", "/F", "/IM", "python.exe", "/T"], 
-                       creationflags=subprocess.CREATE_NO_WINDOW, capture_output=True)
+    if os.path.exists(env_pythonw):
+        # Run pythonw directly to ensure no console flashes from 'pixi run' invoking a shell
+        script_path = os.path.join(EXE_DIR, "src", "voice_input.py")
+        subprocess.Popen([env_pythonw, script_path], cwd=EXE_DIR, creationflags=subprocess.CREATE_NO_WINDOW)
+    else:
+        # Fallback to pixi run if environment isn't standard
+        internal_dir = os.path.join(EXE_DIR, "_internal")
+        pixi_exe = os.path.join(internal_dir, "pixi", "pixi.exe")
         
-        # Kill Other Privox Instances (The Launcher), excluding self
-        my_pid = os.getpid()
-        subprocess.run(["taskkill", "/F", "/FI", f"PID ne {my_pid}", "/IM", "Privox.exe"], 
-                       creationflags=subprocess.CREATE_NO_WINDOW, capture_output=True)
-        
-        # Give it a second to release file locks
-        time.sleep(1)
-    except: pass
-
-    # 1. Remove Shortcut
-    try:
-        start_menu = os.path.join(os.environ['APPDATA'], 'Microsoft', 'Windows', 'Start Menu', 'Programs')
-        lnk = os.path.join(start_menu, "Privox.lnk")
-        if os.path.exists(lnk):
-            os.remove(lnk)
-    except: pass
-    
-    # 2. Remove Registry Key
-    try:
-        key_path = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Privox"
-        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, key_path)
-    except: pass
-    
-    # 3. Self-Destruct Script
-    try:
-        # Create a batch file in TEMP to delete the installation folder after we exit
-        temp_dir = os.environ['TEMP']
-        bat_file = os.path.join(temp_dir, f"privox_nuke_{os.getpid()}.bat")
-        
-        # Determine the parent directory if we are in _internal (which we shouldn't be for single file, but safe check)
-        # Typically sys.executable is in %LOCALAPPDATA%\Privox\Privox.exe
-        target_dir = install_dir
-        
-        with open(bat_file, "w") as f:
-            f.write("@echo off\n")
-            f.write("timeout /t 3 /nobreak >nul\n") # Wait for us to exit
-            f.write(f"rmdir /s /q \"{target_dir}\"\n")
-            f.write("del \"%~f0\"\n") # Delete script itself
-            
-        subprocess.Popen([bat_file], shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
-        
-        messagebox.showinfo("Uninstall", "Privox has been removed. Cleanup will finish in a few seconds.")
-    except Exception as e:
-        messagebox.showerror("Error", f"Uninstall cleanup failed: {e}")
-        
-    sys.exit(0)
-
-def main():
-    # Handle Uninstall Flag
-    if "--uninstall" in sys.argv:
-        uninstall_app()
-
-    # Mutex Check
-    mutex_handle = is_app_running()
-    if not mutex_handle:
-        if "--run" in sys.argv:
-            sys.exit(0) # Silent exit if run mode
+        if os.path.exists(pixi_exe):
+            # We use 'pixi run start-windowless' here, but it may flash a terminal briefly
+            subprocess.Popen([pixi_exe, "run", "start-windowless"], cwd=EXE_DIR, creationflags=subprocess.CREATE_NO_WINDOW)
         else:
-            # If we are double-clicked but running, maybe bring to front?
-            # For now just exit/alert
-            messagebox.showinfo("Privox", "Another instance of Privox is already running.")
-            sys.exit(0)
-
-    # Determine if we are in an installed state
-    # Robust check: Are the local project files (Pixi, TOML) next to us?
-    exe_dir = os.path.dirname(os.path.normpath(sys.executable))
-    local_pixi = os.path.join(exe_dir, "_internal", "pixi", "pixi.exe")
-    local_toml = os.path.join(exe_dir, "pixi.toml")
-    
-    is_installed = os.path.exists(local_pixi) and os.path.exists(local_toml)
-
-    if is_installed or "--run" in sys.argv:
-        # Launch Main App via Pixi
-        if os.path.exists(local_pixi):
-            log_info(f"Launching App via Pixi: {local_pixi} run start")
-            subprocess.Popen([local_pixi, "run", "start"], cwd=exe_dir, creationflags=subprocess.CREATE_NO_WINDOW)
-            sys.exit(0)
-        else:
-            # Installation damaged or manual run flag used without install
-            # Default to GUI setup
-            pass
-            
-    # Installer Mode
-    app = InstallerGUI()
-    app.mainloop()
-            
+            print("Error: Pixi environment not found. Please reinstall.")
+            sys.exit(1)
 
 if __name__ == "__main__":
-    main()
+    if "--run" in sys.argv:
+        run_app()
+        sys.exit(0)
+        
+    mode = "install"
+    if "--uninstall" in sys.argv:
+        mode = "uninstall"
+
+    app = QApplication(sys.argv)
+    app.setStyle("Fusion")
+    
+    # Global palette setup for Fusion Dark - Transparent compatible
+    palette = QPalette()
+    palette.setColor(QPalette.Window, QColor(0, 0, 0, 0)) # Fully transparent for DWM
+    palette.setColor(QPalette.WindowText, Qt.white)
+    palette.setColor(QPalette.Base, QColor(25, 25, 25, 100))
+    palette.setColor(QPalette.AlternateBase, QColor(18, 18, 18))
+    palette.setColor(QPalette.Text, Qt.white)
+    # Remove QPalette.Button to allow QSS to take full control
+    palette.setColor(QPalette.Highlight, QColor(42, 130, 218))
+    palette.setColor(QPalette.HighlightedText, Qt.black)
+    app.setPalette(palette)
+    
+    gui = InstallerGUI(mode=mode)
+    gui.show()
+    sys.exit(app.exec())

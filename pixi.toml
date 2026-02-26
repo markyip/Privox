@@ -1,6 +1,6 @@
 [workspace]
 name = "privox"
-version = "0.1.0"
+version = "1.0"
 description = "Privox AI Assistant"
 authors = ["Mark"]
 channels = ["conda-forge", "pytorch", "nvidia"]
@@ -8,6 +8,7 @@ platforms = ["win-64"]
 
 [tasks]
 start = "python src/voice_input.py"
+start-windowless = "pythonw src/voice_input.py"
 build = "python build_app.py"
 
 [system-requirements]
@@ -28,7 +29,8 @@ ninja = "*"
 numpy = "<2.0.0" 
 pywin32 = "*"
 pyinstaller = "*"
-setuptools = "*"
+setuptools = "==69.5.1"
+llama-cpp-python = "*"
 
 
 [pypi-dependencies]
@@ -43,4 +45,6 @@ funasr = "*"
 modelscope = "*"
 scipy = "*"
 colorama = "*"
-requests = "*"
+customtkinter = "*"
+diskcache = "*"
+pyside6 = "==6.8.1"

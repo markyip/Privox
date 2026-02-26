@@ -1,14 +1,26 @@
 {
-  "asr_backend": "whisper",
-  "hotkey": "f8",
-  "sound_enabled": true,
-  "vram_timeout": 60,
-  "whisper_model": "distil-large-v3",
-  "whisper_repo": "Systran/faster-distil-whisper-large-v3",
-  "grammar_repo": "bartowski/Llama-3.2-3B-Instruct-GGUF",
-  "grammar_file": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
-  "dictation_prompt": "You are a professional writing assistant. Your goal is to refine the provided transcript into clean, professional, and grammatically correct text. \n\nCRITICAL RULES:\n1. FIX GRAMMAR: Correct English grammar and spelling errors.\n2. IMPROVE FLOW: Make the text more readable while preserving the original meaning.\n3. PUNCTUATION: Use appropriate punctuation to make thoughts clear.\n4. NO HALLUCINATION: Do not add information that was not in the original transcript.\n5. NO CONVERSATION: Output ONLY the corrected text. No explanations.\n6. Maintain the speaker's original tone and intent.\n\nHints: {dict}",
-  "auto_stop_enabled": true,
-  "silence_timeout_ms": 10000,
-  "custom_dictionary": ["Privox", "Github", "CUDA"]
+    "asr_backend": "whisper",
+    "whisper_repo": "ylpeter/faster-whisper-large-v3-turbo-cantonese-16",
+    "grammar_repo": "bartowski/Qwen2.5-3B-Instruct-GGUF",
+    "grammar_file": "Qwen2.5-3B-Instruct-Q4_K_M.gguf",
+    "refiner_profiles": {
+        "English Specialist (CoEdit)": {
+            "repo_id": "nvhf/coedit-large-Q6_K-GGUF",
+            "file_name": "coedit-large-q6_k.gguf",
+            "prompt_type": "t5",
+            "description": "Premium English refiner. 60x more efficient. No chat glitches."
+        },
+        "Multilingual (Qwen 2.5)": {
+            "repo_id": "bartowski/Qwen2.5-3B-Instruct-GGUF",
+            "file_name": "Qwen2.5-3B-Instruct-Q4_K_M.gguf",
+            "prompt_type": "llama",
+            "description": "Best for Chinese/English mix. High instruction obedience."
+        },
+        "Standard (Llama 3.2)": {
+            "repo_id": "bartowski/Llama-3.2-3B-Instruct-GGUF",
+            "file_name": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+            "prompt_type": "llama",
+            "description": "General purpose balanced refiner."
+        }
+    }
 }

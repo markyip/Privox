@@ -1,63 +1,40 @@
-# Privox v1.1.0 - GPU & Reliability Update
-
-This update focuses on making Privox more robust with a new dependency management system (Pixi), reliable GPU acceleration, and improved installation safety checks.
-
-## New in v1.1.0
-
-### 🚀 Full GPU Orchestration
-- **Explicit CUDA Targeting**: Migration to Pixi with dedicated `pytorch` and `nvidia` channels ensures the correct GPU-enabled binaries are prioritized.
-- **Improved Llama Offloading**: Assertive GPU layering (forced 33+ layers) for Llama 3.2 3B ensures maximum performance.
-- **Dynamic GPU Repair**: The installer now detects "CPU-only" LLM engines and automatically attempts a background repair using CUDA 12.4 binary wheels.
-
-### 🛡️ Installation Safety
-- **Disk Space Verification**: The installer now verifies at least **15GB of free space** before proceeding to ensure large AI models (13GB+) can be fully downloaded.
-- **Environment Isolation**: Complete migration to **Pixi** provides a fully isolated, portable Python environment that doesn't interfere with your system's global Python.
-
-### 🐛 Bug Fixes & Diagnostics
-- **Detailed Diagnostics**: Added Torch path and CUDA status reporting to startup logs to help with GPU troubleshooting.
-- **Exit Confimration Logic**: Unified the exit process to be faster and more reliable.
-
----
-
-# Privox v1.0.0 - Initial Release
+# Privox v1.0.0 - Initial Release 🚀
 
 Privox is a private, local-first voice input assistant for Windows that transcribes your speech and intelligently refines it using state-of-the-art AI models.
 
-## Core Functionality
+## ✨ Key Features
 
-### 🎙️ High-Speed Transcription
+### 🎙️ High-Precision Transcription
 
-- Powered by **Faster-Whisper (Distil-Large-v3)**.
-- Full multilingual support (Traditional Chinese/Cantonese, Mandarin, English, etc.).
-- Robust audio processing with parallel model loading for near-instant wake-up.
+- **Faster-Whisper Engine**: Blazing fast transcription using the latest AI models.
+- **True Multilingual Support**: Specialized logic for English, Cantonese, Traditional Chinese, Japanese, Korean, and more.
+- **Intelligent LID (Language Detection)**: Automatically identifies which language you are speaking with high-confidence safety thresholds to prevent unintended translations.
 
-### ✍️ Intelligent Text Refinement
+### ✍️ Intelligent "Liquid Glass" Experience
 
-- Uses **Llama-3.2-3B-Instruct** for grammar correction and perfect formatting.
-- **Text Editor Persona**: The AI focuses solely on polishing your dictation—no conversational filler or back-and-forth questions.
-- Customizable prompts to fit your personal writing style.
+- **Premium UI**: A clean, monotone "Liquid Glass" aesthetic with centered progress updates and professional typography.
+- **Smart Refiner**: Uses Llama-3.2-3B to polish your speech into grammatically perfect text while removing filler words like "uh" and "um".
+- **Custom Personas**: Choose how Privox writes—act like a Technical Writer, Engineer, or Lawyer with a single click.
 
-### 🛠️ Effortless Local Setup
+### 🛡️ Robust & Private
 
-- **Smart Installer (`bootstrap.py`)**:
-  - Automatically manages portable Python environments and GPU/CUDA dependencies.
-  - Supports **Custom Installation Paths** (install to D: drive, external disks, etc.).
-  - **Smart Model Merge**: Preserves large assets (Whisper blobs) during reinstalls/updates to save bandwidth.
+- **100% Local**: All processing happens on your computer. Your privacy is guaranteed.
+- **Self-Healing Infrastructure**: Automatically detects and repairs corrupted AI models during startup.
+- **Seamless Recovery**: If you update settings or models, Privox restarts and re-opens your settings window automatically so you can keep working.
+- **Smart Auto-Stop**: Advanced silence detection and safety timers ensure the microphone stops recording when you do.
 
-### ✨ Premium UX Features
+## 🛠️ Effortless Local Setup
 
-- **Auto-Stop**: Intelligent silence detection (10s) automatically stops recording.
-- **VRAM Saver**: Models are auto-unloaded after 60s of inactivity to free up system resources.
-- **Clipboard Fallback**: Transcribed text stays on the clipboard even after pasting, ensuring your data is never lost.
-- **Clean Audio Feedback**: High-stability, serialized beep notifications (serialized to prevent distortion).
-- **Proactive Privacy**: Local-only, optional file logging, and automatic cleanup of debug traces.
+- **Smart Installer (`bootstrap.py`)**: Automatically manages portable Python environments and GPU/CUDA dependencies.
+- **GPU Orchestration**: Built-in support for NVIDIA GPUs with automatic fallback and repair for CPU mode.
+- **Disk Safety**: Verifies space and system requirements before downloading large AI assets.
 
-## System Requirements
+## 🖥️ System Requirements
 
 - **OS**: Windows 10/11.
-- **GPU**: NVIDIA GPU (CUDA 12+) recommended for maximum performance.
-- **Disk**: ~4GB free space for models and local runtime.
+- **GPU**: NVIDIA GPU (CUDA 12+) recommended; CPU support available.
+- **Disk**: ~15GB free space for the high-quality local AI "brains".
 
 ---
 
-_Privox: Speak your mind, let AI do the typing._
+_Privox: Your voice, perfectly written._

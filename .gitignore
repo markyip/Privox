@@ -75,6 +75,7 @@ IDEAS.md
 design-system/
 .agent/
 .cursor/
+.gemini/
 
 # User Prefs
 .user_prefs.json

@@ -1,5 +1,11 @@
 # Privox 🎙️
 
+[![Python Version](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
+[![License](https://img.shields.io/badge/license-Noncommercial-green.svg)](LICENSE)
+![Platform](https://img.shields.io/badge/platform-Windows-blue?logo=windows)
+![Downloads](https://img.shields.io/github/downloads/markyip/Privox/total)
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-Donate-orange?logo=buy-me-a-coffee)](https://www.buymeacoffee.com/markyip)
+
 **Stop typing, start speaking.**
 
 Privox is your private AI writing assistant. It listens to your voice and instantly types out clear, perfectly written text in any app—from emails to chat—just like you had a professional editor by your side.

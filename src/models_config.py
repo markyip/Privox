@@ -36,8 +36,15 @@ LLM_LIBRARY = [
         "name": "Multilingual (Qwen 2.5 3B)", 
         "repo_id": "bartowski/Qwen2.5-3B-Instruct-GGUF", 
         "file_name": "Qwen2.5-3B-Instruct-Q4_K_M.gguf", 
-        "prompt_type": "llama",
+        "prompt_type": "chatml",
         "description": "Best for mixed languages and high instruction obedience."
+    },
+    {
+        "name": "Mistral Small 24B (Q4_K_M)", 
+        "repo_id": "bartowski/Mistral-Small-24B-Instruct-v0.1-GGUF", 
+        "file_name": "Mistral-Small-24B-Instruct-v0.1-Q4_K_M.gguf", 
+        "prompt_type": "llama",
+        "description": "Enterprise-grade refiner. Requires 16GB+ VRAM."
     }
 ]
 

@@ -561,12 +561,20 @@ class GrammarChecker:
 
             # Format based on model type
             if prompt_type == "t5":
-                # CoEdit / T5 style: simple instruction + input (Does not use XML wrapping naturally)
+                # CoEdit / T5 style
                 action = "Polish" if self.tone != "Natural" else "Fix grammar"
                 prompt = f"{action}: {text}"
                 stop_tokens = ["\n"]
+            elif prompt_type == "chatml":
+                # Qwen / ChatML style format
+                prompt = (
+                    f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
+                    f"<|im_start|>user\n{user_content}<|im_end|>\n"
+                    "<|im_start|>assistant\n"
+                )
+                stop_tokens = ["<|im_end|>"]
             else:
-                # Llama 3 / Qwen / Mistral style format
+                # Llama 3 / Mistral style format
                 prompt = (
                     f"<|start_header_id|>system<|end_header_id|>\n\n{system_prompt}<|eot_id|>"
                     f"<|start_header_id|>user<|end_header_id|>\n\n{user_content}<|eot_id|>"
@@ -575,7 +583,6 @@ class GrammarChecker:
                 stop_tokens = ["<|eot_id|>"]
             
             # 2. Proportional max_tokens cap to prevent runaway generation
-            # A refined output should never be drastically longer than the input.
             input_tokens_est = max(len(clean_text) // 3, len(clean_text.split()))
             max_tokens = min(1024, max(64, input_tokens_est * 4))
 
@@ -585,6 +592,9 @@ class GrammarChecker:
                 stop=stop_tokens, 
                 echo=False,
                 temperature=0.3,
+                repeat_penalty=1.2,  # Prevents "GGGG" loops
+                top_p=0.9,           # Standard nucleus sampling
+                min_p=0.05,          # High-quality filtering
             )
             raw_response = output['choices'][0]['text'].strip()
                 

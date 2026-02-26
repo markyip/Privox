@@ -8,7 +8,7 @@
 
 **Stop typing, start speaking.**
 
-Privox is your private AI writing assistant. It listens to your voice and instantly types out clear, perfectly written text in any app—from emails to chat—just like you had a professional editor by your side.
+Privox is a powerful, private, and local voice input assistant for Windows. It captures your speech, transcribes it using **Faster-Whisper**, and refines the text using **Llama 3** for perfect grammar and formatting—instantly typing the result into any application.
 
 > [!TIP]
 > **Total Privacy**: Everything stays on your computer. Your voice and your words are never shared with anyone and never leave your machine.
@@ -152,6 +152,6 @@ This is useful for names like `CUDA`, `PyTorch`, `Privox`, or any specialized te
 
 Privox is free for your **Personal & Research use**. Commercial or business use is not allowed without permission. See the [LICENSE](LICENSE) file for more details.
 
----
+## 📧 Contact
 
-_Privox: Your voice, perfectly written._
+For issues, questions, or suggestions, please open an issue on GitHub.

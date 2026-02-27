@@ -911,6 +911,16 @@ class VoiceInputApp:
                             disable_update=True
                         )
                         log_print(f"SenseVoice initialized successfully.")
+                    elif ASR_BACKEND == "qwen_asr":
+                        log_print(f"ASR Diagnostic - Initializing Qwen3ASRModel ({WHISPER_REPO}) on {device_str}...")
+                        from qwen_asr import Qwen3ASRModel
+                        # Load in 4-bit or bfloat16 based on CUDA availability
+                        self.asr_model = Qwen3ASRModel.from_pretrained(
+                            WHISPER_REPO,
+                            device_map="auto" if is_gpu else "cpu",
+                            # We deliberately OMIT forced_aligner for speed and lower VRAM
+                        )
+                        log_print(f"Qwen3ASRModel initialized successfully.")
                     else:
                         compute_type = "float16" if is_gpu else "int8"
                         from faster_whisper import WhisperModel
@@ -1617,6 +1627,16 @@ class VoiceInputApp:
                     raw_text = re.sub(r'<\|.*?\|>', '', raw_text).strip()
                 
                 log_print(f" SenseVoice Result - Raw: '{raw_text}'")
+            elif ASR_BACKEND == "qwen_asr":
+                # Qwen3-ASR (Transformers backend)
+                results = self.asr_model.transcribe(
+                    audio=audio_data.astype(np.float32),
+                    language=None, # Auto-detect
+                    return_time_stamps=False # DISABLE forced alignment
+                )
+                if results and len(results) > 0:
+                    raw_text = results[0].text
+                log_print(f" Qwen3-ASR Result: '{raw_text}'")
             else:
                 # Faster-Whisper
                 segments, info = self.asr_model.transcribe(

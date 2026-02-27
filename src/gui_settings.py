@@ -410,13 +410,33 @@ class ModernProgressDialog(QDialog):
             self.sub_status.setText(sub_text)
 
     def set_progress(self, value):
-        self.progress_bar.setValue(int(value))
+        if value <= 0:
+            # Indeterminate mode if no progress reported yet
+            self.progress_bar.setRange(0, 0)
+        else:
+            self.progress_bar.setRange(0, 100)
+            self.progress_bar.setValue(int(value))
 
-    def show_completion(self, main_text="Download Complete", sub_text="Restart required to apply changes."):
-        self.progress_bar.setVisible(False)
+    def show_completion(self, main_text="AI Setup Complete", sub_text="Restoring application background engine..."):
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(100)
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                background-color: rgba(255, 255, 255, 0.03);
+                border: 1px solid rgba(255, 255, 255, 0.05);
+                border-radius: 4px;
+            }
+            QProgressBar::chunk {
+                background-color: #00ff88;
+                border-radius: 4px;
+            }
+        """)
         self.main_status.setText(main_text)
+        self.main_status.setStyleSheet("color: #00ff88; font-size: 20px; font-weight: 800; border: none;")
         self.sub_status.setText(sub_text)
+        self.sub_status.setStyleSheet("color: white; font-size: 14px; font-weight: 500; border: none;")
         self.restart_btn.setVisible(True)
+        self.restart_btn.setFocus()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -1751,11 +1771,15 @@ class SettingsGUI(QMainWindow):
         dlg.worker = worker # Keep reference
 
         def on_status(msg):
-            # If we see "Downloading" in status, update main label
-            if "downloading" in msg.lower():
+            msg_l = msg.lower()
+            if "downloading" in msg_l:
                 dlg.set_status("Downloading Model Files", msg)
+            elif "verifying" in msg_l:
+                dlg.set_status("Verifying Local Files", msg)
+            elif "finalizing" in msg_l or "complete" in msg_l:
+                dlg.set_status("Finalizing Setup", msg)
             else:
-                dlg.set_status("Updating Models", msg)
+                dlg.set_status("Model Setup Engine", msg)
         
         def on_progress(val):
             if val > 0:

@@ -6,7 +6,15 @@ import models_config
 def log(msg):
     print(f"[ModelSetup] {msg}", flush=True)
 
-def main():
+def main(log_callback=None):
+    def log_local(msg):
+        if log_callback:
+            log_callback(msg)
+        else:
+            log(msg)
+
+    print(f"[DEBUG] download_models.main() entered with log_callback={log_callback}", flush=True)
+    log_local("Initializing model setup engine...")
     # 0. Environment Isolation
     os.environ["PYTHONNOUSERSITE"] = "1"
     import site
@@ -24,8 +32,8 @@ def main():
     # Load settings from config.json if it exists
     whisper_model_name = models_config.ASR_LIBRARY[0]["whisper_model"]
     whisper_repo = models_config.ASR_LIBRARY[0]["whisper_repo"]
-    grammar_file = models_config.LLM_LIBRARY[1]["file_name"] # Llama 3.2
-    grammar_repo = models_config.LLM_LIBRARY[1]["repo_id"]
+    grammar_file = models_config.LLM_LIBRARY[0]["file_name"] 
+    grammar_repo = models_config.LLM_LIBRARY[0]["repo_id"]
     
     config_path = os.path.join(app_data_dir, "config.json")
     if os.path.exists(config_path):
@@ -38,33 +46,37 @@ def main():
                 grammar_file = config.get("grammar_file", grammar_file)
                 grammar_repo = config.get("grammar_repo", grammar_repo)
                 asr_backend = config.get("asr_backend", "whisper")
-            log(f"Loaded tailored settings from config.json: {whisper_model_name}")
+            log_local(f"Loaded tailored settings from config.json: {whisper_model_name}")
         except Exception as e:
-            log(f"Config load error (using defaults): {e}")
+            log_local(f"Config load error (using defaults): {e}")
             asr_backend = "whisper"
 
+    log_local("[Stage 1/4] Environment verification & configuration loading...")
+    
     models_dir = os.path.join(app_data_dir, "models")
+
     if not os.path.exists(models_dir):
         os.makedirs(models_dir)
         
-    log(f"Checking AI Models (Backend: {asr_backend})...")
+    log_local(f"Checking AI Models (Backend: {asr_backend})...")
 
     # 0. SenseVoiceSmall (Alternative)
     if asr_backend == "sensevoice":
         sense_dir = os.path.join(models_dir, "SenseVoiceSmall")
         if not os.path.exists(sense_dir):
-            log("Downloading SenseVoiceSmall from ModelScope...")
+            log_local("Downloading SenseVoiceSmall from ModelScope...")
             try:
                 from modelscope.hub.snapshot_download import snapshot_download
                 snapshot_download('iic/SenseVoiceSmall', local_dir=sense_dir)
             except ImportError:
-                log("modelscope not installed. Using huggingface fallback...")
+                log_local("modelscope not installed. Using huggingface fallback...")
                 from huggingface_hub import snapshot_download
                 snapshot_download(repo_id='iic/SenseVoiceSmall', local_dir=sense_dir)
         else:
-            log("SenseVoiceSmall model present.")
+            log_local("SenseVoiceSmall model present.")
 
     # 0. Install Llama-cpp-python with CUDA support (WINDOWS/LINUX ONLY)
+    log_local("[Stage 2/4] Verifying LLM engine and CUDA dependencies...")
     # We check for version AND CUDA support. 0.2.24 (common in conda) is too old for Llama 3.2.
     is_mac = sys.platform == "darwin"
     needs_llama_install = False
@@ -115,32 +127,33 @@ def main():
                 cmd = [sys.executable, "-m", "pip", "install", "llama-cpp-python==0.3.4"]
                 
                 if has_gpu:
-                    log("Installing llama-cpp-python binary wheel (CUDA 12.4)...")
+                    log_local("Installing llama-cpp-python binary wheel (CUDA 12.4)...")
                     cmd += ["--extra-index-url", "https://abetlen.github.io/llama-cpp-python/whl/cu124"]
                 else:
-                    log("Installing llama-cpp-python (CPU-only)...")
+                    log_local("Installing llama-cpp-python (CPU-only)...")
                 
                 cmd += [
                     "--no-input",
                     "--no-cache-dir",
-                    "--force-reinstall",
                     "--only-binary=:all:",
                     "--no-deps"
                 ]
                 
-                subprocess.check_call(cmd, env=env)
-                log("llama-cpp-python installed successfully.")
+                subprocess.check_call(cmd, env=env, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+                log_local("llama-cpp-python installed successfully.")
             except subprocess.CalledProcessError as e:
-                log(f"CRITICAL: Failed to install llama-cpp-python: {e}")
+                log_local(f"CRITICAL: Failed to install llama-cpp-python: {e}")
                 pass
+
             
     try:
         from huggingface_hub import hf_hub_download, snapshot_download
     except ImportError:
-        log("Error: huggingface_hub not installed in environment.")
+        log_local("Error: huggingface_hub not installed in environment.")
         sys.exit(1)
 
     # 1. Grammar Model (Llama)
+    log_local("[Stage 3/4] Verifying LLM Grammar Model files...")
     if is_mac:
         # macOS uses MLX, meaning we need the whole repo snapshot, not just a .gguf file
         # Default MLX Llama 3.2 3B Repo
@@ -162,6 +175,7 @@ def main():
             log(f"Grammar Model {grammar_file} present.")
 
     # 2. Whisper Model (Faster-Whisper Format)
+    log_local("[Stage 4/4] Verifying Transcription Model files (Whisper)...")
     whisper_target = os.path.join(models_dir, "whisper-" + whisper_model_name)
     
     # Check for repo-specific tag to force redownload if we switched repos
@@ -180,7 +194,7 @@ def main():
     if existing_repo != whisper_repo:
             needs_download = True
             if os.path.exists(whisper_target):
-                log(f"Repository mismatch ({existing_repo} vs {whisper_repo}). Clearing old model data...")
+                log_local(f"Repository mismatch ({existing_repo} vs {whisper_repo}). Clearing old model data...")
                 try:
                     shutil.rmtree(whisper_target)
                     os.makedirs(whisper_target)
@@ -195,11 +209,10 @@ def main():
                 break
                 
     if needs_download:
-        log(f"Downloading Whisper Model ({whisper_model_name}) from {whisper_repo}...")
+        log_local(f"Downloading Whisper Model ({whisper_model_name}) from {whisper_repo}...")
         snapshot_download(
             repo_id=whisper_repo, 
-            local_dir=whisper_target,
-            local_dir_use_symlinks=False
+            local_dir=whisper_target
         )
         # Save the repo tag so we don't redownload again if successful
         try:
@@ -207,7 +220,7 @@ def main():
                 f.write(whisper_repo)
         except: pass
         
-    log("Model downloads complete.")
+    log_local("Model setup complete.")
 
 if __name__ == "__main__":
     main()

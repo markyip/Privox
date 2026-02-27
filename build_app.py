@@ -34,6 +34,11 @@ pyinstaller_args = [
     '--add-data=src/models_config.py:src' if is_mac else '--add-data=src/models_config.py;src',
     '--add-data=pixi.toml:.' if is_mac else '--add-data=pixi.toml;.',
     '--add-data=pixi.lock:.' if is_mac else '--add-data=pixi.lock;.',
+    '--add-data=uninstall.bat:.' if is_mac else '--add-data=uninstall.bat;.',
+    '--add-data=config.json:.' if is_mac else '--add-data=config.json;.',
+    '--version-file=version_info.txt' if not is_mac else '',
+    '--manifest=assets/privox.manifest' if not is_mac else '',
+
     
     # Explicit Exclusions (Heavy Libs handled by Bootstrap)
     '--exclude-module=torch',

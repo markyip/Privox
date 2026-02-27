@@ -70,9 +70,9 @@ if IS_WIN:
         os.add_dll_directory(dll_path)
 
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QLineEdit, QProgressBar, QPlainTextEdit,
-    QStackedWidget, QFileDialog, QMessageBox, QFrame, QSizePolicy
+    QStackedWidget, QFileDialog, QMessageBox, QFrame, QSizePolicy, QDialog
 )
 from PySide6.QtGui import QIcon, QFont, QColor, QPalette
 from PySide6.QtCore import Qt, QSize, Signal, QObject, QThread, QPropertyAnimation, QEasingCurve, QSequentialAnimationGroup, QParallelAnimationGroup, QPoint
@@ -87,8 +87,10 @@ os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 # Paths
 if getattr(sys, 'frozen', False):
     EXE_DIR = os.path.dirname(sys.executable)
+    BUNDLE_DIR = sys._MEIPASS
 else:
     EXE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    BUNDLE_DIR = EXE_DIR
 
 os.chdir(EXE_DIR)
 
@@ -245,6 +247,99 @@ def apply_dark_title_bar(window):
     except:
         pass
 
+class ModernDialog(QDialog):
+    """Simplified ModernDialog for Bootstrap bootstrap to maintain standalone nature."""
+    def __init__(self, parent=None, title="PRIVOX", message="", subtext="", buttons=["OK"]):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.container = QFrame()
+        self.container.setStyleSheet("""
+            QFrame {
+                background-color: rgba(18, 18, 18, 0.98);
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                border-radius: 16px;
+            }
+        """)
+        container_layout = QVBoxLayout(self.container)
+        container_layout.setContentsMargins(32, 28, 32, 28)
+        container_layout.setSpacing(18)
+        
+        # Title Bar
+        title_bar = QHBoxLayout()
+        title_lbl = QLabel(title.upper())
+        title_lbl.setStyleSheet("font-weight: 900; color: rgba(255, 255, 255, 0.4); font-size: 10px; letter-spacing: 2px; border: none;")
+        title_bar.addWidget(title_lbl)
+        title_bar.addStretch()
+        
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(24, 24)
+        close_btn.setStyleSheet("QPushButton { border: none; color: #666666; font-size: 16px; background: transparent; } QPushButton:hover { color: #ffffff; }")
+        close_btn.clicked.connect(self.reject)
+        title_bar.addWidget(close_btn)
+        container_layout.addLayout(title_bar)
+        
+        # Content
+        msg_lbl = QLabel(message)
+        msg_lbl.setStyleSheet("color: #ffffff; font-size: 16px; font-weight: 500; border: none;")
+        msg_lbl.setWordWrap(True)
+        container_layout.addWidget(msg_lbl)
+        
+        if subtext:
+            sub_lbl = QLabel(subtext)
+            sub_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.5); font-size: 13px; border: none;")
+            sub_lbl.setWordWrap(True)
+            container_layout.addWidget(sub_lbl)
+        
+        # Buttons
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(10)
+        btn_layout.addStretch()
+        
+        for btn_text in buttons:
+            btn = QPushButton(btn_text)
+            btn.setMinimumHeight(42)
+            btn.setMinimumWidth(100)
+            btn.setCursor(Qt.PointingHandCursor)
+            
+            is_primary = btn_text in ["Save", "OK", "INSTALL", "Launch", "Yes"] or (btn_text == buttons[-1] and len(buttons) > 1)
+            
+            if is_primary:
+                btn.setStyleSheet("""
+                    QPushButton { background-color: #ffffff; color: #000000; border-radius: 8px; font-weight: 800; padding: 0 24px; font-size: 13px; }
+                    QPushButton:hover { background-color: rgba(255, 255, 255, 0.85); }
+                """)
+            else:
+                btn.setStyleSheet("""
+                    QPushButton { background-color: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1); color: #ffffff; border-radius: 8px; font-weight: 600; padding: 0 20px; font-size: 13px; }
+                    QPushButton:hover { background-color: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.2); }
+                """)
+            
+            if btn_text in ["Yes", "OK", "INSTALL", "Launch"]:
+                btn.clicked.connect(lambda ch=None, b=btn_text: self.done(1))
+            else:
+                btn.clicked.connect(self.reject)
+            
+            btn_layout.addWidget(btn)
+        
+        container_layout.addLayout(btn_layout)
+        layout.addWidget(self.container)
+        
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() == Qt.LeftButton and hasattr(self, 'drag_pos'):
+            self.move(event.globalPosition().toPoint() - self.drag_pos)
+            event.accept()
+
+
 class InstallerGUI(QMainWindow):
     def __init__(self, mode="install"):
         super().__init__()
@@ -253,9 +348,7 @@ class InstallerGUI(QMainWindow):
         self.setFixedSize(700, 600) # Slightly larger for Swiss spacing
         
         # Favicon
-        icon_path = os.path.join(EXE_DIR, "assets", "icon.ico")
-        if not os.path.exists(icon_path) and getattr(sys, 'frozen', False):
-             icon_path = os.path.join(sys._MEIPASS, "assets", "icon.ico")
+        icon_path = os.path.join(BUNDLE_DIR, "assets", "icon.ico")
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
             
@@ -336,7 +429,7 @@ class InstallerGUI(QMainWindow):
         self.bottom_bar = QFrame()
         self.bottom_bar.setObjectName("bottom_bar")
         self.bottom_bar.setFixedHeight(80)
-        self.bottom_bar.setStyleSheet("QFrame#bottom_bar { background-color: rgba(20, 20, 20, 0.4); border-top: 1px solid rgba(255, 255, 255, 0.05); }")
+        self.bottom_bar.setStyleSheet("QFrame#bottom_bar { background-color: rgba(20, 20, 20, 0.4); border-top: 1px solid rgba(255, 255, 255, 0.05); border-bottom-left-radius: 12px; border-bottom-right-radius: 12px; }")
         bottom_layout = QHBoxLayout(self.bottom_bar)
         bottom_layout.setContentsMargins(40, 0, 40, 0)
         bottom_layout.setSpacing(16)
@@ -465,7 +558,7 @@ class InstallerGUI(QMainWindow):
                 text-align: center; 
             }
             QProgressBar::chunk { 
-                background-color: #ffffff; 
+                background-color: #ffffff;
                 border-radius: 6px;
             }
             QPlainTextEdit { 
@@ -620,10 +713,9 @@ class InstallerGUI(QMainWindow):
 
     def on_cancel_clicked(self):
         if hasattr(self, 'worker') and self.worker and self.thread.isRunning():
-            res = QMessageBox.question(self, "Cancel Installation", "Are you sure you want to stop the installation?", QMessageBox.Yes | QMessageBox.No)
-            if res == QMessageBox.Yes:
+            dlg = ModernDialog(self, "Cancel Setup", "Are you sure you want to stop?", "Progress will be lost.", buttons=["No", "Yes"])
+            if dlg.exec() == 1:
                 self.worker.stop()
-                # Close immediately to feel responsive
                 self.close()
         else:
             self.close()
@@ -648,7 +740,8 @@ class InstallerGUI(QMainWindow):
             if hasattr(self, 'worker') and self.worker.cancelled:
                 self.close()
                 return
-            QMessageBox.critical(self, "Error", "Installation failed. Check logs.")
+            dlg = ModernDialog(self, "Error", "Setup failed.", f"{error_msg[:300]}\n\nPlease check logs for details.", buttons=["Close"])
+            dlg.exec()
             self.btn_next.setText("Failed")
             self.btn_next.setEnabled(False)
             self.btn_cancel.setEnabled(True)
@@ -815,7 +908,8 @@ def create_shortcut(target_exe, target_dir):
     if sys.platform != 'win32': return
     try:
         app_name = "Privox"
-        icon_path = os.path.join(target_dir, "assets", "icon.ico")
+        # Since Privox.exe already has the icon bundled in, refer directly to it for the shortcut icon.
+        icon_path = target_exe
         
         # 1. Start Menu Shortcut
         start_menu = os.path.join(os.environ['APPDATA'], 'Microsoft', 'Windows', 'Start Menu', 'Programs')
@@ -865,12 +959,16 @@ def register_uninstaller(install_dir, exe_path):
     try:
         import winreg
         key_path = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Privox"
-        icon_path = os.path.join(install_dir, "assets", "icon.ico")
+        icon_path = exe_path
         install_date = time.strftime("%Y%m%d")
         
         uninst_path = os.path.join(install_dir, "uninstall.bat")
-        # Use PowerShell to launch the batch file hidden to avoid initial console flicker
-        silent_cmd = f'powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -Command "& \'{uninst_path}\'"'
+        vbs_path = os.path.join(install_dir, "uninstall.vbs")
+        if os.path.exists(vbs_path):
+             try: os.remove(vbs_path)
+             except: pass
+        
+        silent_cmd = f'powershell.exe -WindowStyle Hidden -Command "& \'{uninst_path}\' __CLEANUP__ \'{install_dir}\'"'
         
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path) as key:
             winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, "Privox")

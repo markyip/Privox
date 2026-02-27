@@ -206,22 +206,22 @@ class AccessibleToggleGroup(QWidget):
             color: #000000;
             border: 2px solid #ffffff;
             border-radius: 8px;
-            font-size: 14px;
+            font-size: 13px;
             font-weight: 700;
-            padding: 10px 16px;
-            min-height: 44px;
+            padding: 6px 10px;
+            min-height: 38px;
         }
     """
     UNCHECKED_STYLE = """
         QPushButton {
             background-color: transparent;
             color: #cccccc;
-            border: 1px solid rgba(255, 255, 255, 0.28);
+            border: 1px solid rgba(255, 255, 255, 0.22);
             border-radius: 8px;
-            font-size: 14px;
+            font-size: 13px;
             font-weight: 500;
-            padding: 10px 16px;
-            min-height: 44px;
+            padding: 6px 10px;
+            min-height: 38px;
         }
         QPushButton:hover {
             background-color: rgba(255, 255, 255, 0.09);
@@ -301,13 +301,22 @@ class AccessibleToggleGroup(QWidget):
             super().keyPressEvent(event)
 
 
-class ModernConfirmDialog(QDialog):
-    def __init__(self, parent=None, title="Confirm", message="Save changes?"):
-=======
+class NavigablePlainTextEdit(QPlainTextEdit):
+    """QPlainTextEdit that allows Tab/Shift+Tab navigation to move focus."""
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Tab:
+            self.focusNextChild()
+            event.accept()
+        elif event.key() == Qt.Key_Backtab: # Shift + Tab
+            self.focusPreviousChild()
+            event.accept()
+        else:
+            super().keyPressEvent(event)
+
+
 class ModernDialog(QDialog):
     """Refined generic dialog for alerts and confirmations with a premium feel."""
     def __init__(self, parent=None, title="PRIVOX", message="", subtext="", buttons=["OK"]):
->>>>>>> main
         super().__init__(parent)
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -1087,6 +1096,10 @@ class SettingsGUI(QMainWindow):
         # 4: LLM Label, 5: LLM Combo -> Insert LLM Info at 6
         ai_layout.insertWidget(3, self.asr_info)
         ai_layout.insertWidget(6, self.llm_info)
+        
+        # Add small vertical spacers for breathing room
+        ai_layout.insertSpacing(4, 10)
+        ai_layout.insertSpacing(8, 10)
 
         layout.addWidget(ai_group)
 
@@ -1124,7 +1137,7 @@ class SettingsGUI(QMainWindow):
         prompt_header.setAccessibleName("Custom instructions label")
         layout.addWidget(prompt_header)
 
-        self.prompt_editor = QPlainTextEdit()
+        self.prompt_editor = NavigablePlainTextEdit()
         self.prompt_editor.setPlaceholderText("Enter custom instructions here...")
         self.prompt_editor.setAccessibleName("Custom instructions editor")
         self.prompt_editor.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -1153,8 +1166,8 @@ class SettingsGUI(QMainWindow):
             }
         """)
         vbox = QVBoxLayout(group)
-        vbox.setContentsMargins(22, 20, 22, 20)
-        vbox.setSpacing(12)
+        vbox.setContentsMargins(22, 22, 22, 22)
+        vbox.setSpacing(14)
 
         header = QLabel(title)
         header.setStyleSheet("font-weight: 800; color: rgba(255, 255, 255, 0.65); border: none; font-size: 13px; letter-spacing: 1.5px; margin-bottom: 6px;")
@@ -2001,6 +2014,8 @@ class SettingsGUI(QMainWindow):
                     self.prefs["current_refiner"] = old_llm
                     with open(self.prefs_path, "w", encoding="utf-8") as f:
                         json.dump(self.prefs, f, indent=4)
+                    # SYNC UI after restoration
+                    self.load_initial_state()
                 except: pass
 
                 dlg.reject()

@@ -912,6 +912,16 @@ class VoiceInputApp:
                             disable_update=True
                         )
                         log_print(f"SenseVoice initialized successfully.")
+                    elif ASR_BACKEND == "qwen_asr":
+                        log_print(f"ASR Diagnostic - Initializing Qwen3ASRModel ({WHISPER_REPO}) on {device_str}...")
+                        from qwen_asr import Qwen3ASRModel
+                        # Load in 4-bit or bfloat16 based on CUDA availability
+                        self.asr_model = Qwen3ASRModel.from_pretrained(
+                            WHISPER_REPO,
+                            device_map="auto" if is_gpu else "cpu",
+                            # We deliberately OMIT forced_aligner for speed and lower VRAM
+                        )
+                        log_print(f"Qwen3ASRModel initialized successfully.")
                     else:
                         compute_type = "float16" if is_gpu else "int8"
                         from faster_whisper import WhisperModel
@@ -1158,16 +1168,15 @@ class VoiceInputApp:
             # Find in library
             WHISPER_REPO = "Systran/faster-distil-whisper-large-v3" # Defaults
             WHISPER_SIZE = "distil-large-v3"
+            ASR_BACKEND = "whisper"
 
             for asr in self.asr_library:
                 if asr["name"] == active_asr:
                     # Sync with library technical names
                     WHISPER_REPO = asr.get("whisper_repo") or asr.get("repo")
                     WHISPER_SIZE = asr.get("whisper_model") or asr.get("name")
-                    # REMOVED recursive usage tracking here
+                    ASR_BACKEND = asr.get("backend", "whisper")
                     break
-
-            ASR_BACKEND = "whisper"
             
             # REMOVED cleanup_stale_models from here to prevent recursive reload loops
 
@@ -1185,8 +1194,14 @@ class VoiceInputApp:
             full_path = os.path.join(BASE_DIR, local_path)
             if os.path.isdir(full_path):
                 # Basic signature check
-                if model_type == "asr" and os.path.exists(os.path.join(full_path, "model.bin")):
-                    return True
+                if model_type == "asr":
+                    backend = model_data.get("backend", "whisper")
+                    if backend == "whisper" and os.path.exists(os.path.join(full_path, "model.bin")):
+                        return True
+                    if backend == "qwen_asr" and os.path.exists(os.path.join(full_path, "config.json")):
+                        return True
+                    if backend == "sensevoice" and (os.path.exists(os.path.join(full_path, "model.pt")) or os.path.exists(os.path.join(full_path, "config.yaml"))):
+                        return True
                 if model_type == "llm" and any(f.endswith(".gguf") for f in os.listdir(full_path)):
                     return True
             return False
@@ -1619,6 +1634,16 @@ class VoiceInputApp:
                     raw_text = re.sub(r'<\|.*?\|>', '', raw_text).strip()
                 
                 log_print(f" SenseVoice Result - Raw: '{raw_text}'")
+            elif ASR_BACKEND == "qwen_asr":
+                # Qwen3-ASR (Transformers backend)
+                results = self.asr_model.transcribe(
+                    audio=audio_data.astype(np.float32),
+                    language=None, # Auto-detect
+                    return_time_stamps=False # DISABLE forced alignment as requested
+                )
+                if results and len(results) > 0:
+                    raw_text = results[0].text
+                log_print(f" Qwen3-ASR Result: '{raw_text}'")
             else:
                 # Faster-Whisper
                 segments, info = self.asr_model.transcribe(

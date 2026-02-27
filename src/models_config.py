@@ -13,7 +13,8 @@ ASR_LIBRARY = [
     {"name": "Whisper Large v3 Turbo (French)", "whisper_repo": "Mathos34400/whisper-large-v3-turbo-french-v6", "whisper_model": "large-v3-turbo", "repo": "Mathos34400/whisper-large-v3-turbo-french-v6", "description": "State-of-the-art French transcription with anti-overfitting optimization."},
     {"name": "Whisper Large v3 Turbo (Japanese)", "whisper_repo": "XA9/faster-whisper-large-v3-ja", "whisper_model": "large-v3-turbo", "repo": "XA9/faster-whisper-large-v3-ja", "description": "Superior Japanese performance with CTranslate2 optimization."},
     {"name": "Whisper Large v2 (Hindi)", "whisper_repo": "collabora/faster-whisper-large-v2-hindi", "whisper_model": "large-v2", "repo": "collabora/faster-whisper-large-v2-hindi", "description": "Fine-tuned for Hindi. Optimized for mixed-code (Hinglish)."},
-    {"name": "Whisper Large v3 Turbo (Multilingual)", "whisper_repo": "deepdml/faster-whisper-large-v3-turbo-ct2", "whisper_model": "large-v3-turbo", "repo": "deepdml/faster-whisper-large-v3-turbo-ct2", "description": "State-of-the-art multilingual model. Excellent for Singlish, Arabic, and diverse accents."}
+    {"name": "Whisper Large v3 Turbo (Multilingual)", "whisper_repo": "deepdml/faster-whisper-large-v3-turbo-ct2", "whisper_model": "large-v3-turbo", "repo": "deepdml/faster-whisper-large-v3-turbo-ct2", "description": "State-of-the-art multilingual model. Excellent for Singlish, Arabic, and diverse accents."},
+    {"name": "Qwen3-ASR 1.7B (Multilingual)", "whisper_repo": "Qwen/Qwen3-ASR-1.7B", "whisper_model": "qwen3-asr-1.7b", "repo": "Qwen/Qwen3-ASR-1.7B", "backend": "qwen_asr", "description": "High-performance transformer-based ASR from Alibaba. Best-in-class for short/medium phrases."}
 ]
 
 # --- Refiner (LLM) Library ---
@@ -121,6 +122,7 @@ CRITICAL RULES:
 8. NO TRANSLATION: Output MUST be in the same language as the input transcript.
 9. NUMBER FORMATTING: Convert spoken numbers, dates, and times into standardized digits/formats (e.g., "$100", "May 25th", "7:30 PM").
 10. ITN: Use digits for measurements, currency, and addresses to improve scannability.
+11. LANGUAGE BLENDING (CODE-SWITCHING): Support transcripts that mix multiple languages (e.g., English and Chinese). Refine each part according to its respective grammar while maintaining the natural flow of the mix. Do NOT translate the whole text into a single language.
 """
 
 # --- language-specific Few-Shot Examples ---
@@ -198,6 +200,12 @@ Output: <refined>{struct_ex['output']}</refined>
 [Transcript]: uhh how do i fix this bug in my code
 Output: <refined>How do I fix this bug in my code?</refined>
 </example_3>
+
+<example_4>
+[Core Directive]: Refine this text for clarity.
+[Transcript]: 我想同你 discuss 一下聽日個 presentation 的 details
+Output: <refined>我想同你 discuss 一下聽日個 presentation 的 details。</refined>
+</example_4>
 """
     return formatter
 

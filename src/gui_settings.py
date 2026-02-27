@@ -183,6 +183,19 @@ class ModernComboBox(QComboBox):
             }}
         """)
 
+class NavigablePlainTextEdit(QPlainTextEdit):
+    """QPlainTextEdit that allows Tab/Shift+Tab navigation to move focus."""
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Tab:
+            self.focusNextChild()
+            event.accept()
+        elif event.key() == Qt.Key_Backtab: # Shift + Tab
+            self.focusPreviousChild()
+            event.accept()
+        else:
+            super().keyPressEvent(event)
+
+
 class ModernDialog(QDialog):
     """Refined generic dialog for alerts and confirmations with a premium feel."""
     def __init__(self, parent=None, title="PRIVOX", message="", subtext="", buttons=["OK"]):
@@ -947,7 +960,9 @@ class SettingsGUI(QMainWindow):
         # Add info labels to group layout
         ai_layout = ai_group.layout()
         ai_layout.insertWidget(2, self.asr_info) # After ASR Label
-        ai_layout.insertWidget(5, self.llm_info) # After LLM Label (Label is pushed to 4)
+        ai_layout.insertSpacing(3, 8)
+        ai_layout.insertWidget(5, self.llm_info) # After LLM Label
+        ai_layout.insertSpacing(6, 8)
         
         layout.addWidget(ai_group)
 
@@ -971,7 +986,7 @@ class SettingsGUI(QMainWindow):
         prompt_header.setStyleSheet("font-size: 14px; font-weight: bold; color: #ffffff; margin-top: 5px;")
         layout.addWidget(prompt_header)
         
-        self.prompt_editor = QPlainTextEdit()
+        self.prompt_editor = NavigablePlainTextEdit()
         self.prompt_editor.setPlaceholderText("Enter custom instructions here...")
         self.prompt_editor.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         # Deep smoky look for editor
@@ -997,8 +1012,8 @@ class SettingsGUI(QMainWindow):
             }
         """)
         vbox = QVBoxLayout(group)
-        vbox.setContentsMargins(20, 16, 20, 16) # Reduced from 24
-        vbox.setSpacing(6) # Significantly reduced from 16
+        vbox.setContentsMargins(22, 22, 22, 22)
+        vbox.setSpacing(14)
         
         header = QLabel(title)
         header.setStyleSheet("font-weight: 800; color: rgba(255, 255, 255, 0.6); border: none; font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase;")
@@ -1760,6 +1775,8 @@ class SettingsGUI(QMainWindow):
                     self.prefs["current_refiner"] = old_llm
                     with open(self.prefs_path, "w", encoding="utf-8") as f:
                         json.dump(self.prefs, f, indent=4)
+                    # SYNC UI after restoration
+                    self.load_initial_state()
                 except: pass
 
                 dlg.reject()

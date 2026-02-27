@@ -13,7 +13,8 @@ ASR_LIBRARY = [
     {"name": "Whisper Large v3 Turbo (French)", "whisper_repo": "Mathos34400/whisper-large-v3-turbo-french-v6", "whisper_model": "large-v3-turbo", "repo": "Mathos34400/whisper-large-v3-turbo-french-v6", "description": "State-of-the-art French transcription with anti-overfitting optimization."},
     {"name": "Whisper Large v3 Turbo (Japanese)", "whisper_repo": "XA9/faster-whisper-large-v3-ja", "whisper_model": "large-v3-turbo", "repo": "XA9/faster-whisper-large-v3-ja", "description": "Superior Japanese performance with CTranslate2 optimization."},
     {"name": "Whisper Large v2 (Hindi)", "whisper_repo": "collabora/faster-whisper-large-v2-hindi", "whisper_model": "large-v2", "repo": "collabora/faster-whisper-large-v2-hindi", "description": "Fine-tuned for Hindi. Optimized for mixed-code (Hinglish)."},
-    {"name": "Whisper Large v3 Turbo (Multilingual)", "whisper_repo": "deepdml/faster-whisper-large-v3-turbo-ct2", "whisper_model": "large-v3-turbo", "repo": "deepdml/faster-whisper-large-v3-turbo-ct2", "description": "State-of-the-art multilingual model. Excellent for Singlish, Arabic, and diverse accents."}
+    {"name": "Whisper Large v3 Turbo (Multilingual)", "whisper_repo": "deepdml/faster-whisper-large-v3-turbo-ct2", "whisper_model": "large-v3-turbo", "repo": "deepdml/faster-whisper-large-v3-turbo-ct2", "description": "State-of-the-art multilingual model. Excellent for Singlish, Arabic, and diverse accents."},
+    {"name": "Qwen3-ASR 1.7B (Multilingual)", "whisper_repo": "Qwen/Qwen3-ASR-1.7B", "whisper_model": "qwen3-asr-1.7b", "repo": "Qwen/Qwen3-ASR-1.7B", "backend": "qwen_asr", "description": "High-performance transformer-based ASR from Alibaba. Best-in-class for short/medium phrases."}
 ]
 
 # --- Refiner (LLM) Library ---

@@ -53,6 +53,7 @@ def main(log_callback=None):
     
     models_dir = os.path.join(target_base_dir, "models")
     if not os.path.exists(models_dir):
+        log_local(f"Creating models directory: {models_dir}")
         os.makedirs(models_dir)
         
     log_local(f"Checking AI Models (Backend: {asr_backend})...")
@@ -151,9 +152,11 @@ def main(log_callback=None):
     log_local("[Stage 3/4] Verifying LLM Grammar Model files...")
     if not os.path.exists(os.path.join(models_dir, grammar_file)):
         log_local(f"Downloading Grammar Model ({grammar_file})...")
+        log_local(f"Source Repo: {grammar_repo}")
         # If this fails (e.g., 401 Unauthorized or 404 Not Found),
         # it will now raise an exception, crash the script, and alert the GUI.
         hf_hub_download(repo_id=grammar_repo, filename=grammar_file, local_dir=models_dir)
+        log_local("Grammar Model download complete.")
     else:
         log_local(f"Grammar Model {grammar_file} present.")
 
@@ -193,17 +196,20 @@ def main(log_callback=None):
                 
     if needs_download:
         log_local(f"Downloading Whisper Model ({whisper_model_name}) from {whisper_repo}...")
+        log_local("Note: Large models (3GB+) may take several minutes. Please wait.")
         snapshot_download(
             repo_id=whisper_repo, 
             local_dir=whisper_target
         )
         # Save the repo tag so we don't redownload again if successful
+        log_local("Finalizing Whisper model setup...")
         try:
             with open(repo_tag_file, "w") as f:
                 f.write(whisper_repo)
         except: pass
+        log_local("Whisper Model setup complete.")
         
-    log_local("Model setup complete.")
+    log_local("All AI models are verified and ready.")
 
 if __name__ == "__main__":
     main()

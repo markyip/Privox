@@ -16,13 +16,6 @@ cuda = "12"
 
 [dependencies]
 python = ">=3.10,<3.13" # Support Python 3.10-3.12
-# Switch to unpinned channels to let conda-forge align versions (fixes Py3.12 libcublas conflict)
-pytorch = { version = "==2.5.1", channel = "pytorch" }
-pytorch-cuda = { version = "12.4.*", channel = "pytorch" }
-torchaudio = { version = "==2.5.1", channel = "pytorch" }
-torchvision = { version = "*", channel = "pytorch" }
-cuda-toolkit = { version = "12.4.*", channel = "nvidia" }
-cudnn = { version = "9.*", channel = "nvidia" }
 pip = "*"
 cmake = "*"
 ninja = "*"
@@ -48,3 +41,8 @@ colorama = "*"
 customtkinter = "*"
 diskcache = "*"
 pyside6 = "==6.8.1"
+pyttsx3 = "*"
+qwen-asr = "*"
+torch = { version = "==2.6.0+cu124", index = "https://download.pytorch.org/whl/cu124" }
+torchaudio = { version = "==2.6.0+cu124", index = "https://download.pytorch.org/whl/cu124" }
+torchvision = { version = "==0.21.0+cu124", index = "https://download.pytorch.org/whl/cu124" }

@@ -74,7 +74,10 @@ class StderrInterceptor:
         self.pct_re = re.compile(r"(\d+(?:\.\d+)?)%")
         
     def write(self, s):
-        self.orig.write(s)
+        if self.orig:
+            try:
+                self.orig.write(s)
+            except: pass
         self.buffer += s
         if '\r' in self.buffer or '\n' in self.buffer:
             matches = self.pct_re.findall(self.buffer)
@@ -83,7 +86,10 @@ class StderrInterceptor:
             self.buffer = ""
             
     def flush(self):
-        self.orig.flush()
+        if self.orig and hasattr(self.orig, 'flush'):
+            try:
+                self.orig.flush()
+            except: pass
 
 class ModelUpdateWorker(QObject):
     def __init__(self, signals):
@@ -182,6 +188,19 @@ class ModernComboBox(QComboBox):
                 border-radius: 8px;
             }}
         """)
+
+class NavigablePlainTextEdit(QPlainTextEdit):
+    """QPlainTextEdit that allows Tab/Shift+Tab navigation to move focus."""
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Tab:
+            self.focusNextChild()
+            event.accept()
+        elif event.key() == Qt.Key_Backtab: # Shift + Tab
+            self.focusPreviousChild()
+            event.accept()
+        else:
+            super().keyPressEvent(event)
+
 
 class ModernDialog(QDialog):
     """Refined generic dialog for alerts and confirmations with a premium feel."""
@@ -397,13 +416,33 @@ class ModernProgressDialog(QDialog):
             self.sub_status.setText(sub_text)
 
     def set_progress(self, value):
-        self.progress_bar.setValue(int(value))
+        if value <= 0:
+            # Indeterminate mode if no progress reported yet
+            self.progress_bar.setRange(0, 0)
+        else:
+            self.progress_bar.setRange(0, 100)
+            self.progress_bar.setValue(int(value))
 
-    def show_completion(self, main_text="Download Complete", sub_text="Restart required to apply changes."):
-        self.progress_bar.setVisible(False)
+    def show_completion(self, main_text="AI Setup Complete", sub_text="Restoring application background engine..."):
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(100)
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                background-color: rgba(255, 255, 255, 0.03);
+                border: 1px solid rgba(255, 255, 255, 0.05);
+                border-radius: 4px;
+            }
+            QProgressBar::chunk {
+                background-color: #00ff88;
+                border-radius: 4px;
+            }
+        """)
         self.main_status.setText(main_text)
+        self.main_status.setStyleSheet("color: #00ff88; font-size: 20px; font-weight: 800; border: none;")
         self.sub_status.setText(sub_text)
+        self.sub_status.setStyleSheet("color: white; font-size: 14px; font-weight: 500; border: none;")
         self.restart_btn.setVisible(True)
+        self.restart_btn.setFocus()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -503,16 +542,16 @@ class SettingsGUI(QMainWindow):
         if self.prefs.get("whisper_model") == "distil-large-v3":
             self.prefs["whisper_model"] = "Distil-Whisper Large v3 (English)"
         if self.prefs.get("current_refiner") == "Standard (Llama 3.2)":
-            self.prefs["current_refiner"] = "Llama 3.2 3B Instruct"
+            self.prefs["current_refiner"] = models_config.DEFAULT_LLM
         # If any of the above were found in tech_config but not yet in prefs, this ensures sync
         if self.tech_config.get("whisper_model") == "distil-large-v3":
             self.tech_config["whisper_model"] = "Distil-Whisper Large v3 (English)"
         if self.tech_config.get("current_refiner") == "Standard (Llama 3.2)":
-            self.tech_config["current_refiner"] = "Llama 3.2 3B Instruct"
+            self.tech_config["current_refiner"] = models_config.DEFAULT_LLM
             
         # --- Migration: Force default transition to Llama 3.2 if on old CoEdit default (ONE-TIME) ---
         if self.prefs.get("current_refiner") == "CoEdit Large (T5)" and not self.prefs.get("_migrate_llama_3_2"):
-            self.prefs["current_refiner"] = "Llama 3.2 3B Instruct"
+            self.prefs["current_refiner"] = models_config.DEFAULT_LLM
             self.prefs["_migrate_llama_3_2"] = True
 
     CRITICAL_RULES = models_config.CRITICAL_RULES
@@ -853,8 +892,8 @@ class SettingsGUI(QMainWindow):
         
         set_combo_safe(self.char_combo, self.config.get("character", "Writing Assistant"))
         set_combo_safe(self.tone_combo, self.config.get("tone", "Natural"))
-        set_combo_safe(self.asr_combo, self.config.get("whisper_model", "Distil-Whisper Large v3 (English)"))
-        set_combo_safe(self.llm_combo, self.config.get("current_refiner", "Llama 3.2 3B Instruct"))
+        set_combo_safe(self.asr_combo, self.config.get("whisper_model", models_config.DEFAULT_ASR))
+        set_combo_safe(self.llm_combo, self.config.get("current_refiner", models_config.DEFAULT_LLM))
 
         # Initialize descriptions
         self.update_asr_desc(self.asr_combo.currentText())
@@ -947,7 +986,9 @@ class SettingsGUI(QMainWindow):
         # Add info labels to group layout
         ai_layout = ai_group.layout()
         ai_layout.insertWidget(2, self.asr_info) # After ASR Label
-        ai_layout.insertWidget(5, self.llm_info) # After LLM Label (Label is pushed to 4)
+        ai_layout.insertSpacing(3, 8)
+        ai_layout.insertWidget(5, self.llm_info) # After LLM Label
+        ai_layout.insertSpacing(6, 8)
         
         layout.addWidget(ai_group)
 
@@ -971,7 +1012,7 @@ class SettingsGUI(QMainWindow):
         prompt_header.setStyleSheet("font-size: 14px; font-weight: bold; color: #ffffff; margin-top: 5px;")
         layout.addWidget(prompt_header)
         
-        self.prompt_editor = QPlainTextEdit()
+        self.prompt_editor = NavigablePlainTextEdit()
         self.prompt_editor.setPlaceholderText("Enter custom instructions here...")
         self.prompt_editor.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         # Deep smoky look for editor
@@ -997,8 +1038,8 @@ class SettingsGUI(QMainWindow):
             }
         """)
         vbox = QVBoxLayout(group)
-        vbox.setContentsMargins(20, 16, 20, 16) # Reduced from 24
-        vbox.setSpacing(6) # Significantly reduced from 16
+        vbox.setContentsMargins(22, 22, 22, 22)
+        vbox.setSpacing(14)
         
         header = QLabel(title)
         header.setStyleSheet("font-weight: 800; color: rgba(255, 255, 255, 0.6); border: none; font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase;")
@@ -1310,8 +1351,7 @@ class SettingsGUI(QMainWindow):
             }
         """)
         
-        layout.addWidget(self.dict_scroll)
-        layout.addStretch()
+        layout.addWidget(self.dict_scroll, 1)  # Stretch to fill available height
 
     def on_prompt_change(self):
         """Handle persona or tone change. Save current prompt and load new one."""
@@ -1440,6 +1480,25 @@ class SettingsGUI(QMainWindow):
         else:
             self.show_toast("Settings saved successfully!")
 
+    # Common system / app shortcuts that should not be used as a Privox hotkey
+    CONFLICTING_HOTKEYS = {
+        # Clipboard & Undo
+        "ctrl+c", "ctrl+v", "ctrl+x", "ctrl+z", "ctrl+y",
+        # Text editing
+        "ctrl+a", "ctrl+s", "ctrl+d", "ctrl+f", "ctrl+h",
+        "ctrl+p", "ctrl+n", "ctrl+o", "ctrl+w", "ctrl+q",
+        "ctrl+r", "ctrl+t", "ctrl+e", "ctrl+g", "ctrl+k",
+        "ctrl+l", "ctrl+b", "ctrl+i", "ctrl+u",
+        # Window management
+        "alt+f4", "alt+tab", "alt+enter",
+        # System
+        "ctrl+alt+delete", "ctrl+shift+esc",
+        # Dangerous solo keys that break navigation
+        "tab", "enter", "backspace", "delete", "space",
+        "up", "down", "left", "right",
+        "home", "end", "page_up", "page_down",
+    }
+
     def start_hotkey_record(self):
         self.btn_rec.setText("RECORDING...")
         self.btn_rec.setProperty("recording", True)
@@ -1501,19 +1560,29 @@ class SettingsGUI(QMainWindow):
                 
             parts.append(main_key)
             hk_str = "+".join(parts)
-            
-            # Save and finalize
+
+            # --- Conflict check ---
+            if hk_str.lower() in self.CONFLICTING_HOTKEYS:
+                disp_conflict = " + ".join([p.upper() for p in parts])
+                # Reset display to old hotkey and keep recording mode active
+                old_hk = self.prefs.get("hotkey", "F8").upper()
+                self.hk_val.setText(old_hk)
+                self.hk_val.setToolTip("")
+                self.show_toast(f"⚠  {disp_conflict} conflicts with a system shortcut — try another.", toast_type="warning")
+                # Stay in recording mode so the user can immediately try again
+                return
+
             # Save and finalize
             disp_full = " + ".join([p.upper() for p in parts])
-            
-            # Elide if too long (approx 12 chars?)
+
+            # Elide if too long
             disp_elided = disp_full
             if len(disp_full) > 16:
                 disp_elided = disp_full[:14] + ".."
-            
+
             self.hk_val.setText(disp_elided)
             self.hk_val.setToolTip(disp_full) # Tooltip for full hotkey
-            
+
             self.prefs["hotkey"] = hk_str
             self.stop_hotkey_recording()
             self.is_dirty = True
@@ -1543,39 +1612,55 @@ class SettingsGUI(QMainWindow):
             self.refresh_dict_list()
             self.mark_dirty()
 
-    def show_toast(self, message):
+    def show_toast(self, message, toast_type="info"):
         toast = QLabel(message, self)
-        toast.setStyleSheet("""
-            QLabel {
-                background-color: rgba(20, 20, 20, 0.95);
-                color: #ffffff;
-                border-radius: 6px;
-                padding: 12px 24px;
-                font-size: 13px;
-                font-weight: 600;
-                border: 1px solid rgba(255, 255, 255, 0.15);
-            }
-        """)
+
+        if toast_type == "warning":
+            toast.setStyleSheet("""
+                QLabel {
+                    background-color: rgba(20, 20, 20, 0.96);
+                    color: #ffffff;
+                    border-radius: 8px;
+                    padding: 12px 20px 12px 20px;
+                    font-size: 13px;
+                    font-weight: 600;
+                    border: 1px solid rgba(255, 255, 255, 0.30);
+                    border-left: 3px solid rgba(255, 255, 255, 0.90);
+                }
+            """)
+        else:
+            toast.setStyleSheet("""
+                QLabel {
+                    background-color: rgba(20, 20, 20, 0.95);
+                    color: #ffffff;
+                    border-radius: 6px;
+                    padding: 12px 24px;
+                    font-size: 13px;
+                    font-weight: 600;
+                    border: 1px solid rgba(255, 255, 255, 0.15);
+                }
+            """)
+
         toast.setAlignment(Qt.AlignCenter)
         toast.adjustSize()
-        
+
         # Position at bottom center with some margin
         x = (self.width() - toast.width()) // 2
         y = self.height() - toast.height() - 60
         toast.move(x, y)
-        
+
         # Shadow effect
         shadow = QGraphicsDropShadowEffect(toast)
         shadow.setBlurRadius(20)
-        shadow.setColor(QColor(0, 0, 0, 100))
+        shadow.setColor(QColor(0, 0, 0, 120))
         shadow.setOffset(0, 4)
         toast.setGraphicsEffect(shadow)
-        
+
         toast.show()
         toast.raise_()
-        
+
         # Auto dismiss
-        QTimer.singleShot(2500, toast.deleteLater)
+        QTimer.singleShot(3000, toast.deleteLater)
 
     def remove_dict_word(self, word):
         words = self.prefs.get("custom_dictionary", [])
@@ -1692,11 +1777,15 @@ class SettingsGUI(QMainWindow):
         dlg.worker = worker # Keep reference
 
         def on_status(msg):
-            # If we see "Downloading" in status, update main label
-            if "downloading" in msg.lower():
+            msg_l = msg.lower()
+            if "downloading" in msg_l:
                 dlg.set_status("Downloading Model Files", msg)
+            elif "verifying" in msg_l:
+                dlg.set_status("Verifying Local Files", msg)
+            elif "finalizing" in msg_l or "complete" in msg_l:
+                dlg.set_status("Finalizing Setup", msg)
             else:
-                dlg.set_status("Updating Models", msg)
+                dlg.set_status("Model Setup Engine", msg)
         
         def on_progress(val):
             if val > 0:
@@ -1716,6 +1805,8 @@ class SettingsGUI(QMainWindow):
                     self.prefs["current_refiner"] = old_llm
                     with open(self.prefs_path, "w", encoding="utf-8") as f:
                         json.dump(self.prefs, f, indent=4)
+                    # SYNC UI after restoration
+                    self.load_initial_state()
                 except: pass
 
                 dlg.reject()

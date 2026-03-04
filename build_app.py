@@ -24,8 +24,9 @@ PyInstaller.__main__.run([
     '--add-data=pixi.lock;.',
     '--add-data=uninstall.bat;.',
     '--add-data=config.json;.',
-    # Add metadata to look more legitimate (optional but recommended)
-    # '--version-file=version_info.txt', 
+    # Embed Windows metadata to reduce AV false positives
+    '--version-file=version_info.txt',
+    '--manifest=assets/privox.manifest',
     
     # Core Application (NOT bundled as binary, but as data for system-python launch)
     # '--hidden-import=voice_input',

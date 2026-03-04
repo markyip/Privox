@@ -17,10 +17,7 @@ macos = "14.0"
 # We don't define it globally if we want to run on Mac
 
 [dependencies]
-python = ">=3.10,<3.13" 
-pytorch = { version = "*", channel = "pytorch" }
-torchaudio = { version = "*", channel = "pytorch" }
-torchvision = { version = "*", channel = "pytorch" }
+python = ">=3.10,<3.13" # Support Python 3.10-3.12
 pip = "*"
 cmake = "*"
 ninja = "*"
@@ -38,7 +35,9 @@ pywin32 = "*"
 [target.osx-arm64.dependencies]
 # No CUDA on Mac. 
 # We don't strictly need llama-cpp-python if we use MLX
-
+pytorch = { version = "*", channel = "pytorch" }
+torchaudio = { version = "*", channel = "pytorch" }
+torchvision = { version = "*", channel = "pytorch" }
 [target.osx-64.dependencies]
 # Intel Macs (if supported) might still need llama-cpp-python or similar, but MLX is apple-silicon only
 llama-cpp-python = "*"
@@ -58,6 +57,7 @@ colorama = "*"
 customtkinter = "*"
 diskcache = "*"
 pyside6 = "==6.8.1"
+pyttsx3 = "*"
 
 [target.osx-arm64.pypi-dependencies]
 mlx = "==0.30.6"
@@ -66,3 +66,8 @@ mlx-whisper = "*"
 mlx-audio = ">=0.3.1"
 transformers = "==5.0.0rc3"
 
+[target.win-64.pypi-dependencies]
+torch = { version = "==2.6.0+cu124", index = "https://download.pytorch.org/whl/cu124" }
+torchaudio = { version = "==2.6.0+cu124", index = "https://download.pytorch.org/whl/cu124" }
+torchvision = { version = "==0.21.0+cu124", index = "https://download.pytorch.org/whl/cu124" }
+qwen-asr = "*"

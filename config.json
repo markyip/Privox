@@ -1,6 +1,6 @@
 {
-    "asr_backend": "whisper",
-    "whisper_repo": "Systran/faster-distil-whisper-large-v3",
+    "asr_backend": "qwen_asr",
+    "whisper_repo": "Qwen/Qwen3-ASR-1.7B",
     "grammar_repo": "bartowski/Llama-3.2-3B-Instruct-GGUF",
     "grammar_file": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
     "refiner_profiles": {

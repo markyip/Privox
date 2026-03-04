@@ -63,6 +63,7 @@ def main(log_callback=None):
     models_dir = os.path.join(app_data_dir, "models")
 
     if not os.path.exists(models_dir):
+        log_local(f"Creating models directory: {models_dir}")
         os.makedirs(models_dir)
         
     log_local(f"Checking AI Models (Backend: {asr_backend})...")
@@ -169,17 +170,21 @@ def main(log_callback=None):
         
         # Simple check if model exists
         if not os.path.exists(os.path.join(mac_target_dir, "model.safetensors")):
-            log(f"Downloading MLX Grammar Model ({mlx_repo}) for macOS...")
+            log_local(f"Downloading MLX Grammar Model ({mlx_repo}) for macOS...")
             snapshot_download(repo_id=mlx_repo, local_dir=mac_target_dir)
         else:
-            log(f"MLX Grammar Model {mlx_repo} present.")
+            log_local(f"MLX Grammar Model {mlx_repo} present.")
     else:
         # Windows/Linux uses single GGUF file
         if not os.path.exists(os.path.join(models_dir, grammar_file)):
-            log(f"Downloading Grammar Model ({grammar_file})...")
+            log_local(f"Downloading Grammar Model ({grammar_file})...")
+            log_local(f"Source Repo: {grammar_repo}")
+            # If this fails (e.g., 401 Unauthorized or 404 Not Found),
+            # it will now raise an exception, crash the script, and alert the GUI.
             hf_hub_download(repo_id=grammar_repo, filename=grammar_file, local_dir=models_dir)
+            log_local("Grammar Model download complete.")
         else:
-            log(f"Grammar Model {grammar_file} present.")
+            log_local(f"Grammar Model {grammar_file} present.")
 
     # 2. Whisper Model (Faster-Whisper Format)
     log_local("[Stage 4/4] Verifying Transcription Model files (Whisper)...")
@@ -237,17 +242,20 @@ def main(log_callback=None):
                     break
         
         log_local(f"Downloading Whisper Model ({whisper_model_name}) from {actual_repo}...")
+        log_local("Note: Large models (3GB+) may take several minutes. Please wait.")
         snapshot_download(
             repo_id=actual_repo, 
             local_dir=whisper_target
         )
         # Save the repo tag so we don't redownload again if successful
+        log_local("Finalizing Whisper model setup...")
         try:
             with open(repo_tag_file, "w") as f:
                 f.write(whisper_repo)
         except: pass
+        log_local("Whisper Model setup complete.")
         
-    log_local("Model setup complete.")
+    log_local("All AI models are verified and ready.")
 
 if __name__ == "__main__":
     main()

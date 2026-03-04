@@ -37,7 +37,9 @@ ASR_LIBRARY = [
     {"name": "Whisper Large v3 Turbo (French)", "whisper_repo": "Mathos34400/whisper-large-v3-turbo-french-v6", "mlx_repo": "mlx-community/whisper-large-v3-turbo", "whisper_model": "large-v3-turbo", "repo": "Mathos34400/whisper-large-v3-turbo-french-v6", "description": "State-of-the-art French transcription with anti-overfitting optimization."},
     {"name": "Whisper Large v3 Turbo (Japanese)", "whisper_repo": "XA9/faster-whisper-large-v3-ja", "mlx_repo": "mlx-community/whisper-large-v3-turbo", "whisper_model": "large-v3-turbo", "repo": "XA9/faster-whisper-large-v3-ja", "description": "Superior Japanese performance with CTranslate2 optimization."},
     {"name": "Whisper Large v2 (Hindi)", "whisper_repo": "collabora/faster-whisper-large-v2-hindi", "mlx_repo": "mlx-community/whisper-large-v2", "whisper_model": "large-v2", "repo": "collabora/faster-whisper-large-v2-hindi", "description": "Fine-tuned for Hindi. Optimized for mixed-code (Hinglish)."},
-    {"name": "Whisper Large v3 Turbo (Multilingual)", "whisper_repo": "deepdml/faster-whisper-large-v3-turbo-ct2", "mlx_repo": "mlx-community/whisper-large-v3-turbo", "whisper_model": "large-v3-turbo", "repo": "deepdml/faster-whisper-large-v3-turbo-ct2", "description": "State-of-the-art multilingual model. Excellent for Singlish, Arabic, and diverse accents."}
+    {"name": "Whisper Large v3 Turbo (Multilingual)", "whisper_repo": "deepdml/faster-whisper-large-v3-turbo-ct2", "mlx_repo": "mlx-community/whisper-large-v3-turbo", "whisper_model": "large-v3-turbo", "repo": "deepdml/faster-whisper-large-v3-turbo-ct2", "description": "State-of-the-art multilingual model. Excellent for Singlish, Arabic, and diverse accents."},
+    {"name": "Qwen3-ASR 0.6B (Multilingual)", "whisper_repo": "Qwen/Qwen3-ASR-0.6B", "whisper_model": "qwen3-asr-0.6b", "repo": "Qwen/Qwen3-ASR-0.6B", "backend": "qwen_asr", "description": "Lightweight Qwen3 ASR. Low VRAM usage, good accuracy."},
+    {"name": "Qwen3-ASR 1.7B (Multilingual)", "whisper_repo": "Qwen/Qwen3-ASR-1.7B", "whisper_model": "qwen3-asr-1.7b", "repo": "Qwen/Qwen3-ASR-1.7B", "backend": "qwen_asr", "description": "High-performance transformer-based ASR from Alibaba. Best-in-class for short/medium phrases."}
 ]
 
 # --- Refiner (LLM) Library ---
@@ -73,7 +75,8 @@ LLM_LIBRARY = [
 ]
 
 # --- Default Model Names (derived from library lists, never hardcode elsewhere) ---
-DEFAULT_ASR = ASR_LIBRARY[0]["name"]
+# Default to the lightweight Qwen3-ASR 0.6B model
+DEFAULT_ASR = next((m["name"] for m in ASR_LIBRARY if m["whisper_model"] == "qwen3-asr-0.6b"), ASR_LIBRARY[0]["name"])
 DEFAULT_LLM = LLM_LIBRARY[0]["name"]
 
 # --- Persona Lenses ---

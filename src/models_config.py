@@ -33,11 +33,6 @@ LLM_LIBRARY = [
         "description": "Premium English refiner. 60x more efficient than LLMs."
     },
     {
-<<<<<<< Updated upstream
-        "name": "Multilingual (Qwen 2.5 3B)", 
-        "repo_id": "bartowski/Qwen2.5-3B-Instruct-GGUF", 
-        "file_name": "Qwen2.5-3B-Instruct-Q4_K_M.gguf", 
-=======
         "name": "Multilingual (Qwen 3.5 9B)", 
         "repo_id": "unsloth/Qwen3.5-9B-GGUF", 
         "file_name": "Qwen3.5-9B-Q4_K_M.gguf", 
@@ -55,9 +50,8 @@ LLM_LIBRARY = [
         "name": "Mistral Small 24B (Q4_K_M)", 
         "repo_id": "bartowski/Mistral-Small-24B-Instruct-v0.1-GGUF", 
         "file_name": "Mistral-Small-24B-Instruct-v0.1-Q4_K_M.gguf", 
->>>>>>> Stashed changes
         "prompt_type": "llama",
-        "description": "Best for mixed languages and high instruction obedience."
+        "description": "Enterprise-grade refiner. Requires 16GB+ VRAM."
     }
 ]
 

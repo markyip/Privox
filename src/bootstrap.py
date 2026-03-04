@@ -1038,8 +1038,17 @@ if __name__ == "__main__":
         
     # Auto-Launch/Update Bypass for macOS
     if IS_MAC:
+        # If we are running inside a bundled .app, we might want to just run the internal logic
+        # But mac_launcher.py is now our main entry point for the bundle.
+        # This section is for when bootstrap.py is run directly or as a fallback.
         app_data = get_app_data_dir()
-        pixi_bin = os.path.join(app_data, ".pixi", "envs", "default", "bin", "python")
+        
+        # Check for pixi in app_data (installer path) or inside the bundle (drag-and-drop path)
+        bundle_pixi = os.path.join(os.path.dirname(EXE_DIR), 'Resources', '.pixi', 'envs', 'default', 'bin', 'python')
+        local_pixi = os.path.join(app_data, ".pixi", "envs", "default", "bin", "python")
+        
+        pixi_bin = bundle_pixi if os.path.exists(bundle_pixi) else local_pixi
+        
         if os.path.exists(pixi_bin):
             # Force kill old background instances so we can update and run
             try:
@@ -1049,38 +1058,37 @@ if __name__ == "__main__":
                 time.sleep(1.0)
             except: pass
             
-            # Sync python scripts to ensure we load the latest version
-            src_dir = getattr(sys, '_MEIPASS', os.path.join(os.path.dirname(EXE_DIR), 'Resources')) if getattr(sys, 'frozen', False) else EXE_DIR
-            
-            # If src/ folder doesn't exist in destination, we need a full sync
-            # This handles the case where someone might have deleted files
-            if not os.path.exists(os.path.join(app_data, "src")):
-                app = QApplication(sys.argv)
-                gui = InstallerGUI(mode="install")
-                gui.show()
-                sys.exit(app.exec())
+            # Sync python scripts to ensure we load the latest version (if not running from bundle)
+            if not os.path.exists(bundle_pixi):
+                src_dir = getattr(sys, '_MEIPASS', os.path.join(os.path.dirname(EXE_DIR), 'Resources')) if getattr(sys, 'frozen', False) else EXE_DIR
+                
+                # If src/ folder doesn't exist in destination, we need a full sync
+                if not os.path.exists(os.path.join(app_data, "src")):
+                    app = QApplication(sys.argv)
+                    gui = InstallerGUI(mode="install")
+                    gui.show()
+                    sys.exit(app.exec())
 
-            # Perform a quick silent update of source files
-            for folder in ["src"]:
-                src = os.path.join(src_dir, folder)
-                dst = os.path.join(app_data, folder)
-                if os.path.exists(src):
-                    try:
-                        shutil.copytree(src, dst, dirs_exist_ok=True)
-                    except: pass
-            
-            for f in ["config.json", "pixi.toml", "pixi.lock"]:
-                src_f = os.path.join(src_dir, f)
-                if os.path.exists(src_f):
-                    try:
-                        shutil.copy2(src_f, os.path.join(app_data, f))
-                    except: pass
+                # Perform a quick silent update of source files
+                for folder in ["src"]:
+                    src = os.path.join(src_dir, folder)
+                    dst = os.path.join(app_data, folder)
+                    if os.path.exists(src):
+                        try:
+                            shutil.copytree(src, dst, dirs_exist_ok=True)
+                        except: pass
+                
+                for f in ["config.json", "pixi.toml", "pixi.lock"]:
+                    src_f = os.path.join(src_dir, f)
+                    if os.path.exists(src_f):
+                        try:
+                            shutil.copy2(src_f, os.path.join(app_data, f))
+                        except: pass
 
-            run_app(target_dir=app_data)
+            run_app(target_dir=os.path.dirname(os.path.dirname(os.path.dirname(pixi_bin))) if os.path.exists(bundle_pixi) else app_data)
             sys.exit(0)
         else:
             # First-time run on Mac: No Pixi environment. Start Installer GUI.
-            # It will auto-trigger because of the QTimer in __init__
             app = QApplication(sys.argv)
             gui = InstallerGUI(mode="install")
             gui.show()

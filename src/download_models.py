@@ -35,6 +35,7 @@ def main(log_callback=None):
     grammar_file = models_config.LLM_LIBRARY[0]["file_name"] 
     grammar_repo = models_config.LLM_LIBRARY[0]["repo_id"]
     
+    asr_backend = "whisper" # Default value
     config_path = os.path.join(app_data_dir, "config.json")
     if os.path.exists(config_path):
         try:
@@ -46,6 +47,12 @@ def main(log_callback=None):
                 grammar_file = config.get("grammar_file", grammar_file)
                 grammar_repo = config.get("grammar_repo", grammar_repo)
                 asr_backend = config.get("asr_backend", "whisper")
+                # Find matching MLX repo if on Mac
+                if is_mac:
+                    for item in models_config.ASR_LIBRARY:
+                        if item.get("whisper_model") == whisper_model_name:
+                            whisper_repo = item.get("mlx_repo", whisper_repo)
+                            break
             log_local(f"Loaded tailored settings from config.json: {whisper_model_name}")
         except Exception as e:
             log_local(f"Config load error (using defaults): {e}")
@@ -188,7 +195,17 @@ def main(log_callback=None):
         except: pass
     
     # Robust check: Ensure critical files exist
-    critical_files = ["model.bin", "config.json", "tokenizer.json", "preprocessor_config.json"]
+    is_mac = sys.platform == "darwin"
+    if is_mac:
+        # MLX weights can be .safetensors or .npz
+        critical_files = ["config.json", "tokenizer.json", "preprocessor_config.json"]
+        # We'll check for either model.safetensors or weights.npz
+        has_weights = os.path.exists(os.path.join(whisper_target, "model.safetensors")) or \
+                      os.path.exists(os.path.join(whisper_target, "weights.npz"))
+    else:
+        critical_files = ["model.bin", "config.json", "tokenizer.json", "preprocessor_config.json"]
+        has_weights = os.path.exists(os.path.join(whisper_target, "model.bin"))
+
     needs_download = False
     
     if existing_repo != whisper_repo:
@@ -200,7 +217,7 @@ def main(log_callback=None):
                     os.makedirs(whisper_target)
                 except: pass
     
-    if not os.path.exists(whisper_target):
+    if not os.path.exists(whisper_target) or not has_weights:
         needs_download = True
     else:
         for f in critical_files:
@@ -209,9 +226,19 @@ def main(log_callback=None):
                 break
                 
     if needs_download:
-        log_local(f"Downloading Whisper Model ({whisper_model_name}) from {whisper_repo}...")
+        is_mac = sys.platform == "darwin"
+        actual_repo = whisper_repo
+        
+        # Override with MLX repo on Mac if available
+        if is_mac:
+            for item in models_config.ASR_LIBRARY:
+                if item.get("whisper_model") == whisper_model_name:
+                    actual_repo = item.get("mlx_repo", whisper_repo)
+                    break
+        
+        log_local(f"Downloading Whisper Model ({whisper_model_name}) from {actual_repo}...")
         snapshot_download(
-            repo_id=whisper_repo, 
+            repo_id=actual_repo, 
             local_dir=whisper_target
         )
         # Save the repo tag so we don't redownload again if successful

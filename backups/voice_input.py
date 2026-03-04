@@ -23,16 +23,6 @@ import platform
 IS_MAC = (sys.platform == 'darwin' or platform.system() == 'Darwin')
 IS_WIN = (sys.platform == 'win32' or platform.system() == 'Windows')
 
-if IS_MAC:
-    try:
-        # Pre-import MLX on the MAIN THREAD to prevent silent deadlocks 
-        # when wake-up logic initializes it from a background ThreadPoolExecutor later.
-        import mlx_whisper
-        import mlx.core as mx
-    except ImportError:
-        pass
-
-
 if IS_WIN:
     import winreg
     import ctypes
@@ -98,14 +88,6 @@ def resource_path(relative_path):
     try:
         # PyInstaller creates a temp folder and stores path in _MEIPASS
         base_path = sys._MEIPASS
-        
-        if sys.platform == "darwin" and getattr(sys, 'frozen', False):
-            # PyInstaller macOS .app bundles place resources in Contents/Resources
-            app_contents = os.path.dirname(os.path.dirname(sys.executable))
-            res_path = os.path.join(app_contents, "Resources")
-            if os.path.exists(os.path.join(res_path, relative_path)):
-                return os.path.join(res_path, relative_path)
-                
     except Exception:
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
@@ -159,86 +141,6 @@ if IS_WIN:
         except Exception as e:
             logging.warning(f"Failed to add Pixi bin to DLL directory: {e}")
 
-def show_modern_error(title, message, subtext=""):
-    """Shows a premium styled error dialog, falling back to ctypes if PySide6 fails."""
-    try:
-        from PySide6.QtWidgets import QApplication, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame
-        from PySide6.QtCore import Qt
-        from PySide6.QtGui import QColor
-        
-        # Ensure a QApplication exists
-        app = QApplication.instance()
-        if not app:
-            app = QApplication(sys.argv)
-            
-        dlg = QDialog()
-        dlg.setWindowTitle(title)
-        dlg.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
-        dlg.setAttribute(Qt.WA_TranslucentBackground)
-        
-        layout = QVBoxLayout(dlg)
-        layout.setContentsMargins(0, 0, 0, 0)
-        
-        container = QFrame()
-        container.setStyleSheet("""
-            QFrame {
-                background-color: rgba(18, 18, 18, 0.98);
-                border: 1px solid rgba(255, 255, 255, 0.1);
-                border-radius: 16px;
-                color: white;
-            }
-        """)
-        container_layout = QVBoxLayout(container)
-        container_layout.setContentsMargins(32, 28, 32, 28)
-        container_layout.setSpacing(18)
-        
-        # Header
-        title_lbl = QLabel(title.upper())
-        title_lbl.setStyleSheet("font-weight: 900; color: rgba(255, 255, 255, 0.4); font-size: 10px; letter-spacing: 2px; border: none;")
-        container_layout.addWidget(title_lbl)
-        
-        # Body
-        msg_lbl = QLabel(message)
-        msg_lbl.setStyleSheet("color: #ffffff; font-size: 16px; font-weight: 500; border: none;")
-        msg_lbl.setWordWrap(True)
-        container_layout.addWidget(msg_lbl)
-        
-        if subtext:
-            sub_lbl = QLabel(subtext)
-            sub_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.5); font-size: 13px; border: none;")
-            sub_lbl.setWordWrap(True)
-            container_layout.addWidget(sub_lbl)
-            
-        # Button
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-        btn = QPushButton("CLOSE")
-        btn.setFixedSize(120, 42)
-        btn.setCursor(Qt.PointingHandCursor)
-        btn.setStyleSheet("""
-            QPushButton {
-                background-color: #ffffff;
-                color: #000000;
-                border-radius: 8px;
-                font-weight: 800;
-                font-size: 13px;
-            }
-            QPushButton:hover {
-                background-color: rgba(255, 255, 255, 0.85);
-            }
-        """)
-        btn.clicked.connect(dlg.accept)
-        btn_layout.addWidget(btn)
-        container_layout.addLayout(btn_layout)
-        
-        layout.addWidget(container)
-        dlg.exec()
-    except Exception as e:
-        # Final fallback to standard Windows message box
-        if sys.platform == 'win32':
-            import ctypes
-            ctypes.windll.user32.MessageBoxW(0, f"{message}\n\n{subtext}", title, 0x10)
-
 try:
     log_print("Importing core utilities...")
     log_print(f"DEBUG: sys.path is: {sys.path}")
@@ -273,6 +175,12 @@ try:
         log_print("1. CPU version of Torch installed (check version above)")
         log_print("2. Missing CUDA DLLs in PATH")
         log_print("3. GPU driver issues")
+        
+        # Native Popup for visibility
+        if sys.platform == 'win32' and not getattr(sys, 'frozen', False):
+             # Only show popup in dev mode for now to avoid annoying users, 
+             # OR we can show it if we explicitly want GPU.
+             pass
     log_print(f"-------------------------")
     
     # Windows Sound
@@ -290,8 +198,6 @@ except Exception as e:
     if IS_WIN:
         import ctypes
         ctypes.windll.user32.MessageBoxW(0, f"Privox Import Error:\n\n{e}\n\nTraceback:\n{err_stack[:500]}...", "Privox Fatal Error", 0x10)
-    else:
-        show_modern_error("Privox Fatal Error", str(e), f"Traceback:\n{err_stack[:500]}...")
     sys.exit(1)
 
 # --- 2. Programmatic Console Hiding (Fail-safe for Windows) ---
@@ -314,9 +220,10 @@ MIN_SPEECH_DURATION_MS = 250
 SPEECH_PAD_MS = 500
 
 # Models
+# Models
 WHISPER_SIZE = "distil-large-v3" 
 WHISPER_REPO = "Systran/faster-distil-whisper-large-v3"
-ASR_BACKEND = "whisper" 
+ASR_BACKEND = "whisper" # Default: whisper or sensevoice
 
 # Llama 3.2 3B Instruct
 GRAMMAR_REPO = "bartowski/Llama-3.2-3B-Instruct-GGUF"
@@ -330,6 +237,7 @@ class SoundManager:
 
     def _play(self, freq, duration):
         if self.enabled:
+            # Using a lock ensures beeps don't collide if triggered rapidly
             try:
                 with self.lock:
                     winsound.Beep(freq, duration)
@@ -353,9 +261,6 @@ class SoundManager:
 # Dictionaries CHARACTER_LENSES and TONE_OVERLAYS are now imported from models_config.
 
 class GrammarChecker:
-    _llama_imported = False  # Class-level flag to avoid redundant imports/diagnostics
-    _Llama = None            # Cached Llama class reference
-
     def __init__(self, refiner_profile=None, custom_dictionary=None, custom_prompts=None, command_prompt=None, character=None, tone=None):
         self.model = None
         self.profile = refiner_profile or {}
@@ -366,8 +271,6 @@ class GrammarChecker:
         self.character = character or "Writing Assistant"
         self.tone = tone or "Natural"
         self.icon = None # Placeholder
-        self.context_buffer = "" # Max 2000 chars of conversation history
-        self._has_loaded_once = False  # Instance-level: tracks if we've loaded before (for verbose control)
 
     def load_model(self):
         if self.model:
@@ -375,9 +278,10 @@ class GrammarChecker:
 
         repo_id = self.profile.get("repo_id", GRAMMAR_REPO)
         file_name = self.profile.get("file_name", GRAMMAR_FILE)
-        is_reload = self._has_loaded_once  # True on wake-from-idle, False on first boot
+        
+        is_mac = sys.platform == "darwin"
 
-        if IS_MAC:
+        if is_mac:
             # --- macOS MLX Execution Path ---
             mlx_target_dir = os.path.join(APP_DATA_DIR, "models", "mlx-llama-3.2")
             if not os.path.exists(mlx_target_dir):
@@ -404,20 +308,17 @@ class GrammarChecker:
             
         # --- Windows/Linux Llama Context Execution Path ---
 
-        # 1. Check Local "models" folder (Priority: AppData, Fallback: BaseDir)
+        # 1. Check Local "models" folder (Offline Mode)
         local_model_path = os.path.join(APP_DATA_DIR, "models", file_name)
-        if not os.path.exists(local_model_path):
-             local_model_path = os.path.join(BASE_DIR, "models", file_name)
-
         if os.path.exists(local_model_path):
-            if not is_reload:
-                log_print(f"Found local model: {local_model_path}")
+            log_print(f"Found local model: {local_model_path}")
             model_path = local_model_path
         else:
             try:
-                # Check/Download from Hugging Face
+                # 2. Check/Download from Hugging Face
                 log_print(f"Checking Hugging Face for Refiner Model ({repo_id})...")
                 
+                # First try to get it from cache or defined local dir
                 from huggingface_hub import hf_hub_download
                 try:
                     model_path = hf_hub_download(
@@ -439,15 +340,6 @@ class GrammarChecker:
                         local_dir_use_symlinks=False
                     )
                     log_print(f"Download complete: {model_path}")
-                
-                # Verify file integrity
-                if os.path.exists(model_path):
-                    f_size = os.path.getsize(model_path)
-                    log_print(f"Model file verified: {model_path} ({f_size / 1024**2:.2f} MB)")
-                    if f_size < 100 * 1024**2: 
-                         log_print("WARNING: Model file seems too small. Moving to backup/re-download.")
-                         os.rename(model_path, model_path + ".bak")
-                         return self.load_model() # Recursive retry
             except Exception as e:
                 log_print(f"\nCRITICAL: Failed to download/locate model: {e}")
                 self.loading_error = f"Download Failed: {e}"
@@ -456,100 +348,69 @@ class GrammarChecker:
                 return
 
         try:
-            # --- Optimization 2: Cache llama_cpp import, skip diagnostics on reload ---
-            if not GrammarChecker._llama_imported:
-                log_print("Importing llama_cpp...")
-                try:
-                    import llama_cpp
-                    log_print(f"llama-cpp-python Version: {getattr(llama_cpp, '__version__', 'Unknown')}")
-                    sys_info = llama_cpp.llama_print_system_info()
-                    log_print(f"llama-cpp-python System Info: {sys_info}")
-                    if "CUDA = 1" in str(sys_info) or "BLAS = 1" in str(sys_info):
-                        log_print("GPU Backend detected in llama-cpp-python.")
-                    else:
-                        log_print("WARNING: llama-cpp-python appears to be CPU-ONLY.")
-                except ImportError as ie:
-                    log_print(f"CRITICAL: Failed to import llama_cpp: {ie}")
-                    raise ie
+            # Heavy Import: Llama
+            log_print("Importing llama_cpp...")
+            try:
+                import llama_cpp
+                log_print(f"llama-cpp-python Version: {getattr(llama_cpp, '__version__', 'Unknown')}")
+                # Log the system info string - this tells us if CUDA is actually compiled in
+                sys_info = llama_cpp.llama_print_system_info()
+                log_print(f"llama-cpp-python System Info: {sys_info}")
+                if "CUDA = 1" in str(sys_info) or "BLAS = 1" in str(sys_info):
+                    log_print("GPU Backend detected in llama-cpp-python.")
+                else:
+                    log_print("WARNING: llama-cpp-python appears to be CPU-ONLY.")
+            except ImportError as ie:
+                log_print(f"CRITICAL: Failed to import llama_cpp: {ie}")
+                raise ie
                 
-                from llama_cpp import Llama
-                GrammarChecker._Llama = Llama
-                GrammarChecker._llama_imported = True
-            
-            Llama = GrammarChecker._Llama
-            use_verbose = not is_reload
+            from llama_cpp import Llama
 
-            def _safe_llama_init(m_path, n_gpu):
-                try:
-                    return Llama(
-                        model_path=m_path,
-                        n_ctx=2048,
-                        n_gpu_layers=n_gpu,
-                        verbose=use_verbose,
-                        n_threads=os.cpu_count() // 2 if os.cpu_count() else 4
-                    )
-                except (AssertionError, RuntimeError) as e:
-                    log_print(f"CRITICAL: Llama initialization failed ({type(e).__name__}). File likely corrupt.")
-                    if os.path.exists(m_path):
-                        size_mb = os.path.getsize(m_path) / (1024 * 1024)
-                        log_print(f"Removing corrupt model file: {m_path} ({size_mb:.1f} MB)")
-                        try: os.remove(m_path)
-                        except: pass
-                    return None
-
+            # Assertive GPU Offloading for Llama 3.2 3B
             is_gpu = torch.cuda.is_available()
+            # If GPU is available, offload EVERYTHING (approx 28-33 layers for 3B)
+            # Setting a very high number (99) ensures all layers are offloaded
             n_gpu = 99 if is_gpu else 0
             
-            log_print(f"Loading Llama (GPU={is_gpu}, layers={n_gpu}){'  [Quick Reload]' if is_reload else ''}...")
-            self.model = _safe_llama_init(model_path, n_gpu)
+            try:
+                log_print(f"Loading Llama (GPU={is_gpu}, request_layers={n_gpu})...")
+                self.model = Llama(
+                    model_path=model_path, 
+                    n_ctx=2048, 
+                    n_gpu_layers=n_gpu, 
+                    verbose=False,
+                    n_threads=os.cpu_count() // 2 # Use half cores for safety if on CPU
+                )
+            except Exception as e:
+                log_print(f"GPU Load failed, falling back to CPU: {e}")
+                self.model = Llama(
+                    model_path=model_path, 
+                    n_ctx=2048, 
+                    n_gpu_layers=0, 
+                    verbose=False
+                )
             
-            if self.model is None:
-                log_print("Model file removed. Restarting load sequence to trigger redownload...")
-                return self.load_model()
-
-            self._has_loaded_once = True
             log_print(f"Done. (GPU Acceleration: {'ENABLED' if is_gpu else 'DISABLED'})")
         except Exception as e:
             err_trace = traceback.format_exc()
             log_print(f"\nError loading Grammar Model: {e}\n{err_trace}")
             self.loading_error = str(e)
-            
-            if "AssertionError" in str(e):
-                 log_print(f"Corruption detected in fallback. Removing {model_path} and retrying.")
-                 try:
-                    if os.path.exists(model_path):
-                        os.remove(model_path)
-                 except: pass
-                 return self.load_model()
-
             if IS_WIN:
-                 show_modern_error("Privox Model Error", f"Error loading Grammar Model (Llama): {e}", f"Traceback:\n{err_trace[:500]}")
+                 ctypes.windll.user32.MessageBoxW(0, f"Error loading Grammar Model (Llama):\n\n{e}\n\nTraceback:\n{err_trace[:500]}", "Privox Model Error", 0x10)
 
-    def get_effective_prompt(self, language=None, language_prob=0.0, user_text=None):
-        """Constructs a composite prompt with hidden overrides.
-        Layer 1: Core Safety/Format (Hidden)
-        Layer 2: User Instructions (Visible in GUI)
-        Layer 3: Late-Binding Overrides (Hidden, conditional)
-        """
-        directive = "REFINE TRANSCRIPT: Provide a clean, accurate version of the ASR input in its ORIGINAL LANGUAGE."
+    def get_effective_prompt(self):
+        """Constructs the combined Core Directive string based on user selections."""
+        key = f"{self.character}|{self.tone}"
         
-        # Language Hinting (Robust Multilingual Support)
-        if language and language != "en" and language_prob > 0.4:
-            lang_name = models_config.ISO_LANGUAGE_MAP.get(language, language)
-            directive = f"REFINE TRANSCRIPT: PROVIDE A CLEAN {lang_name.upper()} VERSION. DO NOT TRANSLATE TO ENGLISH."
-
-        prompt_directive = f"{directive}\n\n{models_config.CRITICAL_RULES}"
+        # Layer 1: Base User Directive from Dropdowns
+        prompt_directive = self.custom_prompts.get(key, "Refine the provided transcript.").strip()
         
-        # Layer 2: User-Edited Instructions
-        if user_text:
-            prompt_directive += f"\n### ADDITIONAL USER INSTRUCTIONS ###\n{user_text}\n"
-
         # Jargon Injection
         dict_str = ", ".join(self.custom_dictionary)
         if dict_str:
-            prompt_directive += f"\n### JARGON/HINTS (PRIORITY) ###\nSpecific Jargon/Hints to recognize: {dict_str}\n"
+            prompt_directive += f" Specific Jargon/Hints: {dict_str}\n"
 
-        # Layer 3: Late-Binding Overrides (Ensures Dropdown Priority)
+        # Layer 2: Late-Binding Overrides (Ensures Dropdown priority)
         overrides = ""
         if self.character != "Custom":
             lens = models_config.CHARACTER_LENSES.get(self.character, "")
@@ -566,42 +427,41 @@ class GrammarChecker:
 
         return prompt_directive
 
-    def correct(self, text, is_command=False, language=None, language_prob=0.0, user_text=None):
+    def correct(self, text, is_command=False):
+        # 1. Pre-processing Guardrail: Skip LLM for very short or empty inputs
+        # (Unless it's a known keyword in the custom dictionary)
         clean_text = text.strip()
         if not self.model or not clean_text:
             return text
             
-        if len(clean_text) < 8 and clean_text.lower() not in [d.lower() for d in self.custom_dictionary]:
-            log_print(f" [Short Input Skip] Input too short ({len(clean_text)} chars). Mirroring.")
+        if len(clean_text) < 4 and clean_text.lower() not in [d.lower() for d in self.custom_dictionary]:
+            log_print(f" [Short Input Skip - Mirroring: '{clean_text}']")
             return text
 
         try:
             prompt_type = self.profile.get("prompt_type", "llama")
 
             if is_command:
+                # Agent Mode
                 system_prompt = self.command_prompt or (
                     "You are Privox, an intelligent assistant. Execute the user's instruction perfectly. "
                     "Output ONLY the result inside <refined> and </refined> tags. Do not chat."
                 )
                 user_content = text
             else:
-                core_directive = self.get_effective_prompt(language=language, language_prob=language_prob, user_text=user_text)
-                system_prompt = models_config.get_system_formatter(language=language)
+                # Use the new robust Wrapper Structure
+                core_directive = self.get_effective_prompt()
+                system_prompt = models_config.SYSTEM_FORMATTER
                 user_content = f"[Core Directive]: {core_directive}\n[Transcript]: {text}\nOutput: "
 
             # Format based on model type
             if prompt_type == "t5":
+                # CoEdit / T5 style: simple instruction + input (Does not use XML wrapping naturally)
                 action = "Polish" if self.tone != "Natural" else "Fix grammar"
                 prompt = f"{action}: {text}"
                 stop_tokens = ["\n"]
-            elif prompt_type == "chatml":
-                prompt = (
-                    f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
-                    f"<|im_start|>user\n{user_content}<|im_end|>\n"
-                    "<|im_start|>assistant\n"
-                )
-                stop_tokens = ["<|im_end|>"]
             else:
+                # Llama 3 / Qwen / Mistral style format
                 prompt = (
                     f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n{system_prompt}<|eot_id|>"
                     f"<|start_header_id|>user<|end_header_id|>\n\n{user_content}<|eot_id|>"
@@ -609,17 +469,15 @@ class GrammarChecker:
                 )
                 stop_tokens = ["<|eot_id|>"]
             
-            # 2. Proportional max_tokens cap to prevent runaway generation
-            input_tokens_est = max(len(clean_text) // 3, len(clean_text.split()))
-            max_tokens = min(2048, max(128, input_tokens_est * 4))
-
-            if IS_MAC:
+            is_mac = sys.platform == "darwin"
+            
+            if is_mac:
                 # --- MLX Execution ---
                 output = self.mlx_generate(
                     self.model, 
                     self.tokenizer, 
                     prompt=prompt, 
-                    max_tokens=max_tokens,
+                    max_tokens=1024,
                     verbose=False
                 )
                 raw_response = output.strip()
@@ -627,120 +485,33 @@ class GrammarChecker:
                 # --- Windows Llama CPP Execution ---
                 output = self.model(
                     prompt, 
-                    max_tokens=max_tokens,
+                    max_tokens=1024,
                     stop=stop_tokens, 
                     echo=False,
-                    temperature=0.4,
-                    repeat_penalty=1.2,
-                    frequency_penalty=0.5,
-                    top_p=0.9,
-                    min_p=0.01,
+                    temperature=0.3,
                 )
                 raw_response = output['choices'][0]['text'].strip()
                 
+            # If standard instruction model (T5), just return the raw string
             if prompt_type == "t5":
                 return raw_response
 
-            # Extract text purely from inside the <refined> tags 
+            # If Llama/Qwen, extract text purely from inside the <refined> tags 
+            # to crush conversational alignment hallucinations.
             import re
             match = re.search(r'<refined>(.*?)</refined>', raw_response, flags=re.DOTALL | re.IGNORECASE)
-            
-            result = None
             if match:
                 log_print("Regex extracted <refined> block successfully.")
-                result = match.group(1).strip()
-            else:
-                log_print("Warning: Model failed to use <refined> tags. Using raw output.")
-                result = raw_response
+                return match.group(1).strip()
+            
+            # Fallback if the model hallucinated and forgot the tags.
+            log_print("Warning: Model failed to use <refined> tags. Returning raw output.")
+            return raw_response
 
-            # Post-processing
-            result = self._strip_meta_commentary(result)
-            result = self._validate_output(clean_text, result)
-
-            return result
         except Exception as e:
             log_print(f"Grammar Check Error: {e}")
             return text
 
-    # --- LLM self-commentary patterns that get embedded inside <refined> output ---
-    _META_COMMENTARY_PATTERNS = [
-        "\nnote:", "\nnote -", "\nnotes:",
-        "\nplease note", "\np.s.", "\nps:",
-        "\ni've preserved", "\ni have preserved",
-        "\ni've maintained", "\ni have maintained",
-        "\ni've replaced", "\ni have replaced",
-        "\ni've improved", "\ni have improved",
-        "\ni've also", "\ni also",
-        "\ni've ensured", "\ni have ensured",
-        "\nspecifically,",
-        "\nadditionally,",
-        "\nin this version",
-        "\nchanges made:",
-        "\nexplanation:",
-    ]
-
-    def _strip_meta_commentary(self, text):
-        """Remove trailing LLM self-commentary that leaks inside <refined> tags."""
-        if not text:
-            return text
-
-        text_lower = text.lower()
-        earliest_cut = len(text)
-
-        for pattern in self._META_COMMENTARY_PATTERNS:
-            idx = text_lower.find(pattern)
-            if idx > 0 and idx < earliest_cut:
-                earliest_cut = idx
-
-        if earliest_cut < len(text):
-            stripped = text[:earliest_cut].rstrip()
-            log_print(f" [Meta-Commentary Strip] Removed {len(text) - earliest_cut} chars of LLM self-commentary.")
-            return stripped
-
-        return text
-
-    # --- Prompt-echo fingerprints (substrings the LLM may regurgitate) ---
-    _PROMPT_FINGERPRINTS = [
-        "core directive",
-        "strict identity override",
-        "strict style override",
-        "additional user instructions",
-        "previous context",
-        "fix grammar",
-        "no hallucination",
-        "maintain the speaker's original cadence",
-    ]
-
-    def _validate_output(self, original_text, refined_text):
-        """Final sanity check to detect and fix hallucinations or echo loops."""
-        if not refined_text:
-            return original_text
-            
-        # 1. Detect prompt leakage (LLM echoeing its instructions)
-        ref_lower = refined_text.lower()
-        for finger in self._PROMPT_FINGERPRINTS:
-            if finger in ref_lower and len(refined_text) > len(original_text) * 2:
-                log_print(f" [Hallucination Guard] Detected prompt fingerprint '{finger}'. Reverting to original.")
-                return original_text
-
-        # 2. Detect extreme length mismatch (hallucinated story-telling)
-        if len(refined_text) > len(original_text) * 4 and len(original_text) > 30:
-            log_print(" [Hallucination Guard] Extreme length mismatch detected. Reverting to original.")
-            return original_text
-
-        # 3. Detect repetitive loops (e.g. "I have, I have, I have...")
-        if len(refined_text) > 50:
-            words = refined_text.split()
-            # If a single word or 2-word phrase makes up > 40% of the output
-            if len(words) > 10:
-                from collections import Counter
-                counts = Counter(words)
-                top_word, top_count = counts.most_common(1)[0]
-                if top_count / len(words) > 0.4:
-                    log_print(f" [Hallucination Guard] Detected word loop ('{top_word}'). Reverting.")
-                    return original_text
-
-        return refined_text
     def unload_model(self):
         if self.model:
             del self.model
@@ -809,9 +580,6 @@ class VoiceInputApp:
         self.target_key = "f8"
         self.active_mods = set()
         self.settings_process = None
-        self.last_toggle_time = 0 # Hotkey de-bounce timer
-        self.last_config_reload_time = 0 # Cooldown for config polling
-        self._last_prefs_hash = None # Hash-based change detection
         
         # Load Config (FINAL STEP of init to prevent overwriting by defaults)
         self.load_config()
@@ -823,17 +591,6 @@ class VoiceInputApp:
         threading.Thread(target=self.initial_load, daemon=True).start()
 
     def initial_load(self):
-        # Run model cleanup FIRST to avoid race conditions with loading
-        try:
-            prefs_path = os.path.join(BASE_DIR, ".user_prefs.json")
-            if os.path.exists(prefs_path):
-                with open(prefs_path, "r", encoding="utf-8") as f:
-                    prefs = json.load(f)
-                cleanup_days = prefs.get("model_cleanup_days", 7)
-                if cleanup_days > 0:
-                    self.cleanup_stale_models(cleanup_days)
-        except: pass
-
         self.loading_status = "Loading VAD..."
         self.update_tray_tooltip()
         self.load_vad()
@@ -847,7 +604,7 @@ class VoiceInputApp:
         log_print("Loading Silero VAD...", end="", flush=True)
         try:
             # Force Torch Hub to use the local models folder for VAD
-            hub_dir = os.path.join(BASE_DIR, "models", "hub")
+            hub_dir = os.path.join(APP_DATA_DIR, "models", "hub")
             if not os.path.exists(hub_dir):
                 os.makedirs(hub_dir, exist_ok=True)
             torch.hub.set_dir(hub_dir)
@@ -882,8 +639,6 @@ class VoiceInputApp:
             def load_grammar():
                 try:
                     self.grammar_checker.load_model()
-                    # Track LLM usage here
-                    self.track_model_usage(self.current_refiner)
                     return True
                 except Exception as e:
                     log_print(f"Parallel Load Error (Grammar): {e}")
@@ -895,32 +650,29 @@ class VoiceInputApp:
                     device_str = "cuda" if is_gpu else "cpu"
                     
                     if ASR_BACKEND == "sensevoice":
-                        sense_dir = os.path.join(BASE_DIR, "models", "SenseVoiceSmall")
-                        log_print(f"ASR Diagnostic - Initializing SenseVoiceSmall on {device_str}...")
+                        sense_dir = os.path.join(APP_DATA_DIR, "models", "SenseVoiceSmall")
+                        if not os.path.exists(sense_dir):
+                            log_print("Fetching SenseVoiceSmall...")
+                            from modelscope.hub.snapshot_download import snapshot_download
+                            snapshot_download('iic/SenseVoiceSmall', local_dir=sense_dir)
+                            
                         from funasr import AutoModel
+                        self.vad_model = AutoModel(model="fsmn-vad", model_revision="v2.0.4", max_single_segment_time=60000, disable_update=True)
                         self.asr_model = AutoModel(
-                            model=sense_dir if os.path.exists(sense_dir) else "iic/SenseVoiceSmall",
-                            device=device_str,
-                            disable_update=True
+                            model=sense_dir,
+                            vad_model="fsmn-vad",
+                            vad_kwargs={"max_single_segment_time": 30000},
+                            disable_update=True,
+                            device="cuda" if torch.cuda.is_available() else "cpu"
                         )
-                        log_print(f"SenseVoice initialized successfully.")
-                    elif IS_MAC:
-                        # MLX-Whisper initialization on Mac
-                        log_print(f"ASR Diagnostic - Initializing Apple MLX-Whisper...")
-                        import mlx_whisper
-                        self.asr_model = mlx_whisper
-                        log_print(f"MLX-Whisper initialized successfully.")
                     else:
                         compute_type = "float16" if is_gpu else "int8"
                         from faster_whisper import WhisperModel
-                        local_whisper = os.path.join(BASE_DIR, "models", f"whisper-{WHISPER_SIZE}")
+                        local_whisper = os.path.join(APP_DATA_DIR, "models", f"whisper-{WHISPER_SIZE}")
                         model_path = local_whisper if os.path.exists(os.path.join(local_whisper, "model.bin")) else WHISPER_REPO
                         log_print(f"ASR Diagnostic - Initializing WhisperModel ({WHISPER_SIZE}) on {device_str}...")
                         self.asr_model = WhisperModel(model_path, device=device_str, compute_type=compute_type)
                         log_print(f"WhisperModel initialized successfully.")
-                    
-                    # Track ASR model usage here instead of in load_config
-                    self.track_model_usage(getattr(self, 'active_asr_name', WHISPER_SIZE))
                     return True
                 except Exception as e:
                     log_print(f"Parallel Load Error (ASR): {e}")
@@ -932,19 +684,14 @@ class VoiceInputApp:
                 futures = [executor.submit(load_grammar), executor.submit(load_asr)]
                 results = [f.result() for f in futures]
 
-            if not results[1]: # Whisper is mandatory
-                log_print("CRITICAL: ASR model failed to load.")
-                self.loading_status = "ASR Load Error"
+            if not all(results):
+                log_print("CRITICAL: One or more models failed to load.")
                 self.update_tray_tooltip()
-                self.pending_wakeup = False
                 return
-
-            if not results[0]:
-                log_print("WARNING: Grammar model failed to load. Proceeding with ASR only.")
 
             self.models_ready = True
             self.heavy_models_loaded = True
-            self.loading_status = "Ready" if results[0] else "ASR Only"
+            self.loading_status = "Ready"
             self.update_status("READY")
             
             # Reset activity timer so we don't immediately unload
@@ -971,7 +718,6 @@ class VoiceInputApp:
             log_print(f"Unloading Models (VRAM Saver - Idle for {idle_time:.1f}s)...")
             self.asr_model = None
             self.grammar_checker.unload_model()
-            self.grammar_checker.context_buffer = "" # Clear conversation context
             
             # Force Garbage Collection
             gc.collect()
@@ -987,7 +733,7 @@ class VoiceInputApp:
     def track_model_usage(self, model_name):
         """Update last_used timestamp for the given model in hidden prefs."""
         try:
-            prefs_path = os.path.join(BASE_DIR, ".user_prefs.json")
+            prefs_path = os.path.join(APP_DATA_DIR, ".user_prefs.json")
             if os.path.exists(prefs_path):
                 # RE-READ to ensure we have latest state (avoid race conditions with GUI)
                 if os.path.exists(prefs_path):
@@ -1008,8 +754,8 @@ class VoiceInputApp:
     def load_config(self):
         """Unified configuration loader with split protection and migration."""
         try:
-            config_path = os.path.join(BASE_DIR, "config.json")
-            prefs_path = os.path.join(BASE_DIR, ".user_prefs.json")
+            config_path = os.path.join(APP_DATA_DIR, "config.json")
+            prefs_path = os.path.join(APP_DATA_DIR, ".user_prefs.json")
             
             # --- 1. Load Technical Config (Static/Public) ---
             config = {}
@@ -1047,49 +793,15 @@ class VoiceInputApp:
                 with open(config_path, "w", encoding="utf-8") as f:
                     # Keep formatted technical config
                     json.dump(config, f, indent=4)
-                
-            # --- 3b. Force transition for the new default if still on old default (ONE-TIME) ---
-            if prefs.get("current_refiner") == "CoEdit Large (T5)" and not prefs.get("_migrate_llama_3_2"):
-                prefs["current_refiner"] = models_config.DEFAULT_LLM
-                prefs["_migrate_llama_3_2"] = True
-                with open(prefs_path, "w", encoding="utf-8") as f:
-                    json.dump(prefs, f, indent=4)
-            
-            # Update mtime tracker immediately to avoid self-triggering polish loop
-            if os.path.exists(prefs_path):
-                self._last_prefs_mtime = os.path.getmtime(prefs_path)
 
             # --- 4. Apply Settings ---
-            # Parse hotkey_str (e.g. "ctrl+shift+k")
-            new_hotkey_str = prefs.get("hotkey", "f8").lower()
-            hotkey_changed = new_hotkey_str != getattr(self, 'hotkey_str', '')
-            self.hotkey_str = new_hotkey_str
+            self.hotkey_str = prefs.get("hotkey", "f8").lower()
             
+            # Parse hotkey_str (e.g. "ctrl+shift+k")
             parts = [p.strip() for p in self.hotkey_str.split('+')]
-            self.target_mods = set([p for p in parts if p in ["ctrl", "shift", "alt", "cmd"]])
+            self.target_mods = set([p for p in parts if p in ["ctrl", "shift", "alt"]])
             self.target_key = parts[-1] if parts else "f8"
             log_print(f"Parsed Hotkey: Mods={self.target_mods}, Key={self.target_key}")
-            
-            # UPDATE HOTKEY IN-PLACE (No listener restart)
-            if hotkey_changed:
-                log_print(f"Hotkey changed ({getattr(self, 'hotkey_str_old', 'None')} -> {self.hotkey_str}). Updating in-place...")
-                self.hotkey_str_old = self.hotkey_str
-                # Listener already uses target_mods/target_key, so updating them is enough
-                # We also clear active_mods to prevent "stuck" combinations during the transition
-                self.active_mods.clear()
-            
-            # Update Tray ToolTip context
-            self.update_tray_tooltip()
-            
-            self.last_config_reload_time = time.time()
-            # Update hash tracker and mtime after all potential logic is done
-            if os.path.exists(prefs_path):
-                 with open(prefs_path, "rb") as f:
-                     self._last_prefs_hash = hashlib.md5(f.read()).hexdigest()
-                 self._last_prefs_mtime = os.path.getmtime(prefs_path)
-                
-            # Update Tray ToolTip context
-            self.update_tray_tooltip()
 
             self.sound_enabled = prefs.get("sound_enabled", True)
             self.auto_stop_enabled = prefs.get("auto_stop_enabled", True)
@@ -1111,7 +823,7 @@ class VoiceInputApp:
             self.character = prefs.get("character", "Writing Assistant")
             self.tone = prefs.get("tone", "Natural")
             self.custom_prompts = prefs.get("custom_prompts", {})
-            self.current_refiner = prefs.get("current_refiner", models_config.DEFAULT_LLM)
+            self.current_refiner = prefs.get("current_refiner", "Llama 3.2 3B Instruct")
             
             # Library Loading (Prefer User Prefs > Config > Default)
             self.asr_library = prefs.get("asr_library", config.get("asr_library", models_config.ASR_LIBRARY))
@@ -1131,16 +843,11 @@ class VoiceInputApp:
                         "prompt_type": p.get("prompt_type"),
                         "description": p.get("description", "")
                     }
-                    # REMOVED recursive usage tracking here
+                    self.track_model_usage(p["name"])
                     break
             
             if hasattr(self, 'grammar_checker'):
                 self.grammar_checker.profile = profile
-                
-                # Clear context cache if personality/tone changes abruptly to prevent bleed
-                if self.grammar_checker.character != self.character or self.grammar_checker.tone != self.tone:
-                     self.grammar_checker.context_buffer = ""
-                     
                 self.grammar_checker.character = self.character
                 self.grammar_checker.tone = self.tone
                 self.grammar_checker.custom_prompts = self.custom_prompts
@@ -1149,8 +856,7 @@ class VoiceInputApp:
             # ASR Model resolution
             global WHISPER_SIZE, WHISPER_REPO, ASR_BACKEND
             old_whisper = WHISPER_SIZE
-            self.active_asr_name = prefs.get("whisper_model", models_config.DEFAULT_ASR)
-            active_asr = self.active_asr_name
+            active_asr = prefs.get("whisper_model", "Distil-Whisper Large v3 (English)")
             
             # Find in library
             WHISPER_REPO = "Systran/faster-distil-whisper-large-v3" # Defaults
@@ -1161,12 +867,15 @@ class VoiceInputApp:
                     # Sync with library technical names
                     WHISPER_REPO = asr.get("whisper_repo") or asr.get("repo")
                     WHISPER_SIZE = asr.get("whisper_model") or asr.get("name")
-                    # REMOVED recursive usage tracking here
+                    self.track_model_usage(asr["name"])
                     break
 
             ASR_BACKEND = "whisper"
             
-            # REMOVED cleanup_stale_models from here to prevent recursive reload loops
+            # Run cleanup on startup if enabled
+            cleanup_days = prefs.get("model_cleanup_days", 7)
+            if cleanup_days > 0:
+                self.cleanup_stale_models(cleanup_days)
 
         except Exception as e:
             log_print(f"Error loading config: {e}")
@@ -1179,7 +888,7 @@ class VoiceInputApp:
         
         # 1. Check local path if provided
         if local_path:
-            full_path = os.path.join(BASE_DIR, local_path)
+            full_path = os.path.join(APP_DATA_DIR, local_path)
             if os.path.isdir(full_path):
                 # Basic signature check
                 if model_type == "asr" and os.path.exists(os.path.join(full_path, "model.bin")):
@@ -1205,7 +914,7 @@ class VoiceInputApp:
     def cleanup_stale_models(self, days):
         """Deletes models that haven't been used in X days."""
         try:
-            prefs_path = os.path.join(BASE_DIR, ".user_prefs.json")
+            prefs_path = os.path.join(APP_DATA_DIR, ".user_prefs.json")
             if not os.path.exists(prefs_path): return
             
             with open(prefs_path, "r", encoding="utf-8") as f:
@@ -1215,50 +924,30 @@ class VoiceInputApp:
             threshold = datetime.now() - timedelta(days=days)
             
             # Collect all models currently in libraries to avoid deleting active ones
-            all_known_files = []
-            for m in models_config.ASR_LIBRARY:
-                all_known_files.append(m.get("whisper_model", "").lower())
-                all_known_files.append(m.get("name", "").lower())
-            for m in models_config.LLM_LIBRARY:
-                all_known_files.append(m.get("file_name", "").lower())
-                all_known_files.append(m.get("name", "").lower())
+            active_repos = [m.get("repo") for m in self.asr_library + self.llm_library if m.get("repo")]
             
-            # Current globals
-            all_known_files.append(WHISPER_SIZE.lower())
-            all_known_files.append(GRAMMAR_FILE.lower())
-            
-            models_dir = os.path.join(BASE_DIR, "models")
+            models_dir = os.path.join(APP_DATA_DIR, "models")
             if not os.path.exists(models_dir): return
             
             for item in os.listdir(models_dir):
                 item_path = os.path.join(models_dir, item)
-                item_lower = item.lower()
+                # This is a bit tricky as folder names might not match repo IDs perfectly
+                # But we can check usage stats for common patterns
                 
-                # Never delete specific infrastructure folders
-                if item_lower in ["hub", "cache", ".cache"]:
-                    continue
-
-                # Never delete models that are in our library definitions
-                is_active = False
-                for known in all_known_files:
-                    if known and (known in item_lower or item_lower in known):
-                        is_active = True
-                        break
-                
-                if is_active:
-                    continue
-
-                # Final check against usage stats
+                # Check if this item is "stale" based on usage stats
                 is_used_recently = False
                 for model_key, last_used_iso in stats.items():
-                    try:
-                        last_used = datetime.fromisoformat(last_used_iso)
-                        if last_used > threshold:
-                            if item_lower in model_key.lower() or model_key.lower() in item_lower:
-                                is_used_recently = True
-                                break
-                    except: pass
+                    last_used = datetime.fromisoformat(last_used_iso)
+                    if last_used > threshold:
+                        # If the folder name is part of the repo/model name, it's "used"
+                        if item.lower() in model_key.lower() or model_key.lower() in item.lower():
+                            is_used_recently = True
+                            break
                 
+                # Never delete the currently active models
+                if item.lower() in WHISPER_SIZE.lower() or item.lower() in self.current_refiner.lower():
+                    is_used_recently = True
+
                 if not is_used_recently:
                     log_print(f"Cleaning up stale model: {item} (Unused for {days}+ days)")
                     import shutil
@@ -1270,31 +959,59 @@ class VoiceInputApp:
         except Exception as e:
             log_print(f"Cleanup error: {e}")
             
+    def load_config(self):
+        # We moved the hotkey setup to the bottom of load_config where it belongs
+        try:
+            prefs_path = os.path.join(APP_DATA_DIR, ".user_prefs.json")
+            config_path = os.path.join(APP_DATA_DIR, "config.json")
+            
+            # (The rest of load_config is already above this point. 
+            # We are injecting the hotkey setup here before load_config ends)
+            
+            # Simple hotkey support
+            prefs = {}
+            if os.path.exists(prefs_path):
+                with open(prefs_path, "r", encoding="utf-8") as f:
+                    prefs = json.load(f)
+            hotkey_str = prefs.get("hotkey", "F8").lower()
+            
+            self.hotkey = keyboard.Key.f8
+            if hotkey_str in keyboard.Key.__members__:
+                self.hotkey = keyboard.Key[hotkey_str]
+            elif len(hotkey_str) == 1:
+                self.hotkey = keyboard.KeyCode.from_char(hotkey_str)
+            else:
+                if hotkey_str.upper() in keyboard.Key.__members__:
+                    self.hotkey = keyboard.Key[hotkey_str.upper()]
+
+        except Exception as e:
+            log_print(f"Error loading hotkey config: {e}")
+            traceback.print_exc()
 
     def update_tray_tooltip(self):
         if self.icon:
             gpu_status = "GPU" if torch.cuda.is_available() else "CPU"
-            hk_display = getattr(self, 'hotkey_str', 'F8').upper()
-            self.icon.title = f"Privox: {self.loading_status} ({gpu_status})\nHotkey: {hk_display}"
+            self.icon.title = f"Privox: {self.loading_status} ({gpu_status})"
 
     def update_status(self, status):
-        # status: READY, RECORDING, PROCESSING, ERROR, DOWNLOADING, INITIALIZING, SLEEP
+        # status: READY, RECORDING, PROCESSING, ERROR, LOADING, SLEEP
         self.ui_state = status
+        
+        # Immediate text update (icon handled by loop or here if static)
+        if not self.icon: return
 
-        # Keep one source of truth for tray text to avoid inconsistent tooltip/title states.
-        status_text = {
-            "READY": "Ready",
-            "RECORDING": "Listening...",
-            "PROCESSING": "Processing...",
-            "DOWNLOADING": "Downloading Model...",
-            "ERROR": "Error/No Mic",
-            "SLEEP": "Sleeping (VRAM Saver Active)",
-            "INITIALIZING": "Initializing..."
-        }.get(status)
-
-        if status_text:
-            self.loading_status = status_text
-        self.update_tray_tooltip()
+        if status == "READY":
+            self.icon.title = "Privox: Ready (F8)"
+        elif status == "RECORDING":
+            self.icon.title = "Privox: Listening..."
+        elif status == "PROCESSING":
+            self.icon.title = "Privox: Processing..."
+        elif status == "DOWNLOADING":
+            self.icon.title = "Privox: Downloading Model..."
+        elif status == "ERROR":
+            self.icon.title = "Privox: Error/No Mic"
+        elif status == "SLEEP":
+             self.icon.title = "Privox: Sleeping (VRAM Saver Active)"
 
     def animation_loop(self):
         frame = 0
@@ -1441,8 +1158,7 @@ class VoiceInputApp:
         mod_map = {
             keyboard.Key.ctrl: "ctrl", keyboard.Key.ctrl_l: "ctrl", keyboard.Key.ctrl_r: "ctrl",
             keyboard.Key.shift: "shift", keyboard.Key.shift_l: "shift", keyboard.Key.shift_r: "shift",
-            keyboard.Key.alt: "alt", keyboard.Key.alt_l: "alt", keyboard.Key.alt_gr: "alt",
-            keyboard.Key.cmd: "cmd", keyboard.Key.cmd_l: "cmd", keyboard.Key.cmd_r: "cmd"
+            keyboard.Key.alt: "alt", keyboard.Key.alt_l: "alt", keyboard.Key.alt_gr: "alt"
         }
         
         if key in mod_map:
@@ -1455,50 +1171,31 @@ class VoiceInputApp:
         # 2. Key Normalization
         key_name = ""
         try:
-            k_name = getattr(key, 'name', None)
-            k_char = getattr(key, 'char', None)
-            k_vk = getattr(key, 'vk', None)
-
-            if k_name:
-                key_name = k_name
-            elif k_vk and 65 <= k_vk <= 90:
-                # A-Z (VK codes 65-90). Safely bypasses unprintable ASCII generated by Ctrl+Key
-                key_name = chr(k_vk).lower()
-            elif k_vk and 48 <= k_vk <= 57:
-                # 0-9 (VK codes 48-57)
-                key_name = chr(k_vk)
-            elif k_char:
-                # Pynput unprintable char fallback (e.g. Ctrl+A = \x01)
-                if 1 <= ord(k_char) <= 26: 
-                     key_name = chr(ord(k_char) + 96)
-                else:
-                     key_name = k_char.lower()
-            elif k_vk:
-                    # Handle virtual keys (important for some mouse remappings)
-                    # VK codes: F1=0x70 ... F12=0x7B, F13=0x7C ... F24=0x87. Space=0x20, Enter=0x0D
-                    vk_map = {
-                        0x70: "f1", 0x71: "f2", 0x72: "f3", 0x73: "f4",
-                        0x74: "f5", 0x75: "f6", 0x76: "f7", 0x77: "f8",
-                        0x78: "f9", 0x79: "f10", 0x7A: "f11", 0x7B: "f12",
-                        0x7C: "f13", 0x7D: "f14", 0x7E: "f15", 0x7F: "f16",
-                        0x80: "f17", 0x81: "f18", 0x82: "f19", 0x83: "f20",
-                        0x84: "f21", 0x85: "f22", 0x86: "f23", 0x87: "f24",
-                        0x20: "space", 0x0D: "enter", 0x09: "tab", 0x1B: "esc",
-                        0x21: "page_up", 0x22: "page_down", 0x23: "end", 0x24: "home",
-                        0x2D: "insert", 0x2E: "delete"
-                    }
-                    key_name = vk_map.get(k_vk, str(k_vk))
+            if isinstance(key, keyboard.Key):
+                key_name = key.name
+            elif hasattr(key, 'char') and key.char:
+                key_name = key.char.lower()
+            elif hasattr(key, 'vk'):
+                # Handle virtual keys (important for some mouse remappings)
+                # VK codes: F1=0x70 ... F12=0x7B, F13=0x7C ... F24=0x87. Space=0x20, Enter=0x0D
+                vk_map = {
+                    0x70: "f1", 0x71: "f2", 0x72: "f3", 0x73: "f4",
+                    0x74: "f5", 0x75: "f6", 0x76: "f7", 0x77: "f8",
+                    0x78: "f9", 0x79: "f10", 0x7A: "f11", 0x7B: "f12",
+                    0x7C: "f13", 0x7D: "f14", 0x7E: "f15", 0x7F: "f16",
+                    0x80: "f17", 0x81: "f18", 0x82: "f19", 0x83: "f20",
+                    0x84: "f21", 0x85: "f22", 0x86: "f23", 0x87: "f24",
+                    0x20: "space", 0x0D: "enter", 0x09: "tab", 0x1B: "esc",
+                    0x21: "page_up", 0x22: "page_down", 0x23: "end", 0x24: "home",
+                    0x2D: "insert", 0x2E: "delete"
+                }
+                key_name = vk_map.get(key.vk, str(key.vk))
+            
         except Exception:
-             pass
+            pass
 
         # 3. Check Match
         if key_name == self.target_key:
-            # DE-BOUNCE: Prevent rapid-fire re-triggering (e.g. from key auto-repeat)
-            now = time.time()
-            if now - self.last_toggle_time < 0.4:
-                return
-            self.last_toggle_time = now
-            
             # Win32 Robustness: Check for "Stuck" modifiers using ctypes
             if sys.platform == 'win32' and self.active_mods != self.target_mods:
                 import ctypes
@@ -1530,8 +1227,7 @@ class VoiceInputApp:
         mod_map = {
             keyboard.Key.ctrl: "ctrl", keyboard.Key.ctrl_l: "ctrl", keyboard.Key.ctrl_r: "ctrl",
             keyboard.Key.shift: "shift", keyboard.Key.shift_l: "shift", keyboard.Key.shift_r: "shift",
-            keyboard.Key.alt: "alt", keyboard.Key.alt_l: "alt", keyboard.Key.alt_gr: "alt",
-            keyboard.Key.cmd: "cmd", keyboard.Key.cmd_l: "cmd", keyboard.Key.cmd_r: "cmd"
+            keyboard.Key.alt: "alt", keyboard.Key.alt_l: "alt", keyboard.Key.alt_gr: "alt"
         }
         if key in mod_map:
             val = mod_map[key]
@@ -1616,18 +1312,6 @@ class VoiceInputApp:
                     raw_text = re.sub(r'<\|.*?\|>', '', raw_text).strip()
                 
                 log_print(f" SenseVoice Result - Raw: '{raw_text}'")
-            elif IS_MAC:
-                # MLX-Whisper
-                log_print(f" Transcribing Using MLX-Whisper...")
-                # Find the local model path
-                local_whisper = os.path.join(BASE_DIR, "models", f"whisper-{WHISPER_SIZE}")
-                # usage: mlx_whisper.transcribe(audio, path_or_hf_repo)
-                results = self.asr_model.transcribe(
-                    audio_data.astype(np.float32), 
-                    path_or_hf_repo=local_whisper if os.path.exists(local_whisper) else WHISPER_REPO
-                )
-                raw_text = results.get('text', "").strip()
-                log_print(f" MLX-Whisper Result - Raw: '{raw_text}'")
             else:
                 # Faster-Whisper
                 segments, info = self.asr_model.transcribe(
@@ -1642,13 +1326,13 @@ class VoiceInputApp:
                 # Collect segments and log each one
                 seg_results = []
                 for segment in segments:
-                    log_print(f"  Segment: [{segment.start:.2f}s -> {segment.end:.2f}s] ({len(segment.text)} chars)")
+                    log_print(f"  Segment: [{segment.start:.2f}s -> {segment.end:.2f}s] '{segment.text}'")
                     seg_results.append(segment.text)
                 
                 raw_text = " ".join(seg_results).strip()
             
             t1 = time.time()
-            log_print(f" [ASR Total Time: {t1 - t0:.3f}s] Result: {len(raw_text)} chars")
+            log_print(f" [ASR Total Time: {t1 - t0:.3f}s] Joined Result: '{raw_text}'")
             
             if not raw_text:
                 log_print(" [Empty Transcription Result]")
@@ -1664,15 +1348,13 @@ class VoiceInputApp:
             #     command_text = re.sub(r'^(privox)\s*,?\s*', '', raw_text, flags=re.IGNORECASE)
             #     log_print(f" [Command Mode Detected] Input: {command_text}")
             
-            log_print(f" Refining format ({self.current_refiner})...")
+            log_print(" Refining format (Llama 3.2)...")
             t2 = time.time()
-            detected_lang = info.language if ASR_BACKEND == 'whisper' else None
-            detected_prob = info.language_probability if ASR_BACKEND == 'whisper' else 0.0
-            final_text = self.grammar_checker.correct(command_text, is_command=is_command, language=detected_lang, language_prob=detected_prob)
+            final_text = self.grammar_checker.correct(command_text, is_command=is_command)
             t3 = time.time()
             log_print(f" [Grammar Time: {t3 - t2:.3f}s]")
             
-            log_print(f" [Refined Output: {len(final_text)} chars]")
+            log_print(f"Output: {final_text}")
             log_print(f" [Total Time: {t3 - t0:.3f}s]")
             
             try:
@@ -1692,13 +1374,9 @@ class VoiceInputApp:
             original_clipboard = pyperclip.paste()
             pyperclip.copy(text)
             time.sleep(0.05) 
-            
-            modifier = keyboard.Key.cmd if IS_MAC else keyboard.Key.ctrl
-            
-            with self.keyboard_controller.pressed(modifier):
+            with self.keyboard_controller.pressed(keyboard.Key.ctrl):
                 self.keyboard_controller.press('v')
                 self.keyboard_controller.release('v')
-                
             time.sleep(0.2) 
             pyperclip.copy(original_clipboard)
         except Exception as e:
@@ -1740,26 +1418,18 @@ class VoiceInputApp:
 
             # Config Polling (Hot-reload)
             try:
-                prefs_path = os.path.join(BASE_DIR, ".user_prefs.json")
+                prefs_path = os.path.join(APP_DATA_DIR, ".user_prefs.json")
                 if os.path.exists(prefs_path):
                     mtime = os.path.getmtime(prefs_path)
                     if not hasattr(self, '_last_prefs_mtime'):
-                        self._last_prefs_mtime = mtime
+                         self._last_prefs_mtime = mtime
                     elif mtime > self._last_prefs_mtime:
-                        # Use HASH based comparison to avoid metadata "touches" causing loops
-                        with open(prefs_path, "rb") as f:
-                            current_hash = hashlib.md5(f.read()).hexdigest()
-                        
-                        if current_hash != self._last_prefs_hash:
-                            log_print(f"Configuration content change detected. Reloading...")
-                            self._last_prefs_hash = current_hash
-                            self._last_prefs_mtime = mtime
-                            time.sleep(0.1)
-                            self.load_config()
-                            log_print(f"Reload complete. Hotkey: {self.hotkey_str}")
-                        else:
-                            # Content is same, just metadata was touched. Update mtime to stop polling.
-                            self._last_prefs_mtime = mtime
+                        log_print(f"Configuration change detected (mtime={mtime}). Reloading settings...")
+                        self._last_prefs_mtime = mtime
+                        # Small delay to ensure writer finished
+                        time.sleep(0.1)
+                        self.load_config()
+                        log_print(f"Reload complete. Auto-Stop: {self.silence_timeout_ms}ms, VRAM Saver: {self.vram_timeout}s")
             except: pass
 
             try:
@@ -1774,23 +1444,16 @@ class VoiceInputApp:
                 chunk = chunk.flatten()
                 self.audio_buffer.extend(chunk)
                 
-                # Check VAD for Manual Toggle Feedback & Auto-Stop
+                # Check VAD for Manual Toggle Feedback (Optional)
                 if self.vad_iterator:
                     chunk_tensor = torch.from_numpy(chunk).float()
                     speech_dict = self.vad_iterator(chunk_tensor, return_seconds=True)
-                    
                     if speech_dict:
                         if 'start' in speech_dict and not self.is_speaking:
                              self.is_speaking = True
                         if 'end' in speech_dict and self.is_listening and self.auto_stop_enabled:
-                             log_print(" [Auto-Stop Detected: Silence after speech]")
+                             log_print(" [Auto-Stop Detected]")
                              self.stop_listening()
-                    
-                    # Safety Fallback: Absolute silence timeout (if never started speaking)
-                    if self.is_listening and not self.is_speaking and self.auto_stop_enabled:
-                        if (time.time() - self.last_activity_time) > (self.silence_timeout_ms / 1000):
-                            log_print(" [Auto-Stop Detected: Initial silence timeout]")
-                            self.stop_listening()
                             
             except Exception as e:
                 log_print(f"Loop Error: {e}")
@@ -1815,13 +1478,8 @@ class VoiceInputApp:
             
             def watch_process():
                 self.settings_process.wait()
-                ret_code = self.settings_process.returncode
-                log_print(f"Settings GUI closed (Exit Code: {ret_code}). Reloading config...")
+                log_print("Settings GUI closed. Reloading config...")
                 self.load_config()
-                
-                if ret_code == 10:
-                    log_print("Restart requested by Settings GUI. Triggering full app restart...")
-                    self.restart_app(reopen_settings=True)
                 
             threading.Thread(target=watch_process, daemon=True).start()
         except Exception as e:
@@ -1833,28 +1491,6 @@ class VoiceInputApp:
             except: pass
         icon.visible = False
         icon.stop() 
-        os._exit(0)
-
-    def restart_app(self, reopen_settings=False):
-        """Restarts the entire application, optionally re-opening settings."""
-        log_print(f"Restarting Privox (reopen_settings={reopen_settings})...")
-        
-        # Cleanup
-        if self.icon:
-            self.icon.stop()
-        
-        if getattr(sys, 'frozen', False):
-            args = [sys.executable]
-        else:
-            args = [sys.executable, sys.argv[0]]
-            
-        if reopen_settings:
-            args.append("--settings")
-        
-        # Give OS a moment to release file handles/mutex if needed
-        # But os.execv replaces the process, so it should be fine.
-        # However, subprocess is safer for avoiding mutex race conditions on Windows.
-        subprocess.Popen(args, cwd=BASE_DIR, shell=False)
         os._exit(0)
 
     def reconnect_action(self, icon, item):
@@ -1907,10 +1543,9 @@ class VoiceInputApp:
         """Toggle recording triggered by hotkey (manual listener)."""
         # Wake up detection
         if not self.heavy_models_loaded:
-            if not self.pending_wakeup:
-                log_print("Wake up detected. Pre-loading models...")
-                self.pending_wakeup = True
-                threading.Thread(target=self.load_heavy_models, daemon=True).start()
+            log_print("Wake up detected. Pre-loading models...")
+            self.pending_wakeup = True # Auto-start recording when ready
+            threading.Thread(target=self.load_heavy_models, daemon=True).start()
             return
 
         if not self.vad_model or self.asr_model is None:
@@ -1924,17 +1559,45 @@ class VoiceInputApp:
             return
             
         if not self.is_listening:
-            # If it's currently processing an old prompt, clicking the hotkey again should start a NEW recording gracefully.
-            if self.ui_state == "PROCESSING":
-                 log_print("Interrupting current processing to start new recording.")
             self.start_listening()
         else:
             self.stop_listening()
 
+    def check_mac_accessibility(self):
+        if sys.platform != 'darwin': return True
+        try:
+            import ctypes
+            import ctypes.util
+            app_services = ctypes.cdll.LoadLibrary(ctypes.util.find_library("ApplicationServices"))
+            
+            # Simple check
+            trusted = app_services.AXIsProcessTrusted()
+            if not trusted:
+                log_print("macOS Accessibility permissions missing. Prompting user...")
+                # Trigger Native Prompt via AppleScript
+                os.system('''osascript -e 'tell application "System Events" to get name of every process' >/dev/null 2>&1''')
+                
+                time.sleep(1)
+                trusted = app_services.AXIsProcessTrusted()
+                if not trusted:
+                    msg = 'Privox needs Accessibility permissions to detect the global hotkey (F8).\\n\\nPlease go to System Settings -> Privacy & Security -> Accessibility, and allow your terminal or Privox app.\\n\\nAfter granting permission, restart Privox.'
+                    os.system(f'''osascript -e 'display dialog "{msg}" buttons {{"OK"}} default button "OK" with title "Privox"' ''')
+                    return False
+            return True
+        except Exception as e:
+            log_print(f"Error checking accessibility: {e}")
+            return True
+
     def run(self):
-        # Single Instance Mutex Check (Windows)
+        if not self.check_mac_accessibility():
+            sys.exit(0)
+            
+        # Single Instance Mutex Check
         self.mutex_handle = None
-        if sys.platform == 'win32':
+        self.mac_lockfile = None
+        
+        if IS_WIN:
+            import ctypes
             mutex_name = "Global\\Privox_SingleInstance_Mutex"
             self.mutex_handle = ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name)
             last_error = ctypes.windll.kernel32.GetLastError()
@@ -1950,6 +1613,22 @@ class VoiceInputApp:
                 sys.exit(0)
             
             log_print("Acquired single-instance mutex.")
+            
+        elif IS_MAC:
+            import fcntl
+            import tempfile
+            lockfile_path = os.path.join(tempfile.gettempdir(), 'privox_single_instance.lock')
+            try:
+                self.mac_lockfile = open(lockfile_path, 'w')
+                # LOCK_EX (Exclusive lock) | LOCK_NB (Non-blocking)
+                fcntl.flock(self.mac_lockfile, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                log_print("Acquired macOS single-instance lockfile.")
+            except IOError:
+                log_print("Another instance of Privox is already running on macOS. Exiting.")
+                # We could show an NSAlert here, but stdout log is usually sufficient for macOS background apps.
+                if self.mac_lockfile:
+                    self.mac_lockfile.close()
+                sys.exit(0)
 
         # Setup Tray Menu
         menu = pystray.Menu(
@@ -1960,9 +1639,6 @@ class VoiceInputApp:
         # Create Icon
         image = self.draw_flat_line(None)
         self.icon = pystray.Icon("Privox", image, "Privox: Initializing...", menu)
-        
-        # Initial tooltip update
-        self.update_tray_tooltip()
         
         # Pass icon to grammar checker for notifications immediately
         self.grammar_checker.icon = self.icon
@@ -1975,26 +1651,12 @@ class VoiceInputApp:
         
         # Start Keyboard Listener (Manual Listener for better compatibility)
         log_print("Starting Keyboard Listener...")
-        try:
-            self.keyboard_listener = keyboard.Listener(on_press=self.on_press, on_release=self.on_release)
-            self.keyboard_listener.start()
-            time.sleep(0.2)
-            if not self.keyboard_listener.is_alive():
-                raise RuntimeError("Keyboard listener thread failed to start.")
-            log_print("Keyboard Listener started.")
-        except Exception as e:
-            log_print(f"Keyboard Listener failed: {e}")
-            self.loading_status = "Hotkey listener failed (check Accessibility permission)"
-            self.update_status("ERROR")
+        self.keyboard_listener = keyboard.Listener(on_press=self.on_press, on_release=self.on_release)
+        self.keyboard_listener.start()
         
         # Run Icon (Native Loop)
         log_print("Starting Tray Icon Loop...")
-        
-        # Check if we should auto-open settings
-        if "--settings" in sys.argv:
-            log_print("Auto-opening settings as requested...")
-            self.show_settings_gui(self.icon, None)
-
+        # ctypes.windll.user32.MessageBoxW(0, "About to show Tray Icon. Click OK to continue.", "Privox Debug", 0x40)
         self.icon.run()
 
 if __name__ == "__main__":

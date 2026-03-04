@@ -12,6 +12,7 @@ start-windowless = "pythonw src/voice_input.py"
 build = "python build_app.py"
 
 [system-requirements]
+macos = "14.0"
 # CUDA is only needed/relevant for Windows/Linux
 # We don't define it globally if we want to run on Mac
 
@@ -59,5 +60,9 @@ diskcache = "*"
 pyside6 = "==6.8.1"
 
 [target.osx-arm64.pypi-dependencies]
-mlx-lm = "*"
+mlx = "==0.30.6"
+mlx-lm = "==0.30.5"
+mlx-whisper = "*"
+mlx-audio = ">=0.3.1"
+transformers = "==5.0.0rc3"
 

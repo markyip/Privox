@@ -33,9 +33,29 @@ LLM_LIBRARY = [
         "description": "Premium English refiner. 60x more efficient than LLMs."
     },
     {
+<<<<<<< Updated upstream
         "name": "Multilingual (Qwen 2.5 3B)", 
         "repo_id": "bartowski/Qwen2.5-3B-Instruct-GGUF", 
         "file_name": "Qwen2.5-3B-Instruct-Q4_K_M.gguf", 
+=======
+        "name": "Multilingual (Qwen 3.5 9B)", 
+        "repo_id": "unsloth/Qwen3.5-9B-GGUF", 
+        "file_name": "Qwen3.5-9B-Q4_K_M.gguf", 
+        "prompt_type": "chatml",
+        "description": "Brand new Qwen 3.5 9B model. Significantly improved reasoning and instruction following. Requires ~6GB available VRAM."
+    },
+    {
+        "name": "Multilingual (Qwen 2.5 7B)", 
+        "repo_id": "bartowski/Qwen2.5-7B-Instruct-GGUF", 
+        "file_name": "Qwen2.5-7B-Instruct-Q4_K_M.gguf", 
+        "prompt_type": "chatml",
+        "description": "Powerful 7B model with widespread architecture support. Vastly smarter than 3B versions while remaining stable."
+    },
+    {
+        "name": "Mistral Small 24B (Q4_K_M)", 
+        "repo_id": "bartowski/Mistral-Small-24B-Instruct-v0.1-GGUF", 
+        "file_name": "Mistral-Small-24B-Instruct-v0.1-Q4_K_M.gguf", 
+>>>>>>> Stashed changes
         "prompt_type": "llama",
         "description": "Best for mixed languages and high instruction obedience."
     }

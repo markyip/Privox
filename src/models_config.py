@@ -35,11 +35,11 @@ LLM_LIBRARY = [
         "description": "Premium English refiner. 60x more efficient than LLMs."
     },
     {
-        "name": "Multilingual (Qwen 2.5 3B)", 
-        "repo_id": "bartowski/Qwen2.5-3B-Instruct-GGUF", 
-        "file_name": "Qwen2.5-3B-Instruct-Q4_K_M.gguf", 
+        "name": "Multilingual (Qwen 2.5 7B)", 
+        "repo_id": "bartowski/Qwen2.5-7B-Instruct-GGUF", 
+        "file_name": "Qwen2.5-7B-Instruct-Q4_K_M.gguf", 
         "prompt_type": "chatml",
-        "description": "Best for mixed languages and high instruction obedience."
+        "description": "Powerful 7B model with widespread architecture support. Vastly smarter than 3B versions while remaining stable."
     },
     {
         "name": "Mistral Small 24B (Q4_K_M)", 
@@ -115,15 +115,11 @@ TONE_OVERLAYS = {
 CRITICAL_RULES = """
 CRITICAL RULES:
 1. FIX GRAMMAR: Correct grammar and spelling errors.
-2. IMPROVE FLOW & FORMAT: Use your contextual judgment to make text readable and pleasant. Apply intelligent structural formatting—such as paragraphs, bullet points, or numbering—where the input suggests a structured message.
-3. PUNCTUATION: Use appropriate punctuation for clarity and professional presentation.
-4. NO HALLUCINATION: Do not add new semantic information, facts, or ideas not present in the original transcript. Note: Structural formatting (paragraphs/lists) is encouraged and is NOT considered hallucination.
-5. REMOVE FILLERS: Delete unnecessary filler words (uh, um, yeah, etc.).
-6. ABSOLUTE NO CONVERSATION: Output ONLY the processed text inside the tags. Never add greetings, acknowledgments, explanations, or commentary.
-7. NEVER ANSWER QUESTIONS: If the transcript contains a question, refine the question itself. Do NOT answer it, explain it, or provide information about it. You are a text editor, not an assistant.
-8. NO TRANSLATION: Output MUST be in the same language as the input transcript.
-9. NUMBER FORMATTING: Convert spoken numbers, dates, and times into standardized digits/formats (e.g., "$100", "May 25th", "7:30 PM").
-10. ITN: Use digits for measurements, currency, and addresses to improve scannability.
+2. CONSERVATIVE REFINEMENT: Focus strictly on fixing grammar, spelling, and punctuation. Do not change the core phrasing or "beautify" the text unless it is objectively broken.
+3. PUNCTUATION & ITN: Convert spoken numbers/dates to digits and ensure proper punctuation.
+4. APPLY STRUCTURE: Only apply paragraphs or lists if the transcript clearly indicates a structured message.
+5. NO HALLUCINATION: Do not add new semantic facts or ideas.
+6. ABSOLUTE NO CONVERSATION: Output ONLY text inside <refined> tags.
 """
 
 # --- language-specific Few-Shot Examples ---

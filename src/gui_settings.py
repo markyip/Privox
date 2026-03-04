@@ -74,7 +74,10 @@ class StderrInterceptor:
         self.pct_re = re.compile(r"(\d+(?:\.\d+)?)%")
         
     def write(self, s):
-        self.orig.write(s)
+        if self.orig:
+            try:
+                self.orig.write(s)
+            except: pass
         self.buffer += s
         if '\r' in self.buffer or '\n' in self.buffer:
             matches = self.pct_re.findall(self.buffer)
@@ -83,7 +86,10 @@ class StderrInterceptor:
             self.buffer = ""
             
     def flush(self):
-        self.orig.flush()
+        if self.orig and hasattr(self.orig, 'flush'):
+            try:
+                self.orig.flush()
+            except: pass
 
 class ModelUpdateWorker(QObject):
     def __init__(self, signals):

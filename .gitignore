@@ -63,6 +63,15 @@ debug_*.txt
 pip_install_log*.txt
 debug_launcher.bat
 debug_output.txt
+tmp_*.py
+benchmark_*.py
+profile_*.py
+verify_*.py
+extract_*.py
+read_*.py
+app_diagnostic.py
+ps_out.txt
+gpu_info.txt
 
 # OS
 Thumbs.db

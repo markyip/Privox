@@ -35,6 +35,20 @@ LLM_LIBRARY = [
         "description": "Premium English refiner. 60x more efficient than LLMs."
     },
     {
+        "name": "Multilingual (Qwen 3.5 9B)", 
+        "repo_id": "unsloth/Qwen3.5-9B-GGUF", 
+        "file_name": "Qwen3.5-9B-Q4_K_M.gguf", 
+        "prompt_type": "chatml",
+        "description": "Brand new Qwen 3.5 9B model. Maximum intelligence and reasoning. Requires ~6.5GB VRAM."
+    },
+    {
+        "name": "Multilingual (Qwen 3.5 4B)", 
+        "repo_id": "unsloth/Qwen3.5-4B-GGUF", 
+        "file_name": "Qwen3.5-4B-Q4_K_M.gguf", 
+        "prompt_type": "chatml",
+        "description": "The sweet spot. Much smarter than 2.5 3B while staying fast and light (~3.5GB VRAM)."
+    },
+    {
         "name": "Multilingual (Qwen 2.5 7B)", 
         "repo_id": "bartowski/Qwen2.5-7B-Instruct-GGUF", 
         "file_name": "Qwen2.5-7B-Instruct-Q4_K_M.gguf", 

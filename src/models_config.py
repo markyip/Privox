@@ -171,10 +171,34 @@ def get_system_formatter(language=None):
     lang_key = language if language in LANGUAGE_EXAMPLES else "en"
     ex = LANGUAGE_EXAMPLES[lang_key]
     
-    # Common structural example
+    # Common structural example (Demonstrates ITN, Lists, and Paragraphs)
     struct_ex = {
-        "transcript": "our grocery list is apples and then some milk and also we need eggs and bread",
-        "output": "Our grocery list is:\n- Apples\n- Milk\n- Eggs\n- Bread"
+        "transcript": "okay so for the meeting on tuesday the twenty fourth we need to discuss three things first is the budget second is the new hiring plan and third is the office move also we should probably invite mark and sarah to the call because they have the data",
+        "output": "For the meeting on Tuesday the 24th, we need to discuss three things:\n1. Budget\n2. New hiring plan\n3. Office move\n\nAdditionally, we should invite Mark and Sarah to the call as they have the relevant data."
+    }
+
+    # Action Items Example
+    action_ex = {
+        "transcript": "okay for next week i need to finish the report and also buy some coffee and then i have to call mr smith back",
+        "output": "Tasks for next week:\n- [ ] Finish the report\n- [ ] Buy coffee\n- [ ] Call Mr. Smith back"
+    }
+
+    # Technical/Code Example
+    tech_ex = {
+        "transcript": "you just need to run git commit dash m and then git push origin main to update the repo",
+        "output": "You just need to run `git commit -m \"[message]\"` and then `git push origin main` to update the repo."
+    }
+
+    # Contact Info Example
+    contact_ex = {
+        "transcript": "my email is john dot doe at gmail dot com and you can reach me at five five five zero one nine nine",
+        "output": "Contact Information:\n- Email: john.doe@gmail.com\n- Phone: 555-0199"
+    }
+
+    # Standard Bulletin List Example
+    bullet_ex = {
+        "transcript": "i love several things about this city including the parks and the food and also the historical architecture which is just amazing",
+        "output": "I love several things about this city, including:\n- Beautiful parks\n- Delicious food\n- Amazing historical architecture"
     }
 
     formatter = f"""
@@ -198,9 +222,33 @@ Output: <refined>{struct_ex['output']}</refined>
 
 <example_3>
 [Core Directive]: Refine this text for clarity.
+[Transcript]: {action_ex['transcript']}
+Output: <refined>{action_ex['output']}</refined>
+</example_3>
+
+<example_4>
+[Core Directive]: Refine this text for clarity.
+[Transcript]: {tech_ex['transcript']}
+Output: <refined>{tech_ex['output']}</refined>
+</example_4>
+
+<example_5>
+[Core Directive]: Refine this text for clarity.
+[Transcript]: {contact_ex['transcript']}
+Output: <refined>{contact_ex['output']}</refined>
+</example_5>
+
+<example_6>
+[Core Directive]: Refine this text for clarity.
+[Transcript]: {bullet_ex['transcript']}
+Output: <refined>{bullet_ex['output']}</refined>
+</example_6>
+
+<example_7>
+[Core Directive]: Refine this text for clarity.
 [Transcript]: uhh how do i fix this bug in my code
 Output: <refined>How do I fix this bug in my code?</refined>
-</example_3>
+</example_7>
 """
     return formatter
 

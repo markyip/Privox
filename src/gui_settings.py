@@ -75,7 +75,10 @@ class StderrInterceptor:
         self.pct_re = re.compile(r"(\d+(?:\.\d+)?)%")
         
     def write(self, s):
-        self.orig.write(s)
+        if self.orig:
+            try:
+                self.orig.write(s)
+            except: pass
         self.buffer += s
         if '\r' in self.buffer or '\n' in self.buffer:
             matches = self.pct_re.findall(self.buffer)
@@ -84,7 +87,10 @@ class StderrInterceptor:
             self.buffer = ""
             
     def flush(self):
-        self.orig.flush()
+        if self.orig and hasattr(self.orig, 'flush'):
+            try:
+                self.orig.flush()
+            except: pass
 
 class ModelUpdateWorker(QObject):
     def __init__(self, signals):
@@ -528,13 +534,33 @@ class ModernProgressDialog(QDialog):
             self.sub_status.setText(sub_text)
 
     def set_progress(self, value):
-        self.progress_bar.setValue(int(value))
+        if value <= 0:
+            # Indeterminate mode if no progress reported yet
+            self.progress_bar.setRange(0, 0)
+        else:
+            self.progress_bar.setRange(0, 100)
+            self.progress_bar.setValue(int(value))
 
-    def show_completion(self, main_text="Download Complete", sub_text="Restart required to apply changes."):
-        self.progress_bar.setVisible(False)
+    def show_completion(self, main_text="AI Setup Complete", sub_text="Restoring application background engine..."):
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(100)
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                background-color: rgba(255, 255, 255, 0.03);
+                border: 1px solid rgba(255, 255, 255, 0.05);
+                border-radius: 4px;
+            }
+            QProgressBar::chunk {
+                background-color: #00ff88;
+                border-radius: 4px;
+            }
+        """)
         self.main_status.setText(main_text)
+        self.main_status.setStyleSheet("color: #00ff88; font-size: 20px; font-weight: 800; border: none;")
         self.sub_status.setText(sub_text)
+        self.sub_status.setStyleSheet("color: white; font-size: 14px; font-weight: 500; border: none;")
         self.restart_btn.setVisible(True)
+        self.restart_btn.setFocus()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -1091,11 +1117,10 @@ class SettingsGUI(QMainWindow):
 
         # Add info labels to group layout
         ai_layout = ai_group.layout()
-        # insertWidget indices: 
-        # 0: Title, 1: ASR Label, 2: ASR Combo -> Insert ASR Info at 3
-        # 4: LLM Label, 5: LLM Combo -> Insert LLM Info at 6
-        ai_layout.insertWidget(3, self.asr_info)
-        ai_layout.insertWidget(6, self.llm_info)
+        ai_layout.insertWidget(2, self.asr_info) # After ASR Label
+        ai_layout.insertSpacing(3, 8)
+        ai_layout.insertWidget(5, self.llm_info) # After LLM Label
+        ai_layout.insertSpacing(6, 8)
         
         # Add small vertical spacers for breathing room
         ai_layout.insertSpacing(4, 10)
@@ -1168,7 +1193,6 @@ class SettingsGUI(QMainWindow):
         vbox = QVBoxLayout(group)
         vbox.setContentsMargins(22, 22, 22, 22)
         vbox.setSpacing(14)
-
         header = QLabel(title)
         header.setStyleSheet("font-weight: 800; color: rgba(255, 255, 255, 0.65); border: none; font-size: 13px; letter-spacing: 1.5px; margin-bottom: 6px;")
         header.setAccessibleName(f"{title} section")
@@ -1990,11 +2014,15 @@ class SettingsGUI(QMainWindow):
         dlg.worker = worker # Keep reference
 
         def on_status(msg):
-            # If we see "Downloading" in status, update main label
-            if "downloading" in msg.lower():
+            msg_l = msg.lower()
+            if "downloading" in msg_l:
                 dlg.set_status("Downloading Model Files", msg)
+            elif "verifying" in msg_l:
+                dlg.set_status("Verifying Local Files", msg)
+            elif "finalizing" in msg_l or "complete" in msg_l:
+                dlg.set_status("Finalizing Setup", msg)
             else:
-                dlg.set_status("Updating Models", msg)
+                dlg.set_status("Model Setup Engine", msg)
         
         def on_progress(val):
             if val > 0:

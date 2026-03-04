@@ -14,6 +14,10 @@ ASR_LIBRARY = [
     {"name": "Whisper Large v3 Turbo (Japanese)", "whisper_repo": "XA9/faster-whisper-large-v3-ja", "whisper_model": "large-v3-turbo", "repo": "XA9/faster-whisper-large-v3-ja", "description": "Superior Japanese performance with CTranslate2 optimization."},
     {"name": "Whisper Large v2 (Hindi)", "whisper_repo": "collabora/faster-whisper-large-v2-hindi", "whisper_model": "large-v2", "repo": "collabora/faster-whisper-large-v2-hindi", "description": "Fine-tuned for Hindi. Optimized for mixed-code (Hinglish)."},
     {"name": "Whisper Large v3 Turbo (Multilingual)", "whisper_repo": "deepdml/faster-whisper-large-v3-turbo-ct2", "whisper_model": "large-v3-turbo", "repo": "deepdml/faster-whisper-large-v3-turbo-ct2", "description": "State-of-the-art multilingual model. Excellent for Singlish, Arabic, and diverse accents."},
+<<<<<<< HEAD
+=======
+    {"name": "Qwen3-ASR 0.6B (Multilingual)", "whisper_repo": "Qwen/Qwen3-ASR-0.6B", "whisper_model": "qwen3-asr-0.6b", "repo": "Qwen/Qwen3-ASR-0.6B", "backend": "qwen_asr", "description": "Lightweight Qwen3 ASR. Low VRAM usage, good accuracy."},
+>>>>>>> main
     {"name": "Qwen3-ASR 1.7B (Multilingual)", "whisper_repo": "Qwen/Qwen3-ASR-1.7B", "whisper_model": "qwen3-asr-1.7b", "repo": "Qwen/Qwen3-ASR-1.7B", "backend": "qwen_asr", "description": "High-performance transformer-based ASR from Alibaba. Best-in-class for short/medium phrases."}
 ]
 
@@ -34,11 +38,11 @@ LLM_LIBRARY = [
         "description": "Premium English refiner. 60x more efficient than LLMs."
     },
     {
-        "name": "Multilingual (Qwen 2.5 3B)", 
-        "repo_id": "bartowski/Qwen2.5-3B-Instruct-GGUF", 
-        "file_name": "Qwen2.5-3B-Instruct-Q4_K_M.gguf", 
+        "name": "Multilingual (Qwen 2.5 7B)", 
+        "repo_id": "bartowski/Qwen2.5-7B-Instruct-GGUF", 
+        "file_name": "Qwen2.5-7B-Instruct-Q4_K_M.gguf", 
         "prompt_type": "chatml",
-        "description": "Best for mixed languages and high instruction obedience."
+        "description": "Powerful 7B model with widespread architecture support. Vastly smarter than 3B versions while remaining stable."
     },
     {
         "name": "Mistral Small 24B (Q4_K_M)", 
@@ -50,7 +54,8 @@ LLM_LIBRARY = [
 ]
 
 # --- Default Model Names (derived from library lists, never hardcode elsewhere) ---
-DEFAULT_ASR = ASR_LIBRARY[0]["name"]
+# Default to the lightweight Qwen3-ASR 0.6B model
+DEFAULT_ASR = next((m["name"] for m in ASR_LIBRARY if m["whisper_model"] == "qwen3-asr-0.6b"), ASR_LIBRARY[0]["name"])
 DEFAULT_LLM = LLM_LIBRARY[0]["name"]
 
 # --- Persona Lenses ---
@@ -170,10 +175,34 @@ def get_system_formatter(language=None):
     lang_key = language if language in LANGUAGE_EXAMPLES else "en"
     ex = LANGUAGE_EXAMPLES[lang_key]
     
-    # Common structural example
+    # Common structural example (Demonstrates ITN, Lists, and Paragraphs)
     struct_ex = {
-        "transcript": "our grocery list is apples and then some milk and also we need eggs and bread",
-        "output": "Our grocery list is:\n- Apples\n- Milk\n- Eggs\n- Bread"
+        "transcript": "okay so for the meeting on tuesday the twenty fourth we need to discuss three things first is the budget second is the new hiring plan and third is the office move also we should probably invite mark and sarah to the call because they have the data",
+        "output": "For the meeting on Tuesday the 24th, we need to discuss three things:\n1. Budget\n2. New hiring plan\n3. Office move\n\nAdditionally, we should invite Mark and Sarah to the call as they have the relevant data."
+    }
+
+    # Action Items Example
+    action_ex = {
+        "transcript": "okay for next week i need to finish the report and also buy some coffee and then i have to call mr smith back",
+        "output": "Tasks for next week:\n- [ ] Finish the report\n- [ ] Buy coffee\n- [ ] Call Mr. Smith back"
+    }
+
+    # Technical/Code Example
+    tech_ex = {
+        "transcript": "you just need to run git commit dash m and then git push origin main to update the repo",
+        "output": "You just need to run `git commit -m \"[message]\"` and then `git push origin main` to update the repo."
+    }
+
+    # Contact Info Example
+    contact_ex = {
+        "transcript": "my email is john dot doe at gmail dot com and you can reach me at five five five zero one nine nine",
+        "output": "Contact Information:\n- Email: john.doe@gmail.com\n- Phone: 555-0199"
+    }
+
+    # Standard Bulletin List Example
+    bullet_ex = {
+        "transcript": "i love several things about this city including the parks and the food and also the historical architecture which is just amazing",
+        "output": "I love several things about this city, including:\n- Beautiful parks\n- Delicious food\n- Amazing historical architecture"
     }
 
     formatter = f"""
@@ -197,15 +226,33 @@ Output: <refined>{struct_ex['output']}</refined>
 
 <example_3>
 [Core Directive]: Refine this text for clarity.
-[Transcript]: uhh how do i fix this bug in my code
-Output: <refined>How do I fix this bug in my code?</refined>
+[Transcript]: {action_ex['transcript']}
+Output: <refined>{action_ex['output']}</refined>
 </example_3>
 
 <example_4>
 [Core Directive]: Refine this text for clarity.
+[Transcript]: {tech_ex['transcript']}
+Output: <refined>{tech_ex['output']}</refined>
+</example_4>
+
+<example_5>
+[Core Directive]: Refine this text for clarity.
+[Transcript]: {contact_ex['transcript']}
+Output: <refined>{contact_ex['output']}</refined>
+</example_5>
+
+<example_6>
+[Core Directive]: Refine this text for clarity.
+[Transcript]: {bullet_ex['transcript']}
+Output: <refined>{bullet_ex['output']}</refined>
+</example_6>
+
+<example_7>
+[Core Directive]: Refine this text for clarity.
 [Transcript]: 我想同你 discuss 一下聽日個 presentation 的 details
 Output: <refined>我想同你 discuss 一下聽日個 presentation 的 details。</refined>
-</example_4>
+</example_7>
 """
     return formatter
 

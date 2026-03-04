@@ -352,7 +352,7 @@ class GrammarChecker:
 
     def load_model(self):
         if self.model:
-            return
+            return True
 
         repo_id = self.profile.get("repo_id", GRAMMAR_REPO)
         file_name = self.profile.get("file_name", GRAMMAR_FILE)
@@ -404,7 +404,7 @@ class GrammarChecker:
                 self.loading_error = f"Download Failed: {e}"
                 if self.icon:
                      self.icon.notify(f"Error: Could not download refiner ({file_name}). Check internet or place in 'models' folder.", "Privox Error")
-                return
+                return False
 
         try:
             # --- Optimization 2: Cache llama_cpp import, skip diagnostics on reload ---
@@ -436,8 +436,8 @@ class GrammarChecker:
                 try:
                     return Llama(
                         model_path=m_path,
-                        n_ctx=2048,
-                        n_gpu_layers=n_gpu,
+                        n_ctx=4096,
+                        n_gpu_layers=-1,
                         verbose=use_verbose,
                         n_threads=os.cpu_count() // 2 if os.cpu_count() else 4
                     )
@@ -466,6 +466,7 @@ class GrammarChecker:
 
             self._has_loaded_once = True
             log_print(f"Done. (GPU Acceleration: {'ENABLED' if is_gpu else 'DISABLED'})")
+            return True
         except Exception as e:
             err_trace = traceback.format_exc()
             log_print(f"\nError loading Grammar Model: {e}\n{err_trace}")
@@ -481,6 +482,7 @@ class GrammarChecker:
 
             if sys.platform == 'win32':
                  show_modern_error("Privox Model Error", f"Error loading Grammar Model (Llama): {e}", f"Traceback:\n{err_trace[:500]}")
+            return False
 
     def get_effective_prompt(self, language=None, language_prob=0.0):
         """Constructs a composite prompt with hidden overrides.
@@ -599,6 +601,12 @@ class GrammarChecker:
                 min_p=0.01,
             )
             raw_response = output['choices'][0]['text'].strip()
+            
+            # Diagnostic Log
+            if raw_response:
+                log_print(f" LLM Raw Response (len={len(raw_response)}): '{raw_response[:100]}...'")
+            else:
+                log_print(" Warning: LLM returned empty response.")
                 
             # If standard instruction model (T5), just return the raw string
             if prompt_type == "t5":
@@ -611,12 +619,24 @@ class GrammarChecker:
             
             result = None
             if match:
-                log_print("Regex extracted <refined> block successfully.")
+                log_print(" Regex extracted <refined> block successfully.")
                 result = match.group(1).strip()
             else:
                 # Fallback if the model hallucinated and forgot the tags.
-                log_print("Warning: Model failed to use <refined> tags. Using raw output.")
-                result = raw_response
+                log_print(" Warning: Model failed to use <refined> tags.")
+                
+                # Sub-fallback: If the model echoed the prompt, try to strip it
+                # (Sometimes models fail to follow 'echo=False' or the prompt structure confuses them)
+                if "[Transcript]:" in raw_response:
+                    log_print("  Detected prompt echo in raw response. Attempting to strip...")
+                    parts = re.split(r'\[Transcript\]:.*?\n', raw_response, flags=re.DOTALL | re.IGNORECASE)
+                    if len(parts) > 1:
+                        result = parts[-1].strip()
+                        log_print(f"  Stripped echo. New candidate length: {len(result)}")
+                    else:
+                        result = raw_response
+                else:
+                    result = raw_response
 
             # 3a. Strip trailing meta-commentary ("Note:", "I've preserved...", etc.)
             result = self._strip_meta_commentary(result)
@@ -770,6 +790,7 @@ class VoiceInputApp:
         self.custom_prompts = {}
         self.character = "Writing Assistant"
         self.tone = "Natural"
+        self.current_refiner = ""
         self.dictation_prompt = None
         self.command_prompt = None
         
@@ -889,10 +910,11 @@ class VoiceInputApp:
 
             def load_grammar():
                 try:
-                    self.grammar_checker.load_model()
-                    # Track LLM usage here
-                    self.track_model_usage(self.current_refiner)
-                    return True
+                    success = self.grammar_checker.load_model()
+                    if success:
+                        # Track LLM usage here
+                        self.track_model_usage(self.current_refiner)
+                    return success
                 except Exception as e:
                     log_print(f"Parallel Load Error (Grammar): {e}")
                     return False
@@ -915,10 +937,25 @@ class VoiceInputApp:
                     elif ASR_BACKEND == "qwen_asr":
                         log_print(f"ASR Diagnostic - Initializing Qwen3ASRModel ({WHISPER_REPO}) on {device_str}...")
                         from qwen_asr import Qwen3ASRModel
-                        # Load in 4-bit or bfloat16 based on CUDA availability
+                        # Apply memory constraint when on GPU to prevent accelerate from grabbing all VRAM 
+                        # and fighting with llama.cpp already in memory.
+                        if is_gpu:
+                            # 12GB is typical. Let's cap transformers to a safe conservative limit like 6GB 
+                            # (Qwen3-ASR 1.7B takes ~3.5GB in float16)
+                            max_mem = {0: "6GiB", "cpu": "8GiB"}
+                            dtype = torch.float16
+                        else:
+                            max_mem = None
+                            dtype = torch.float32
+
+                        # Load in 16-bit based on CUDA availability with max_memory constraints
                         self.asr_model = Qwen3ASRModel.from_pretrained(
                             WHISPER_REPO,
                             device_map="auto" if is_gpu else "cpu",
+                            max_memory=max_mem,
+                            dtype=dtype,
+                            low_cpu_mem_usage=True,
+                            local_files_only=True
                             # We deliberately OMIT forced_aligner for speed and lower VRAM
                         )
                         log_print(f"Qwen3ASRModel initialized successfully.")
@@ -939,10 +976,20 @@ class VoiceInputApp:
                     self.loading_status = "Error Loading ASR"
                     return False
 
-            # Use ThreadPoolExecutor for concurrent model loading
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                futures = [executor.submit(load_grammar), executor.submit(load_asr)]
-                results = [f.result() for f in futures]
+            # Sequential vs Parallel loading strategy
+            if ASR_BACKEND == "qwen_asr":
+                # Safety Mode: Qwen-ASR uses a different transformer backend. 
+                # Sequential load prevents CUDA race conditions.
+                log_print("Using Sequential Load Strategy (Safety Mode)...")
+                res_grammar = load_grammar()
+                res_asr = load_asr()
+                results = [res_grammar, res_asr]
+            else:
+                # Performance Mode: Load Whisper + LLM in parallel
+                log_print("Using Parallel Load Strategy (Performance Mode)...")
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                    futures = [executor.submit(load_grammar), executor.submit(load_asr)]
+                    results = [f.result() for f in futures]
 
             if not results[1]: # Whisper is mandatory
                 log_print("CRITICAL: ASR model failed to load.")
@@ -1123,6 +1170,7 @@ class VoiceInputApp:
             self.character = prefs.get("character", "Writing Assistant")
             self.tone = prefs.get("tone", "Natural")
             self.custom_prompts = prefs.get("custom_prompts", {})
+            old_refiner = getattr(self, "current_refiner", "")
             self.current_refiner = prefs.get("current_refiner", models_config.DEFAULT_LLM)
             self.readback_enabled = prefs.get("readback_enabled", False)
             
@@ -1148,7 +1196,16 @@ class VoiceInputApp:
                     break
             
             if hasattr(self, 'grammar_checker'):
-                self.grammar_checker.profile = profile
+                # --- Refiner Model Hot-Reload ---
+                if self.current_refiner != old_refiner:
+                    log_print(f"Refiner change detected: {old_refiner} -> {self.current_refiner}")
+                    self.grammar_checker.profile = profile
+                    if self.heavy_models_loaded:
+                        log_print("Hot-swapping Grammar Model...")
+                        self.grammar_checker.unload_model()
+                        self.grammar_checker.load_model()
+                else:
+                    self.grammar_checker.profile = profile
                 
                 # Clear context cache if personality/tone changes abruptly to prevent bleed
                 if self.grammar_checker.character != self.character or self.grammar_checker.tone != self.tone:
@@ -1170,6 +1227,7 @@ class VoiceInputApp:
             WHISPER_SIZE = "distil-large-v3"
             ASR_BACKEND = "whisper"
 
+            ASR_BACKEND = "whisper"
             for asr in self.asr_library:
                 if asr["name"] == active_asr:
                     # Sync with library technical names
@@ -1188,6 +1246,8 @@ class VoiceInputApp:
         """Verifies if a model repository or local path exists."""
         repo = model_data.get("repo")
         local_path = model_data.get("local_path")
+        whisper_model = model_data.get("whisper_model")
+        file_name = model_data.get("file_name")
         
         # 1. Check local path if provided
         if local_path:
@@ -1206,7 +1266,19 @@ class VoiceInputApp:
                     return True
             return False
 
-        # 2. Check HuggingFace Repo (Fast head request)
+        # 2. Check standard 'models/' directory for repo-based models (Offline Support)
+        models_dir = os.path.join(BASE_DIR, "models")
+        if model_type == "asr" and whisper_model:
+            target = os.path.join(models_dir, f"whisper-{whisper_model}")
+            # For faster-whisper we check model.bin, for transformers (Qwen) we check config.json
+            if os.path.isdir(target) and (os.path.exists(os.path.join(target, "model.bin")) or os.path.exists(os.path.join(target, "config.json"))):
+                return True
+        elif model_type == "llm" and file_name:
+            target = os.path.join(models_dir, file_name)
+            if os.path.exists(target):
+                return True
+
+        # 3. Check HuggingFace Repo (Fast head request) - Fallback for un-downloaded models
         if repo:
             try:
                 # We use a cached check if possible to avoid hitting HF on every startup
@@ -1215,7 +1287,7 @@ class VoiceInputApp:
                 api.repo_info(repo_id=repo)
                 return True
             except:
-                log_print(f"Verification Failed for model: {repo}")
+                log_print(f"Verification Failed for model (and not found locally): {repo}")
                 return False
         
         return False
@@ -1615,10 +1687,11 @@ class VoiceInputApp:
             t0 = time.time()
             
             raw_text = ""
+            info = None
             if ASR_BACKEND == "sensevoice":
                 # SenseVoice/funasr
                 results = self.asr_model.generate(
-                    input=audio_data.astype(np.float32),
+                    input=audio_data.flatten().astype(np.float32),
                     cache={},
                     language="auto", # SenseVoice handles LID well
                     use_itn=True,
@@ -1635,14 +1708,14 @@ class VoiceInputApp:
                 
                 log_print(f" SenseVoice Result - Raw: '{raw_text}'")
             elif ASR_BACKEND == "qwen_asr":
-                # Qwen3-ASR (Transformers backend)
+                # Qwen3-ASR (Transformers backend) expects (waveform, sr) tuple
                 results = self.asr_model.transcribe(
-                    audio=audio_data.astype(np.float32),
+                    audio=(audio_data.astype(np.float32), 16000),
                     language=None, # Auto-detect
-                    return_time_stamps=False # DISABLE forced alignment as requested
+                    return_time_stamps=False # DISABLE forced alignment
                 )
                 if results and len(results) > 0:
-                    raw_text = results[0].text
+                    raw_text = results[0].get('text', '') if isinstance(results[0], dict) else getattr(results[0], 'text', str(results[0]))
                 log_print(f" Qwen3-ASR Result: '{raw_text}'")
             else:
                 # Faster-Whisper
@@ -1682,8 +1755,8 @@ class VoiceInputApp:
             
             log_print(f" Refining format ({self.current_refiner})...")
             t2 = time.time()
-            detected_lang = info.language if ASR_BACKEND == 'whisper' else None
-            detected_prob = info.language_probability if ASR_BACKEND == 'whisper' else 0.0
+            detected_lang = info.language if (info and ASR_BACKEND == 'whisper') else None
+            detected_prob = info.language_probability if (info and ASR_BACKEND == 'whisper') else 0.0
             final_text = self.grammar_checker.correct(command_text, is_command=is_command, language=detected_lang, language_prob=detected_prob)
             t3 = time.time()
             log_print(f" [Grammar Time: {t3 - t2:.3f}s]")
@@ -1703,9 +1776,12 @@ class VoiceInputApp:
                 
         except Exception as e:
             log_print(f"ASR Error: {e}")
+            self.loading_status = "ASR Error"
             self.sound_manager.play_error()
         finally:
-            self.update_status("READY")
+            # Only reset to READY if we haven't hit an error state
+            if self.loading_status not in ["ASR Error", "Refiner Error"]:
+                self.update_status("READY")
 
     def read_back(self, text):
         """Speak the transcript aloud via TTS (Windows SAPI / pyttsx3).

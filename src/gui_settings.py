@@ -613,7 +613,7 @@ class SettingsGUI(QMainWindow):
             }
             QPushButton#sidebar_btn {
                 background-color: transparent;
-                border: none;
+                border: 1px solid transparent; /* Prevents native 'ghost' edges */
                 color: #888888;
                 text-align: left;
                 padding-left: 24px;
@@ -622,6 +622,9 @@ class SettingsGUI(QMainWindow):
                 height: 50px;
                 outline: none;
                 border-radius: 8px;
+            }
+            QPushButton#sidebar_btn:hover {
+                background-color: rgba(255, 255, 255, 0.03);
             }
             QPushButton#sidebar_btn[active="true"] {
                 color: #ffffff;
@@ -958,7 +961,8 @@ class SettingsGUI(QMainWindow):
         self.stack.setCurrentIndex(index)
         for i, btn in enumerate(self.sidebar_buttons):
             is_active = (i == index)
-            btn.setProperty("active", is_active)
+            # Ensure proper string matching for stylesheet
+            btn.setProperty("active", "true" if is_active else "false")
             if hasattr(btn, "nav_indicator"):
                 btn.nav_indicator.setVisible(is_active)
             btn.style().unpolish(btn)

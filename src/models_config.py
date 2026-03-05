@@ -55,13 +55,6 @@ LLM_LIBRARY = [
         "file_name": "Qwen2.5-7B-Instruct-Q4_K_M.gguf", 
         "prompt_type": "chatml",
         "description": "Powerful 7B model with widespread architecture support. Vastly smarter than 3B versions while remaining stable."
-    },
-    {
-        "name": "Mistral Small 24B (Q4_K_M)", 
-        "repo_id": "bartowski/Mistral-Small-24B-Instruct-v0.1-GGUF", 
-        "file_name": "Mistral-Small-24B-Instruct-v0.1-Q4_K_M.gguf", 
-        "prompt_type": "llama",
-        "description": "Enterprise-grade refiner. Requires 16GB+ VRAM."
     }
 ]
 

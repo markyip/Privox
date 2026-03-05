@@ -973,12 +973,6 @@ class SettingsGUI(QMainWindow):
         layout.setSpacing(20) # Reduced from 32
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # Merged AI Group
-        ai_group = self.create_group("TRANSCRIPTION & REFINEMENT", [
-            ("VOICE-TO-TEXT MODEL", self.create_asr_combo()),
-            ("REFINER (LLM) MODEL", self.create_llm_combo())
-        ])
-        
         # Labels for dynamic info (Borderless/Minimalist)
         self.asr_info = QLabel("")
         self.asr_info.setStyleSheet("color: #888888; font-size: 11px; margin-top: 2px; border: none; background: transparent;")
@@ -986,13 +980,37 @@ class SettingsGUI(QMainWindow):
         self.llm_info = QLabel("")
         self.llm_info.setStyleSheet("color: #888888; font-size: 11px; margin-top: 2px; border: none; background: transparent;")
         self.llm_info.setWordWrap(True)
+
+        # Merged AI Group with careful layout
+        ai_group = QFrame()
+        ai_group.setStyleSheet("""
+            QFrame {
+                background-color: transparent;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 12px;
+            }
+        """)
+        ai_vbox = QVBoxLayout(ai_group)
+        ai_vbox.setContentsMargins(22, 22, 22, 22)
+        ai_vbox.setSpacing(14)
         
-        # Add info labels to group layout
-        ai_layout = ai_group.layout()
-        ai_layout.insertWidget(2, self.asr_info) # After ASR Label
-        ai_layout.insertSpacing(3, 8)
-        ai_layout.insertWidget(5, self.llm_info) # After LLM Label
-        ai_layout.insertSpacing(6, 8)
+        header = QLabel("TRANSCRIPTION & REFINEMENT")
+        header.setStyleSheet("font-weight: 800; color: rgba(255, 255, 255, 0.6); border: none; font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase;")
+        ai_vbox.addWidget(header)
+        
+        # ASR Block
+        lbl_asr = QLabel("VOICE-TO-TEXT MODEL")
+        lbl_asr.setStyleSheet("color: #888888; border: none; font-size: 11px; margin-top: 8px;")
+        ai_vbox.addWidget(lbl_asr)
+        ai_vbox.addWidget(self.create_asr_combo())
+        ai_vbox.addWidget(self.asr_info)
+        
+        # LLM Block
+        lbl_llm = QLabel("REFINER (LLM) MODEL")
+        lbl_llm.setStyleSheet("color: #888888; border: none; font-size: 11px; margin-top: 12px;")
+        ai_vbox.addWidget(lbl_llm)
+        ai_vbox.addWidget(self.create_llm_combo())
+        ai_vbox.addWidget(self.llm_info)
         
         layout.addWidget(ai_group)
 

@@ -79,11 +79,13 @@ CHARACTER_LENSES = {
     ),
     "Code Expert": (
         "Focus on Software Engineering jargon. Do not simplify technical abbreviations (API, SDK, PR, VRAM). "
-        "Preserve camelCase, PascalCase, or snake_case formatting. Prioritize logic-based corrections."
+        "Preserve camelCase, PascalCase, or snake_case formatting. Prioritize logic-based corrections. "
+        "CRITICAL: If explaining multiple steps, files, or properties, you MUST use clean Markdown bullet points."
     ),
     "Academic": (
         "Focus on intellectual and ontological vocabulary. Maintain complex sentence structures. "
-        "Do not simplify metaphysical or academic terms. Prioritize depth of nuance."
+        "Do not simplify metaphysical or academic terms. Prioritize depth of nuance. "
+        "CRITICAL: If the input contains a series of concepts or arguments, format them as a structured, numbered list or bullet points for academic clarity."
     ),
     "Executive Secretary": (
         "Focus on extreme formality and business etiquette. Use polite, indirect phrasing. "
@@ -92,7 +94,8 @@ CHARACTER_LENSES = {
     ),
     "Personal Buddy": (
         "Focus on conversational, low-friction vocabulary. Tolerant of slang and informal grammar. "
-        "Prioritize making the text sound like a natural, relaxed voice."
+        "Prioritize making the text sound like a natural, relaxed voice. "
+        "CRITICAL: Even though you are casual, if I list several things, you MUST format them as a neat bulleted list so it's easy to read."
     ),
     "Custom": "" # User provides absolute persona definition
 }

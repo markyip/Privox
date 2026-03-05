@@ -518,10 +518,10 @@ class SettingsGUI(QMainWindow):
         if "custom_dictionary" not in self.prefs:
             self.prefs["custom_dictionary"] = self.tech_config.get("custom_dictionary", [])
             
-        # Library Loading (Prefer User Prefs > Config > Default Fallback)
-        self.asr_library = self.prefs.get("asr_library", self.tech_config.get("asr_library", models_config.ASR_LIBRARY))
+        # Library Loading (Always use fresh config/code over user prefs to prevent stale URLs)
+        self.asr_library = self.tech_config.get("asr_library", models_config.ASR_LIBRARY)
         
-        self.llm_library = self.prefs.get("llm_library", self.tech_config.get("llm_library", models_config.LLM_LIBRARY))
+        self.llm_library = self.tech_config.get("llm_library", models_config.LLM_LIBRARY)
 
         self.custom_prompts = self.prefs.get("custom_prompts", self.tech_config.get("custom_prompts", models_config.DEFAULT_PROMPTS))
         

@@ -74,7 +74,8 @@ DEFAULT_LLM = "Llama-3.2-3B-Instruct-Q4_K_M.gguf"
 CHARACTER_LENSES = {
     "Writing Assistant": (
         "Focus on clarity, grammar, and flow. Use professional yet accessible vocabulary. "
-        "Resolve ambiguities as a general senior editor would."
+        "Resolve ambiguities as a general senior editor would. "
+        "CRITICAL: If the input implies a sequence, list, or multiple steps, you MUST format it using bullet points or numbered lists."
     ),
     "Code Expert": (
         "Focus on Software Engineering jargon. Do not simplify technical abbreviations (API, SDK, PR, VRAM). "
@@ -86,7 +87,8 @@ CHARACTER_LENSES = {
     ),
     "Executive Secretary": (
         "Focus on extreme formality and business etiquette. Use polite, indirect phrasing. "
-        "Organize thoughts into clear, actionable business communication."
+        "Organize thoughts into clear, actionable business communication. "
+        "CRITICAL: Always structure multi-point information into clean, readable bullet points."
     ),
     "Personal Buddy": (
         "Focus on conversational, low-friction vocabulary. Tolerant of slang and informal grammar. "
@@ -129,14 +131,11 @@ TONE_OVERLAYS = {
 CRITICAL_RULES = """
 CRITICAL RULES:
 1. FIX GRAMMAR: Correct grammar and spelling errors.
-2. IMPROVE FLOW & FORMAT: Use your contextual judgment to make text readable and pleasant. Apply intelligent structural formatting—such as paragraphs, bullet points, or numbering—where the input suggests a structured message.
+2. AUTO-FORMAT LISTS: You MUST convert spoken sequences, steps, or multiple items into proper Markdown bullet points (-) or numbered lists (1., 2.). Add paragraphs where logical.
 3. PUNCTUATION: Use appropriate punctuation for clarity and professional presentation.
-4. NO HALLUCINATION: Do not add new semantic information, facts, or ideas not present in the original transcript. Note: Structural formatting (paragraphs/lists) is encouraged and is NOT considered hallucination.
-5. REMOVE FILLERS: Delete unnecessary filler words (uh, um, yeah, etc.).
-6. ABSOLUTE NO CONVERSATION: Output ONLY the processed text inside the tags. Never add greetings, acknowledgments, or commentary.
-7. NO TRANSLATION: Output MUST be in the same language as the input transcript.
-8. NUMBER FORMATTING: Convert spoken numbers, dates, and times into standardized digits/formats (e.g., "$100", "May 25th", "7:30 PM").
-9. ITN: Use digits for measurements, currency, and addresses to improve scannability.
+4. NO HALLUCINATION: Do not add new semantic information, facts, or ideas not present in the original transcript.
+5. NO CONVERSATION: Output ONLY the processed text inside the tags. Never add greetings or commentary.
+6. NUMBER FORMATTING: Convert spoken numbers into standardized digits (e.g., "$100", "May 25th", "7:30 PM").
 """
 
 # --- language-specific Few-Shot Examples ---

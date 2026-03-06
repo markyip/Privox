@@ -379,11 +379,19 @@ class GrammarChecker:
 
         if IS_MAC:
             # --- macOS MLX Execution Path ---
-            mlx_target_dir = os.path.join(APP_DATA_DIR, "models", "mlx-llama-3.2")
+            mlx_repo = self.profile.get("mlx_repo")
+            if not mlx_repo:
+                self.loading_error = f"No MLX repo defined for {file_name}. Unsupported on Mac."
+                log_print(self.loading_error)
+                return False
+
+            repo_folder_name = mlx_repo.split("/")[-1]
+            mlx_target_dir = os.path.join(APP_DATA_DIR, "models", repo_folder_name)
+            
             if not os.path.exists(mlx_target_dir):
                 self.loading_error = f"MLX Model missing: {mlx_target_dir}"
                 log_print(self.loading_error)
-                return
+                return False
             
             try:
                 log_print("Importing Apple MLX framework...")
@@ -400,7 +408,8 @@ class GrammarChecker:
                 self.loading_error = str(e)
                 if self.icon:
                      self.icon.notify(f"MLX Error: {e}", "Privox Error")
-            return
+                return False
+            return True
             
         # --- Windows/Linux Llama Context Execution Path ---
 
@@ -934,6 +943,8 @@ class VoiceInputApp:
                         log_print(f"ASR Diagnostic - Initializing Qwen3ASRModel ({WHISPER_REPO}) on {device_str}...")
                         from qwen_asr import Qwen3ASRModel
                         
+                        is_mac_mps = IS_MAC and getattr(torch.backends, "mps", None) and torch.backends.mps.is_available()
+
                         # Apply memory constraint when on GPU to prevent accelerate from grabbing all VRAM 
                         # and fighting with llama.cpp already in memory.
                         if is_gpu:
@@ -941,14 +952,21 @@ class VoiceInputApp:
                             # (Qwen3-ASR 1.7B takes ~3.5GB in float16)
                             max_mem = {0: "6GiB", "cpu": "8GiB"}
                             dtype = torch.float16
+                            device_map = "auto"
+                        elif is_mac_mps:
+                            max_mem = None
+                            dtype = torch.float16
+                            device_map = "mps"
+                            log_print("Apple Silicon (MPS) acceleration ENABLED for Qwen-ASR.")
                         else:
                             max_mem = None
                             dtype = torch.float32
+                            device_map = "cpu"
 
-                        # Load in 16-bit based on CUDA availability with max_memory constraints
+                        # Load in 16-bit based on CUDA/MPS availability with max_memory constraints
                         self.asr_model = Qwen3ASRModel.from_pretrained(
                             WHISPER_REPO,
-                            device_map="auto" if is_gpu else "cpu",
+                            device_map=device_map,
                             max_memory=max_mem,
                             dtype=dtype,
                             low_cpu_mem_usage=True,

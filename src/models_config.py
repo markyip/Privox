@@ -48,6 +48,7 @@ LLM_LIBRARY = [
     {
         "name": "Llama 3.2 3B Instruct", 
         "repo_id": "bartowski/Llama-3.2-3B-Instruct-GGUF", 
+        "mlx_repo": "mlx-community/Llama-3.2-3B-Instruct-4bit",
         "file_name": "Llama-3.2-3B-Instruct-Q4_K_M.gguf", 
         "prompt_type": "llama",
         "description": "General purpose balanced refiner for all languages."
@@ -55,6 +56,7 @@ LLM_LIBRARY = [
     {
         "name": "CoEdit Large (T5)", 
         "repo_id": "nvhf/coedit-large-Q6_K-GGUF", 
+        # No native MLX text-generation equivalent for T5 CoEdit
         "file_name": "coedit-large-q6_k.gguf", 
         "prompt_type": "t5",
         "description": "Premium English refiner. 60x more efficient than LLMs."
@@ -62,6 +64,7 @@ LLM_LIBRARY = [
     {
         "name": "Multilingual (Qwen 3.5 9B)", 
         "repo_id": "unsloth/Qwen3.5-9B-GGUF", 
+        "mlx_repo": "mlx-community/Qwen2.5-7B-Instruct-4bit",
         "file_name": "Qwen3.5-9B-Q4_K_M.gguf", 
         "prompt_type": "chatml",
         "description": "Brand new Qwen 3.5 9B model. Maximum intelligence and reasoning. Requires ~6.5GB VRAM."
@@ -69,6 +72,7 @@ LLM_LIBRARY = [
     {
         "name": "Multilingual (Qwen 3.5 4B)", 
         "repo_id": "unsloth/Qwen3.5-4B-GGUF", 
+        "mlx_repo": "mlx-community/Qwen2.5-3B-Instruct-4bit",
         "file_name": "Qwen3.5-4B-Q4_K_M.gguf", 
         "prompt_type": "chatml",
         "description": "The sweet spot. Much smarter than 2.5 3B while staying fast and light (~3.5GB VRAM)."
@@ -76,6 +80,7 @@ LLM_LIBRARY = [
     {
         "name": "Multilingual (Qwen 2.5 7B)", 
         "repo_id": "bartowski/Qwen2.5-7B-Instruct-GGUF", 
+        "mlx_repo": "mlx-community/Qwen2.5-7B-Instruct-4bit",
         "file_name": "Qwen2.5-7B-Instruct-Q4_K_M.gguf", 
         "prompt_type": "chatml",
         "description": "Powerful 7B model with widespread architecture support. Vastly smarter than 3B versions while remaining stable."

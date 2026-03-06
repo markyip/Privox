@@ -160,20 +160,32 @@ def main(log_callback=None):
         log_local("Error: huggingface_hub not installed in environment.")
         sys.exit(1)
 
-    # 1. Grammar Model (Llama)
+    # 1. Grammar Model (LLM)
     log_local("[Stage 3/4] Verifying LLM Grammar Model files...")
+    
+    # Extract mlx_repo contextually based on the user's selected grammar_file
+    mlx_repo = None
+    for item in models_config.LLM_LIBRARY:
+        if item.get("file_name") == grammar_file:
+            mlx_repo = item.get("mlx_repo")
+            break
+
     if is_mac:
-        # macOS uses MLX, meaning we need the whole repo snapshot, not just a .gguf file
-        # Default MLX Llama 3.2 3B Repo
-        mlx_repo = "mlx-community/Llama-3.2-3B-Instruct-4bit"
-        mac_target_dir = os.path.join(models_dir, "mlx-llama-3.2")
-        
-        # Simple check if model exists
-        if not os.path.exists(os.path.join(mac_target_dir, "model.safetensors")):
-            log_local(f"Downloading MLX Grammar Model ({mlx_repo}) for macOS...")
-            snapshot_download(repo_id=mlx_repo, local_dir=mac_target_dir)
+        if mlx_repo:
+            # Construct folder name from the repo string (e.g., "mlx-community/Qwen2.5-7B-Instruct" -> "Qwen2.5-7B-Instruct")
+            repo_folder_name = mlx_repo.split("/")[-1]
+            mac_target_dir = os.path.join(models_dir, repo_folder_name)
+            
+            # Simple check if model exists
+            if not os.path.exists(os.path.join(mac_target_dir, "model.safetensors")):
+                log_local(f"Downloading MLX Grammar Model ({mlx_repo}) for macOS...")
+                snapshot_download(repo_id=mlx_repo, local_dir=mac_target_dir)
+                log_local("MLX Grammar Model download complete.")
+            else:
+                log_local(f"MLX Grammar Model {mlx_repo} present.")
         else:
-            log_local(f"MLX Grammar Model {mlx_repo} present.")
+            log_local(f"WARNING: The selected Grammar Model ({grammar_file}) does not have a native MLX equivalent (mlx_repo missing in config).")
+            log_local("It may not be supported on macOS or will rely on CPU fallback.")
     else:
         # Windows/Linux uses single GGUF file
         if not os.path.exists(os.path.join(models_dir, grammar_file)):

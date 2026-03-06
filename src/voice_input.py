@@ -540,6 +540,9 @@ class GrammarChecker:
             lang_name = models_config.ISO_LANGUAGE_MAP.get(language, language)
             directive = f"REFINE TRANSCRIPT: PROVIDE A CLEAN {lang_name.upper()} VERSION. DO NOT TRANSLATE TO ENGLISH."
 
+        # NEW: Inject direct formatting instruction right to the core directive layer
+        directive += "\nCRITICAL FORMATTING: Whenever the user dictates a list, sequence of items, or steps, you MUST format your output as a clear bulleted or numbered list. Add paragraphs where logical."
+
         prompt_directive = f"{directive}\n\n{models_config.CRITICAL_RULES}"
         
         # Layer 2: User-Edited Instructions

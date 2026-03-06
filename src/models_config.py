@@ -31,15 +31,16 @@ def get_app_data_dir(base_fallback_dir):
 ASR_LIBRARY = [
     {"name": "Distil-Whisper Large v3 (English)", "whisper_repo": "Systran/faster-distil-whisper-large-v3", "mlx_repo": "mlx-community/distil-whisper-large-v3", "whisper_model": "distil-large-v3", "repo": "Systran/faster-distil-whisper-large-v3", "description": "Fast & High Quality. Best accuracy with distilled architecture."},
     {"name": "OpenAI Whisper Small", "whisper_repo": "openai/whisper-small", "mlx_repo": "mlx-community/whisper-small", "whisper_model": "small", "repo": "openai/whisper-small", "description": "Quick processing for low-resource environments."},
+    {"name": "Qwen2-Audio-7B", "whisper_repo": "Qwen/Qwen2-Audio-7B-Instruct", "whisper_model": "qwen2-audio-7b", "repo": "Qwen/Qwen2-Audio-7B-Instruct", "backend": "qwen_asr", "description": "Experimental: Audio-native LLM for transcription."},
+    {"name": "Qwen-ASR v3 0.6B", "whisper_repo": "Qwen/Qwen3-ASR-0.6B", "whisper_model": "qwen3-asr-0.6b", "repo": "Qwen/Qwen3-ASR-0.6B", "backend": "qwen_asr", "description": "Ultra-fast Qwen v3 ASR."},
+    {"name": "Qwen-ASR v3 1.7B", "whisper_repo": "Qwen/Qwen3-ASR-1.7B", "whisper_model": "qwen3-asr-1.7b", "repo": "Qwen/Qwen3-ASR-1.7B", "backend": "qwen_asr", "description": "Powerful Qwen v3 ASR."},
     {"name": "Whisper Large v3 Turbo (Cantonese)", "whisper_repo": "ylpeter/faster-whisper-large-v3-turbo-cantonese-16", "mlx_repo": "mlx-community/whisper-large-v3-turbo", "whisper_model": "large-v3-turbo", "repo": "ylpeter/faster-whisper-large-v3-turbo-cantonese-16", "description": "High-speed Cantonese transcription. Reduced hallucination."},
     {"name": "Whisper Large v3 Turbo (Korean)", "whisper_repo": "ghost613/faster-whisper-large-v3-turbo-korean", "mlx_repo": "mlx-community/whisper-large-v3-turbo", "whisper_model": "large-v3-turbo", "repo": "ghost613/faster-whisper-large-v3-turbo-korean", "description": "High-performance Korean transcription. Optimized for speed and accuracy."},
     {"name": "Whisper Large v3 Turbo (German)", "whisper_repo": "aseifert/faster-whisper-large-v3-turbo-german", "mlx_repo": "mlx-community/whisper-large-v3-turbo", "whisper_model": "large-v3-turbo", "repo": "aseifert/faster-whisper-large-v3-turbo-german", "description": "Precision German recognition. Handles technical and colloquial speech."},
     {"name": "Whisper Large v3 Turbo (French)", "whisper_repo": "Mathos34400/whisper-large-v3-turbo-french-v6", "mlx_repo": "mlx-community/whisper-large-v3-turbo", "whisper_model": "large-v3-turbo", "repo": "Mathos34400/whisper-large-v3-turbo-french-v6", "description": "State-of-the-art French transcription with anti-overfitting optimization."},
     {"name": "Whisper Large v3 Turbo (Japanese)", "whisper_repo": "XA9/faster-whisper-large-v3-ja", "mlx_repo": "mlx-community/whisper-large-v3-turbo", "whisper_model": "large-v3-turbo", "repo": "XA9/faster-whisper-large-v3-ja", "description": "Superior Japanese performance with CTranslate2 optimization."},
     {"name": "Whisper Large v2 (Hindi)", "whisper_repo": "collabora/faster-whisper-large-v2-hindi", "mlx_repo": "mlx-community/whisper-large-v2", "whisper_model": "large-v2", "repo": "collabora/faster-whisper-large-v2-hindi", "description": "Fine-tuned for Hindi. Optimized for mixed-code (Hinglish)."},
-    {"name": "Whisper Large v3 Turbo (Multilingual)", "whisper_repo": "deepdml/faster-whisper-large-v3-turbo-ct2", "mlx_repo": "mlx-community/whisper-large-v3-turbo", "whisper_model": "large-v3-turbo", "repo": "deepdml/faster-whisper-large-v3-turbo-ct2", "description": "State-of-the-art multilingual model. Excellent for Singlish, Arabic, and diverse accents."},
-    {"name": "Qwen3-ASR 0.6B (Multilingual)", "whisper_repo": "Qwen/Qwen3-ASR-0.6B", "whisper_model": "qwen3-asr-0.6b", "repo": "Qwen/Qwen3-ASR-0.6B", "backend": "qwen_asr", "description": "Lightweight Qwen3 ASR. Low VRAM usage, good accuracy."},
-    {"name": "Qwen3-ASR 1.7B (Multilingual)", "whisper_repo": "Qwen/Qwen3-ASR-1.7B", "whisper_model": "qwen3-asr-1.7b", "repo": "Qwen/Qwen3-ASR-1.7B", "backend": "qwen_asr", "description": "High-performance transformer-based ASR from Alibaba. Best-in-class for short/medium phrases."}
+    {"name": "Whisper Large v3 Turbo (Multilingual)", "whisper_repo": "deepdml/faster-whisper-large-v3-turbo-ct2", "mlx_repo": "mlx-community/whisper-large-v3-turbo", "whisper_model": "large-v3-turbo", "repo": "deepdml/faster-whisper-large-v3-turbo-ct2", "description": "State-of-the-art multilingual model. Excellent for Singlish, Arabic, and diverse accents."}
 ]
 
 # --- Refiner (LLM) Library ---
@@ -59,48 +60,59 @@ LLM_LIBRARY = [
         "description": "Premium English refiner. 60x more efficient than LLMs."
     },
     {
-        "name": "Multilingual (Qwen 2.5 3B)", 
-        "repo_id": "bartowski/Qwen2.5-3B-Instruct-GGUF", 
-        "file_name": "Qwen2.5-3B-Instruct-Q4_K_M.gguf", 
+        "name": "Multilingual (Qwen 3.5 9B)", 
+        "repo_id": "unsloth/Qwen3.5-9B-GGUF", 
+        "file_name": "Qwen3.5-9B-Q4_K_M.gguf", 
         "prompt_type": "chatml",
-        "description": "Best for mixed languages and high instruction obedience."
+        "description": "Brand new Qwen 3.5 9B model. Maximum intelligence and reasoning. Requires ~6.5GB VRAM."
     },
     {
-        "name": "Mistral Small 24B (Q4_K_M)", 
-        "repo_id": "bartowski/Mistral-Small-24B-Instruct-v0.1-GGUF", 
-        "file_name": "Mistral-Small-24B-Instruct-v0.1-Q4_K_M.gguf", 
-        "prompt_type": "llama",
-        "description": "Enterprise-grade refiner. Requires 16GB+ VRAM."
+        "name": "Multilingual (Qwen 3.5 4B)", 
+        "repo_id": "unsloth/Qwen3.5-4B-GGUF", 
+        "file_name": "Qwen3.5-4B-Q4_K_M.gguf", 
+        "prompt_type": "chatml",
+        "description": "The sweet spot. Much smarter than 2.5 3B while staying fast and light (~3.5GB VRAM)."
+    },
+    {
+        "name": "Multilingual (Qwen 2.5 7B)", 
+        "repo_id": "bartowski/Qwen2.5-7B-Instruct-GGUF", 
+        "file_name": "Qwen2.5-7B-Instruct-Q4_K_M.gguf", 
+        "prompt_type": "chatml",
+        "description": "Powerful 7B model with widespread architecture support. Vastly smarter than 3B versions while remaining stable."
     }
 ]
 
-# --- Default Model Names (derived from library lists, never hardcode elsewhere) ---
-# Default to the lightweight Qwen3-ASR 0.6B model
-DEFAULT_ASR = next((m["name"] for m in ASR_LIBRARY if m["whisper_model"] == "qwen3-asr-0.6b"), ASR_LIBRARY[0]["name"])
-DEFAULT_LLM = LLM_LIBRARY[0]["name"]
+# --- Defaults ---
+DEFAULT_ASR = "qwen3-asr-0.6b"
+DEFAULT_LLM = "Llama-3.2-3B-Instruct-Q4_K_M.gguf"
 
 # --- Persona Lenses ---
 # These are the systematic instructions applied to each persona
 CHARACTER_LENSES = {
     "Writing Assistant": (
         "Focus on clarity, grammar, and flow. Use professional yet accessible vocabulary. "
-        "Resolve ambiguities as a general senior editor would."
+        "Resolve ambiguities as a general senior editor would. "
+        "CRITICAL: If the input implies a sequence, list, or multiple steps, you MUST format it using bullet points or numbered lists."
     ),
     "Code Expert": (
         "Focus on Software Engineering jargon. Do not simplify technical abbreviations (API, SDK, PR, VRAM). "
-        "Preserve camelCase, PascalCase, or snake_case formatting. Prioritize logic-based corrections."
+        "Preserve camelCase, PascalCase, or snake_case formatting. Prioritize logic-based corrections. "
+        "CRITICAL: If explaining multiple steps, files, or properties, you MUST use clean Markdown bullet points."
     ),
     "Academic": (
         "Focus on intellectual and ontological vocabulary. Maintain complex sentence structures. "
-        "Do not simplify metaphysical or academic terms. Prioritize depth of nuance."
+        "Do not simplify metaphysical or academic terms. Prioritize depth of nuance. "
+        "CRITICAL: If the input contains a series of concepts or arguments, format them as a structured, numbered list or bullet points for academic clarity."
     ),
     "Executive Secretary": (
         "Focus on extreme formality and business etiquette. Use polite, indirect phrasing. "
-        "Organize thoughts into clear, actionable business communication."
+        "Organize thoughts into clear, actionable business communication. "
+        "CRITICAL: Always structure multi-point information into clean, readable bullet points."
     ),
     "Personal Buddy": (
         "Focus on conversational, low-friction vocabulary. Tolerant of slang and informal grammar. "
-        "Prioritize making the text sound like a natural, relaxed voice."
+        "Prioritize making the text sound like a natural, relaxed voice. "
+        "CRITICAL: Even though you are casual, if I list several things, you MUST format them as a neat bulleted list so it's easy to read."
     ),
     "Custom": "" # User provides absolute persona definition
 }
@@ -139,15 +151,11 @@ TONE_OVERLAYS = {
 CRITICAL_RULES = """
 CRITICAL RULES:
 1. FIX GRAMMAR: Correct grammar and spelling errors.
-2. IMPROVE FLOW & FORMAT: Use your contextual judgment to make text readable and pleasant. Apply intelligent structural formatting—such as paragraphs, bullet points, or numbering—where the input suggests a structured message.
+2. AUTO-FORMAT LISTS: You MUST convert spoken sequences, steps, or multiple items into proper Markdown bullet points (-) or numbered lists (1., 2.). Add paragraphs where logical.
 3. PUNCTUATION: Use appropriate punctuation for clarity and professional presentation.
-4. NO HALLUCINATION: Do not add new semantic information, facts, or ideas not present in the original transcript. Note: Structural formatting (paragraphs/lists) is encouraged and is NOT considered hallucination.
-5. REMOVE FILLERS: Delete unnecessary filler words (uh, um, yeah, etc.).
-6. ABSOLUTE NO CONVERSATION: Output ONLY the processed text inside the tags. Never add greetings, acknowledgments, explanations, or commentary.
-7. NEVER ANSWER QUESTIONS: If the transcript contains a question, refine the question itself. Do NOT answer it, explain it, or provide information about it. You are a text editor, not an assistant.
-8. NO TRANSLATION: Output MUST be in the same language as the input transcript.
-9. NUMBER FORMATTING: Convert spoken numbers, dates, and times into standardized digits/formats (e.g., "$100", "May 25th", "7:30 PM").
-10. ITN: Use digits for measurements, currency, and addresses to improve scannability.
+4. NO HALLUCINATION: Do not add new semantic information, facts, or ideas not present in the original transcript.
+5. NO CONVERSATION: Output ONLY the processed text inside the tags. Never add greetings or commentary.
+6. NUMBER FORMATTING: Convert spoken numbers into standardized digits (e.g., "$100", "May 25th", "7:30 PM").
 """
 
 # --- language-specific Few-Shot Examples ---
@@ -202,8 +210,7 @@ def get_system_formatter(language=None):
     }
 
     formatter = f"""
-You are a NON-INTERACTIVE text-processing API. You are NOT a chatbot. You are NOT an assistant. You do NOT answer questions. You do NOT provide explanations.
-Your ONLY job is to take the user's raw transcript and output a grammatically polished version of THE SAME TEXT.
+You are a precise text-processing API. Your job is to process the user's transcript according to the Core Directive.
 You MUST wrap your final processed text perfectly inside <refined> and </refined> XML tags. Do NOT output anything outside of these tags.
 
 {CRITICAL_RULES}
@@ -219,12 +226,6 @@ Output: <refined>{ex['output']}</refined>
 [Transcript]: {struct_ex['transcript']}
 Output: <refined>{struct_ex['output']}</refined>
 </example_2>
-
-<example_3>
-[Core Directive]: Refine this text for clarity.
-[Transcript]: uhh how do i fix this bug in my code
-Output: <refined>How do I fix this bug in my code?</refined>
-</example_3>
 """
     return formatter
 

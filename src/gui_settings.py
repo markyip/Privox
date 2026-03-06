@@ -518,10 +518,10 @@ class SettingsGUI(QMainWindow):
         if "custom_dictionary" not in self.prefs:
             self.prefs["custom_dictionary"] = self.tech_config.get("custom_dictionary", [])
             
-        # Library Loading (Prefer User Prefs > Config > Default Fallback)
-        self.asr_library = self.prefs.get("asr_library", self.tech_config.get("asr_library", models_config.ASR_LIBRARY))
+        # Library Loading (Always use fresh config/code over user prefs to prevent stale URLs)
+        self.asr_library = self.tech_config.get("asr_library", models_config.ASR_LIBRARY)
         
-        self.llm_library = self.prefs.get("llm_library", self.tech_config.get("llm_library", models_config.LLM_LIBRARY))
+        self.llm_library = self.tech_config.get("llm_library", models_config.LLM_LIBRARY)
 
         self.custom_prompts = self.prefs.get("custom_prompts", self.tech_config.get("custom_prompts", models_config.DEFAULT_PROMPTS))
         
@@ -619,7 +619,7 @@ class SettingsGUI(QMainWindow):
             }
             QPushButton#sidebar_btn {
                 background-color: transparent;
-                border: none;
+                border: 1px solid transparent; /* Prevents native 'ghost' edges */
                 color: #888888;
                 text-align: left;
                 padding-left: 24px;
@@ -628,6 +628,9 @@ class SettingsGUI(QMainWindow):
                 height: 50px;
                 outline: none;
                 border-radius: 8px;
+            }
+            QPushButton#sidebar_btn:hover {
+                background-color: rgba(255, 255, 255, 0.03);
             }
             QPushButton#sidebar_btn[active="true"] {
                 color: #ffffff;
@@ -967,7 +970,8 @@ class SettingsGUI(QMainWindow):
         self.stack.setCurrentIndex(index)
         for i, btn in enumerate(self.sidebar_buttons):
             is_active = (i == index)
-            btn.setProperty("active", is_active)
+            # Ensure proper string matching for stylesheet
+            btn.setProperty("active", "true" if is_active else "false")
             if hasattr(btn, "nav_indicator"):
                 btn.nav_indicator.setVisible(is_active)
             btn.style().unpolish(btn)
@@ -978,12 +982,6 @@ class SettingsGUI(QMainWindow):
         layout.setSpacing(20) # Reduced from 32
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # Merged AI Group
-        ai_group = self.create_group("TRANSCRIPTION & REFINEMENT", [
-            ("VOICE-TO-TEXT MODEL", self.create_asr_combo()),
-            ("REFINER (LLM) MODEL", self.create_llm_combo())
-        ])
-        
         # Labels for dynamic info (Borderless/Minimalist)
         self.asr_info = QLabel("")
         self.asr_info.setStyleSheet("color: #888888; font-size: 11px; margin-top: 2px; border: none; background: transparent;")
@@ -991,13 +989,37 @@ class SettingsGUI(QMainWindow):
         self.llm_info = QLabel("")
         self.llm_info.setStyleSheet("color: #888888; font-size: 11px; margin-top: 2px; border: none; background: transparent;")
         self.llm_info.setWordWrap(True)
+
+        # Merged AI Group with careful layout
+        ai_group = QFrame()
+        ai_group.setStyleSheet("""
+            QFrame {
+                background-color: transparent;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 12px;
+            }
+        """)
+        ai_vbox = QVBoxLayout(ai_group)
+        ai_vbox.setContentsMargins(22, 22, 22, 22)
+        ai_vbox.setSpacing(14)
         
-        # Add info labels to group layout
-        ai_layout = ai_group.layout()
-        ai_layout.insertWidget(2, self.asr_info) # After ASR Label
-        ai_layout.insertSpacing(3, 8)
-        ai_layout.insertWidget(5, self.llm_info) # After LLM Label
-        ai_layout.insertSpacing(6, 8)
+        header = QLabel("TRANSCRIPTION & REFINEMENT")
+        header.setStyleSheet("font-weight: 800; color: rgba(255, 255, 255, 0.6); border: none; font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase;")
+        ai_vbox.addWidget(header)
+        
+        # ASR Block
+        lbl_asr = QLabel("VOICE-TO-TEXT MODEL")
+        lbl_asr.setStyleSheet("color: #888888; border: none; font-size: 11px; margin-top: 8px;")
+        ai_vbox.addWidget(lbl_asr)
+        ai_vbox.addWidget(self.create_asr_combo())
+        ai_vbox.addWidget(self.asr_info)
+        
+        # LLM Block
+        lbl_llm = QLabel("REFINER (LLM) MODEL")
+        lbl_llm.setStyleSheet("color: #888888; border: none; font-size: 11px; margin-top: 12px;")
+        ai_vbox.addWidget(lbl_llm)
+        ai_vbox.addWidget(self.create_llm_combo())
+        ai_vbox.addWidget(self.llm_info)
         
         layout.addWidget(ai_group)
 

@@ -12,28 +12,44 @@ IS_WIN = (sys.platform == 'win32' or platform.system() == 'Windows')
 
 def get_app_data_dir(base_fallback_dir):
     """
-    Returns the appropriate directory for storing user data (prefs, configs, models).
-    On macOS, this points to ~/Library/Application Support/Privox.
-    On Windows/Linux, it gracefully falls back to the application base folder.
+    Returns the shared directory for storing user data (prefs, configs, models).
+    On macOS we prefer the explicit PRIVOX_APP_DATA_DIR override, then keep using
+    the legacy ~/.privox folder when it already contains user data, otherwise we
+    use ~/Library/Application Support/Privox for new installs.
     """
+    env_override = os.environ.get("PRIVOX_APP_DATA_DIR")
+    if env_override:
+        try:
+            os.makedirs(env_override, exist_ok=True)
+            return env_override
+        except Exception as e:
+            print(f"Failed to create overridden app data dir: {e}")
+
     if IS_MAC:
+        legacy_dir = os.path.expanduser("~/.privox")
         app_support = os.path.expanduser("~/Library/Application Support/Privox")
-        if not os.path.exists(app_support):
+        legacy_markers = [".user_prefs.json", "config.json", "models", "swift.log", "privox_app.log"]
+
+        if any(os.path.exists(os.path.join(legacy_dir, marker)) for marker in legacy_markers):
+            target_dir = legacy_dir
+        else:
+            target_dir = app_support
+
+        if not os.path.exists(target_dir):
             try:
-                os.makedirs(app_support, exist_ok=True)
+                os.makedirs(target_dir, exist_ok=True)
             except Exception as e:
                 print(f"Failed to create macOS App Support dir: {e}")
                 return base_fallback_dir
-        return app_support
+        return target_dir
     return base_fallback_dir
 
 # --- Voice-to-Text (ASR) Library ---
 ASR_LIBRARY = [
     {"name": "Distil-Whisper Large v3 (English)", "whisper_repo": "Systran/faster-distil-whisper-large-v3", "mlx_repo": "mlx-community/distil-whisper-large-v3", "whisper_model": "distil-large-v3", "repo": "Systran/faster-distil-whisper-large-v3", "description": "Fast & High Quality. Best accuracy with distilled architecture."},
     {"name": "OpenAI Whisper Small", "whisper_repo": "openai/whisper-small", "mlx_repo": "mlx-community/whisper-small", "whisper_model": "small", "repo": "openai/whisper-small", "description": "Quick processing for low-resource environments."},
-    {"name": "Qwen2-Audio-7B", "whisper_repo": "Qwen/Qwen2-Audio-7B-Instruct", "whisper_model": "qwen2-audio-7b", "repo": "Qwen/Qwen2-Audio-7B-Instruct", "backend": "qwen_asr", "description": "Experimental: Audio-native LLM for transcription."},
-    {"name": "Qwen-ASR v3 0.6B", "whisper_repo": "Qwen/Qwen3-ASR-0.6B", "whisper_model": "qwen3-asr-0.6b", "repo": "Qwen/Qwen3-ASR-0.6B", "backend": "qwen_asr", "description": "Ultra-fast Qwen v3 ASR."},
-    {"name": "Qwen-ASR v3 1.7B", "whisper_repo": "Qwen/Qwen3-ASR-1.7B", "whisper_model": "qwen3-asr-1.7b", "repo": "Qwen/Qwen3-ASR-1.7B", "backend": "qwen_asr", "description": "Powerful Qwen v3 ASR."},
+    {"name": "Qwen-ASR v3 0.6B", "whisper_repo": "Qwen/Qwen3-ASR-0.6B", "mlx_repo": "mlx-community/Qwen3-ASR-0.6B-4bit", "whisper_model": "qwen3-asr-0.6b", "repo": "Qwen/Qwen3-ASR-0.6B", "backend": "qwen_asr", "mac_backend": "mlx_qwen_asr", "description": "Ultra-fast Qwen v3 ASR with native MLX acceleration on Apple Silicon."},
+    {"name": "Qwen-ASR v3 1.7B", "whisper_repo": "Qwen/Qwen3-ASR-1.7B", "mlx_repo": "mlx-community/Qwen3-ASR-1.7B-4bit", "whisper_model": "qwen3-asr-1.7b", "repo": "Qwen/Qwen3-ASR-1.7B", "backend": "qwen_asr", "mac_backend": "mlx_qwen_asr", "description": "High-accuracy Qwen v3 ASR with native MLX acceleration on Apple Silicon."},
     {"name": "Whisper Large v3 Turbo (Cantonese)", "whisper_repo": "ylpeter/faster-whisper-large-v3-turbo-cantonese-16", "mlx_repo": "mlx-community/whisper-large-v3-turbo", "whisper_model": "large-v3-turbo", "repo": "ylpeter/faster-whisper-large-v3-turbo-cantonese-16", "description": "High-speed Cantonese transcription. Reduced hallucination."},
     {"name": "Whisper Large v3 Turbo (Korean)", "whisper_repo": "ghost613/faster-whisper-large-v3-turbo-korean", "mlx_repo": "mlx-community/whisper-large-v3-turbo", "whisper_model": "large-v3-turbo", "repo": "ghost613/faster-whisper-large-v3-turbo-korean", "description": "High-performance Korean transcription. Optimized for speed and accuracy."},
     {"name": "Whisper Large v3 Turbo (German)", "whisper_repo": "aseifert/faster-whisper-large-v3-turbo-german", "mlx_repo": "mlx-community/whisper-large-v3-turbo", "whisper_model": "large-v3-turbo", "repo": "aseifert/faster-whisper-large-v3-turbo-german", "description": "Precision German recognition. Handles technical and colloquial speech."},
@@ -54,28 +70,20 @@ LLM_LIBRARY = [
         "description": "General purpose balanced refiner for all languages."
     },
     {
-        "name": "CoEdit Large (T5)", 
-        "repo_id": "nvhf/coedit-large-Q6_K-GGUF", 
-        # No native MLX text-generation equivalent for T5 CoEdit
-        "file_name": "coedit-large-q6_k.gguf", 
-        "prompt_type": "t5",
-        "description": "Premium English refiner. 60x more efficient than LLMs."
+        "name": "Multilingual (Qwen 3 8B)", 
+        "repo_id": "Qwen/Qwen3-8B-GGUF", 
+        "mlx_repo": "mlx-community/Qwen3-8B-4bit",
+        "file_name": "Qwen3-8B-Q4_K_M.gguf", 
+        "prompt_type": "chatml",
+        "description": "High-capacity multilingual refiner with stronger reasoning. Best quality when you can spare more memory."
     },
     {
-        "name": "Multilingual (Qwen 3.5 9B)", 
-        "repo_id": "unsloth/Qwen3.5-9B-GGUF", 
-        "mlx_repo": "mlx-community/Qwen2.5-7B-Instruct-4bit",
-        "file_name": "Qwen3.5-9B-Q4_K_M.gguf", 
+        "name": "Multilingual (Qwen 3 4B)", 
+        "repo_id": "Qwen/Qwen3-4B-GGUF", 
+        "mlx_repo": "mlx-community/Qwen3-4B-4bit",
+        "file_name": "Qwen3-4B-Q4_K_M.gguf", 
         "prompt_type": "chatml",
-        "description": "Brand new Qwen 3.5 9B model. Maximum intelligence and reasoning. Requires ~6.5GB VRAM."
-    },
-    {
-        "name": "Multilingual (Qwen 3.5 4B)", 
-        "repo_id": "unsloth/Qwen3.5-4B-GGUF", 
-        "mlx_repo": "mlx-community/Qwen2.5-3B-Instruct-4bit",
-        "file_name": "Qwen3.5-4B-Q4_K_M.gguf", 
-        "prompt_type": "chatml",
-        "description": "The sweet spot. Much smarter than 2.5 3B while staying fast and light (~3.5GB VRAM)."
+        "description": "Balanced multilingual refiner with better reasoning than lightweight 3B-class models."
     },
     {
         "name": "Multilingual (Qwen 2.5 7B)", 
@@ -88,8 +96,8 @@ LLM_LIBRARY = [
 ]
 
 # --- Defaults ---
-DEFAULT_ASR = "qwen3-asr-0.6b"
-DEFAULT_LLM = "Llama-3.2-3B-Instruct-Q4_K_M.gguf"
+DEFAULT_ASR = "Distil-Whisper Large v3 (English)"
+DEFAULT_LLM = "Llama 3.2 3B Instruct"
 
 # --- Persona Lenses ---
 # These are the systematic instructions applied to each persona
@@ -203,8 +211,8 @@ LANGUAGE_EXAMPLES = {
     }
 }
 
-def get_system_formatter(language=None):
-    """Generates a system prompt with a language-relevant few-shot example."""
+def get_system_formatter(language=None, prompt_type="llama", compact=False):
+    """Generates a system prompt with language-relevant few-shot examples."""
     lang_key = language if language in LANGUAGE_EXAMPLES else "en"
     ex = LANGUAGE_EXAMPLES[lang_key]
     
@@ -214,28 +222,96 @@ def get_system_formatter(language=None):
         "output": "Our grocery list is:\n- Apples\n- Milk\n- Eggs\n- Bread"
     }
 
+    bad_example = """
+<bad_example>
+Incorrect assistant output:
+<think>
+I will fix the grammar and then answer carefully.
+</think>
+Here is the refined text: I think this is correct.
+
+Why this is wrong:
+- It leaks internal reasoning.
+- It outputs text outside <refined> tags.
+- It adds commentary instead of behaving like a formatting API.
+</bad_example>
+"""
+
+    compact_bad_example = """
+<bad_example>
+<think>I will reason step by step.</think>
+Here is the refined text: I think this is correct.
+</bad_example>
+"""
+
+    if prompt_type == "chatml":
+        examples_block = f"""
+<good_example_1>
+<|im_start|>user
+[Core Directive]: Refine this text for clarity.
+[Transcript]: {ex['transcript']}
+Output:
+<|im_end|>
+<|im_start|>assistant
+<refined>{ex['output']}</refined>
+<|im_end|>
+</good_example_1>
+"""
+        if not compact:
+            examples_block += f"""
+
+<good_example_2>
+<|im_start|>user
+[Core Directive]: Refine this text for clarity.
+[Transcript]: {struct_ex['transcript']}
+Output:
+<|im_end|>
+<|im_start|>assistant
+<refined>{struct_ex['output']}</refined>
+<|im_end|>
+</good_example_2>
+"""
+        formatter = f"""
+You are a precise text-processing API for ChatML/Qwen-style models. Your job is to process the user's transcript according to the Core Directive.
+You MUST return exactly one assistant answer that begins with <refined> and ends with </refined>.
+You MUST NOT output <think> tags, internal reasoning, analysis, commentary, markdown fences, or any text outside <refined> tags.
+
+{CRITICAL_RULES}
+
+{compact_bad_example if compact else bad_example}
+{examples_block}
+"""
+        return formatter
+
+    examples_block = f"""
+<good_example_1>
+[Core Directive]: Refine this text for clarity.
+[Transcript]: {ex['transcript']}
+Output: <refined>{ex['output']}</refined>
+</good_example_1>
+"""
+    if not compact:
+        examples_block += f"""
+
+<good_example_2>
+[Core Directive]: Refine this text for clarity.
+[Transcript]: {struct_ex['transcript']}
+Output: <refined>{struct_ex['output']}</refined>
+</good_example_2>
+"""
     formatter = f"""
 You are a precise text-processing API. Your job is to process the user's transcript according to the Core Directive.
 You MUST wrap your final processed text perfectly inside <refined> and </refined> XML tags. Do NOT output anything outside of these tags.
 
 {CRITICAL_RULES}
 
-<example_1>
-[Core Directive]: Refine this text for clarity.
-[Transcript]: {ex['transcript']}
-Output: <refined>{ex['output']}</refined>
-</example_1>
-
-<example_2>
-[Core Directive]: Refine this text for clarity.
-[Transcript]: {struct_ex['transcript']}
-Output: <refined>{struct_ex['output']}</refined>
-</example_2>
+{compact_bad_example if compact else bad_example}
+{examples_block}
 """
     return formatter
 
 # Keep the static one for legacy or T5 models if needed
-SYSTEM_FORMATTER = get_system_formatter("en")
+SYSTEM_FORMATTER = get_system_formatter("en", "llama", compact=False)
 
 # --- ISO Language Map (For Prompt Highlighting) ---
 ISO_LANGUAGE_MAP = {

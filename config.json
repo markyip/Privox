@@ -29,6 +29,5 @@
             "description": "Powerful 7B model. Smarter and more stable than 3B versions."
         }
     },
-    "current_refiner": "English Specialist (CoEdit)",
     "active_character": "Professional Refiner"
 }

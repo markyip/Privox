@@ -107,13 +107,42 @@ mkdir -p "$STAGING_DIR"
 echo "Copying application resources..."
 cp -R "$APP_BUNDLE" "$STAGING_DIR/"
 
-# Ad-hoc Code Signing (essential for privacy permissions on modern macOS)
-echo "Applying ad-hoc code signature..."
+# Re-sign the staged app. Use a stable Apple signing identity when available so
+# macOS can preserve Accessibility/Microphone/Automation permissions across updates.
+SIGNING_IDENTITY="${PRIVOX_SIGNING_IDENTITY:--}"
+REQUIRE_STABLE_SIGNATURE="${PRIVOX_REQUIRE_STABLE_SIGNATURE:-0}"
+AD_HOC_SIGNING=0
+if [ -z "$SIGNING_IDENTITY" ] || [ "$SIGNING_IDENTITY" = "-" ]; then
+    AD_HOC_SIGNING=1
+fi
+
+if [ "$REQUIRE_STABLE_SIGNATURE" = "1" ] && [ "$AD_HOC_SIGNING" = "1" ]; then
+    echo "Error: PRIVOX_REQUIRE_STABLE_SIGNATURE=1 but PRIVOX_SIGNING_IDENTITY is not set."
+    exit 1
+fi
+
+echo "Applying code signature..."
 ENTITLEMENTS="assets/entitlements.plist"
 if [ -f "$ENTITLEMENTS" ]; then
-    codesign --deep --force --options runtime --entitlements "$ENTITLEMENTS" -s - "$STAGING_DIR/$APP_NAME.app"
+    if [ "$AD_HOC_SIGNING" = "1" ]; then
+        codesign --deep --force --entitlements "$ENTITLEMENTS" -s - "$STAGING_DIR/$APP_NAME.app"
+    else
+        codesign --deep --force --options runtime --timestamp --entitlements "$ENTITLEMENTS" -s "$SIGNING_IDENTITY" "$STAGING_DIR/$APP_NAME.app"
+    fi
 else
-    codesign --deep --force -s - "$STAGING_DIR/$APP_NAME.app"
+    if [ "$AD_HOC_SIGNING" = "1" ]; then
+        codesign --deep --force -s - "$STAGING_DIR/$APP_NAME.app"
+    else
+        codesign --deep --force --options runtime --timestamp -s "$SIGNING_IDENTITY" "$STAGING_DIR/$APP_NAME.app"
+    fi
+fi
+
+codesign --verify --deep --strict --verbose=2 "$STAGING_DIR/$APP_NAME.app"
+
+if [ "$AD_HOC_SIGNING" = "1" ]; then
+    echo "Note: ad-hoc signing is active. For stable privacy permissions across updates, set PRIVOX_SIGNING_IDENTITY."
+else
+    echo "Stable signature applied with identity: $SIGNING_IDENTITY"
 fi
 
 # Create a symlink to the Applications folder for drag-and-drop
@@ -125,6 +154,13 @@ echo "Generating DMG image..."
 if ! hdiutil create -volname "$APP_NAME" -srcfolder "$STAGING_DIR" -ov -format UDZO "$DMG_NAME"; then
     echo "Error: hdiutil failed to create DMG."
     exit 1
+fi
+
+if [ -n "${PRIVOX_NOTARY_PROFILE:-}" ]; then
+    echo "Submitting DMG for notarization with profile ${PRIVOX_NOTARY_PROFILE}..."
+    xcrun notarytool submit "$DMG_NAME" --keychain-profile "${PRIVOX_NOTARY_PROFILE}" --wait
+    xcrun stapler staple "$DMG_NAME"
+    echo "Notarization complete."
 fi
 
 echo "Success! $DMG_NAME is ready for distribution."

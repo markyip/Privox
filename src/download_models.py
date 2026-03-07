@@ -29,31 +29,37 @@ def main(log_callback=None):
         
     app_data_dir = models_config.get_app_data_dir(target_base_dir)
     
-    # Load settings from config.json if it exists
-    whisper_model_name = models_config.ASR_LIBRARY[0]["whisper_model"]
+    # Load settings from .user_prefs.json (primary) or config.json (fallback)
+    whisper_model_name = models_config.DEFAULT_ASR
     whisper_repo = models_config.ASR_LIBRARY[0]["whisper_repo"]
-    grammar_file = models_config.LLM_LIBRARY[0]["file_name"] 
-    grammar_repo = models_config.LLM_LIBRARY[0]["repo_id"]
+    grammar_name = models_config.DEFAULT_LLM
     
     asr_backend = "whisper" # Default value
+    
+    prefs_path = os.path.join(app_data_dir, ".user_prefs.json")
     config_path = os.path.join(app_data_dir, "config.json")
-    if os.path.exists(config_path):
+    
+    load_path = prefs_path if os.path.exists(prefs_path) else config_path
+    
+    if os.path.exists(load_path):
         try:
             import json
-            with open(config_path, "r") as f:
+            with open(load_path, "r", encoding="utf-8") as f:
                 config = json.load(f)
                 whisper_model_name = config.get("whisper_model", whisper_model_name)
-                whisper_repo = config.get("whisper_repo", whisper_repo)
-                grammar_file = config.get("grammar_file", grammar_file)
-                grammar_repo = config.get("grammar_repo", grammar_repo)
+                grammar_name = config.get("current_refiner", grammar_name)
                 asr_backend = config.get("asr_backend", "whisper")
-                # Find matching MLX repo if on Mac
-                if is_mac:
-                    for item in models_config.ASR_LIBRARY:
-                        if item.get("whisper_model") == whisper_model_name:
-                            whisper_repo = item.get("mlx_repo", whisper_repo)
-                            break
-            log_local(f"Loaded tailored settings from config.json: {whisper_model_name}")
+                
+                # Resolve ASR Repo
+                for item in models_config.ASR_LIBRARY:
+                    if item["name"] == whisper_model_name or item.get("whisper_model") == whisper_model_name:
+                        if is_mac and item.get("mlx_repo"):
+                            whisper_repo = item.get("mlx_repo")
+                        else:
+                            whisper_repo = item.get("whisper_repo") or item.get("repo")
+                        whisper_model_name = item.get("whisper_model") or item["name"]
+                        break
+            log_local(f"Loaded tailored settings from {os.path.basename(load_path)}: {whisper_model_name}")
         except Exception as e:
             log_local(f"Config load error (using defaults): {e}")
             asr_backend = "whisper"
@@ -176,8 +182,22 @@ def main(log_callback=None):
             repo_folder_name = mlx_repo.split("/")[-1]
             mac_target_dir = os.path.join(models_dir, repo_folder_name)
             
-            # Simple check if model exists
-            if not os.path.exists(os.path.join(mac_target_dir, "model.safetensors")):
+            has_weights = False
+            if os.path.isdir(mac_target_dir):
+                try:
+                    has_weights = any(entry.endswith(".safetensors") for entry in os.listdir(mac_target_dir))
+                except Exception:
+                    has_weights = False
+
+            has_required_files = (
+                os.path.exists(os.path.join(mac_target_dir, "config.json")) and
+                (
+                    os.path.exists(os.path.join(mac_target_dir, "tokenizer.json")) or
+                    os.path.exists(os.path.join(mac_target_dir, "tokenizer_config.json"))
+                )
+            )
+
+            if not (has_weights and has_required_files):
                 log_local(f"Downloading MLX Grammar Model ({mlx_repo}) for macOS...")
                 snapshot_download(repo_id=mlx_repo, local_dir=mac_target_dir)
                 log_local("MLX Grammar Model download complete.")
@@ -244,14 +264,8 @@ def main(log_callback=None):
                 
     if needs_download:
         is_mac = sys.platform == "darwin"
+        # Actual repo is already resolved above based on Mac status
         actual_repo = whisper_repo
-        
-        # Override with MLX repo on Mac if available
-        if is_mac:
-            for item in models_config.ASR_LIBRARY:
-                if item.get("whisper_model") == whisper_model_name:
-                    actual_repo = item.get("mlx_repo", whisper_repo)
-                    break
         
         log_local(f"Downloading Whisper Model ({whisper_model_name}) from {actual_repo}...")
         log_local("Note: Large models (3GB+) may take several minutes. Please wait.")

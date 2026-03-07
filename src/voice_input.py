@@ -3,6 +3,9 @@ import os
 
 # --- 0. Hard Environment Isolation (MUST BE FIRST) ---
 os.environ["PYTHONNOUSERSITE"] = "1"
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 import site
 site.ENABLE_USER_SITE = False
 
@@ -12,6 +15,8 @@ import queue
 import time
 import json
 import re
+import importlib.util
+import hashlib
 import gc
 import concurrent.futures
 import subprocess
@@ -19,9 +24,52 @@ from datetime import datetime, timedelta
 import models_config
 from huggingface_hub import HfApi
 import platform
+from tqdm.auto import tqdm as base_tqdm
 
 IS_MAC = (sys.platform == 'darwin' or platform.system() == 'Darwin')
 IS_WIN = (sys.platform == 'win32' or platform.system() == 'Windows')
+DOWNLOAD_PROGRESS_REPORTER = None
+
+
+class PrivoxDownloadTqdm(base_tqdm):
+    def __init__(self, *args, **kwargs):
+        # huggingface_hub may pass extra metadata like `name`; tqdm doesn't need it.
+        kwargs.pop("name", None)
+        super().__init__(*args, **kwargs)
+        self._last_report_time = 0.0
+        self._last_report_n = -1
+        self._report(force=True)
+
+    def update(self, n=1):
+        result = super().update(n)
+        self._report()
+        return result
+
+    def close(self):
+        self._report(force=True)
+        return super().close()
+
+    def display(self, *args, **kwargs):
+        # The app surfaces progress in SwiftUI, so we suppress tqdm terminal redraw noise.
+        return None
+
+    def _report(self, force=False):
+        global DOWNLOAD_PROGRESS_REPORTER
+        if DOWNLOAD_PROGRESS_REPORTER is None:
+            return
+
+        now = time.time()
+        if not force and self.n == self._last_report_n and (now - self._last_report_time) < 0.25:
+            return
+
+        progress = None
+        if self.total and self.total > 0:
+            progress = max(0.0, min(1.0, float(self.n) / float(self.total)))
+
+        description = (self.desc or "Downloading models").replace("\n", " ").strip()
+        DOWNLOAD_PROGRESS_REPORTER(progress, description)
+        self._last_report_time = now
+        self._last_report_n = self.n
 
 if IS_MAC:
     try:
@@ -247,8 +295,6 @@ try:
     import sounddevice as sd
     import numpy as np
     from pynput import keyboard
-    import pystray
-    from PIL import Image, ImageDraw
     import pyperclip
     from huggingface_hub import hf_hub_download, snapshot_download
     
@@ -325,28 +371,61 @@ GRAMMAR_FILE = "Llama-3.2-3B-Instruct-Q4_K_M.gguf"
 
 class SoundManager:
     def __init__(self, enabled=True):
-        self.enabled = enabled and (winsound is not None)
+        self.enabled = enabled
         self.lock = threading.Lock()
+        self.start_sound_path = "/System/Library/Sounds/Ping.aiff"
+        self.stop_sound_path = "/System/Library/Sounds/Pop.aiff"
+        self.error_sound_path = "/System/Library/Sounds/Basso.aiff"
 
-    def _play(self, freq, duration):
+    def _play_windows_beep(self, freq, duration):
+        if winsound is None:
+            return
+        winsound.Beep(freq, duration)
+
+    def _play_mac_sound(self, sound_path):
+        if not sound_path or not os.path.exists(sound_path):
+            return
+        subprocess.run(
+            ["afplay", sound_path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False
+        )
+
+    def _play(self, freq=None, duration=None, sound_path=None):
         if self.enabled:
             try:
                 with self.lock:
-                    winsound.Beep(freq, duration)
+                    if IS_WIN:
+                        self._play_windows_beep(freq, duration)
+                    elif IS_MAC:
+                        self._play_mac_sound(sound_path)
             except Exception as e:
                 log_print(f"Sound Error: {e}")
 
     def play_start(self):
         if self.enabled:
-            threading.Thread(target=self._play, args=(1000, 200), daemon=True).start()
+            threading.Thread(
+                target=self._play,
+                kwargs={"freq": 1000, "duration": 200, "sound_path": self.start_sound_path},
+                daemon=True
+            ).start()
 
     def play_stop(self):
         if self.enabled:
-            threading.Thread(target=self._play, args=(750, 200), daemon=True).start()
+            threading.Thread(
+                target=self._play,
+                kwargs={"freq": 750, "duration": 200, "sound_path": self.stop_sound_path},
+                daemon=True
+            ).start()
 
     def play_error(self):
         if self.enabled:
-            threading.Thread(target=self._play, args=(400, 500), daemon=True).start()
+            threading.Thread(
+                target=self._play,
+                kwargs={"freq": 400, "duration": 500, "sound_path": self.error_sound_path},
+                daemon=True
+            ).start()
 
 
 # --- Persona & Tone Logic (Moved to models_config.py) ---
@@ -369,6 +448,83 @@ class GrammarChecker:
         self.context_buffer = "" # Max 2000 chars of conversation history
         self._has_loaded_once = False  # Instance-level: tracks if we've loaded before (for verbose control)
 
+    def get_mlx_target_dir(self, repo_id=None):
+        repo_id = repo_id or self.profile.get("mlx_repo")
+        if not repo_id:
+            return None
+        repo_folder_name = repo_id.split("/")[-1]
+        return os.path.join(APP_DATA_DIR, "models", repo_folder_name)
+
+    def is_mlx_model_dir_ready(self, target_dir):
+        if not target_dir or not os.path.isdir(target_dir):
+            return False
+
+        try:
+            dir_entries = os.listdir(target_dir)
+        except Exception:
+            return False
+
+        has_weights = any(entry.endswith(".safetensors") for entry in dir_entries)
+        has_config = os.path.exists(os.path.join(target_dir, "config.json"))
+        has_tokenizer = (
+            os.path.exists(os.path.join(target_dir, "tokenizer.json")) or
+            os.path.exists(os.path.join(target_dir, "tokenizer_config.json"))
+        )
+        return has_weights and has_config and has_tokenizer
+
+    def resolve_local_mlx_model_dir(self, repo_id=None):
+        repo_id = repo_id or self.profile.get("mlx_repo")
+        if not repo_id:
+            return None
+
+        repo_folder_name = repo_id.split("/")[-1]
+        candidates = [
+            os.path.join(APP_DATA_DIR, "models", repo_folder_name),
+            os.path.join(BASE_DIR, "models", repo_folder_name),
+        ]
+
+        for candidate in candidates:
+            if self.is_mlx_model_dir_ready(candidate):
+                return candidate
+        return None
+
+    def ensure_mlx_model_available(self, download_if_missing=True):
+        mlx_repo = self.profile.get("mlx_repo")
+        if not mlx_repo:
+            self.loading_error = "No MLX repo defined for this refiner."
+            return None
+
+        resolved_dir = self.resolve_local_mlx_model_dir(repo_id=mlx_repo)
+        if resolved_dir:
+            return resolved_dir
+
+        if not download_if_missing:
+            return None
+
+        target_dir = self.get_mlx_target_dir(repo_id=mlx_repo)
+        if not target_dir:
+            raise RuntimeError("MLX LLM target directory could not be determined.")
+
+        os.makedirs(target_dir, exist_ok=True)
+        log_print(f"MLX Grammar model missing locally. Downloading {mlx_repo} to {target_dir}...")
+        snapshot_download(
+            repo_id=mlx_repo,
+            local_dir=target_dir,
+            tqdm_class=PrivoxDownloadTqdm
+        )
+
+        repo_tag_file = os.path.join(target_dir, ".repo_id")
+        try:
+            with open(repo_tag_file, "w", encoding="utf-8") as f:
+                f.write(mlx_repo)
+        except Exception:
+            pass
+
+        if not self.is_mlx_model_dir_ready(target_dir):
+            raise RuntimeError(f"MLX Grammar model download completed but required files are missing in {target_dir}")
+
+        return target_dir
+
     def load_model(self):
         if self.model:
             return True
@@ -385,15 +541,8 @@ class GrammarChecker:
                 log_print(self.loading_error)
                 return False
 
-            repo_folder_name = mlx_repo.split("/")[-1]
-            mlx_target_dir = os.path.join(APP_DATA_DIR, "models", repo_folder_name)
-            
-            if not os.path.exists(mlx_target_dir):
-                self.loading_error = f"MLX Model missing: {mlx_target_dir}"
-                log_print(self.loading_error)
-                return False
-            
             try:
+                mlx_target_dir = self.ensure_mlx_model_available(download_if_missing=True)
                 log_print("Importing Apple MLX framework...")
                 import mlx.core as mx
                 from mlx_lm import load, generate
@@ -580,6 +729,61 @@ class GrammarChecker:
 
         return prompt_directive
 
+    def _looks_like_structured_dictation(self, text):
+        if not text:
+            return False
+
+        normalized = text.lower()
+        structure_markers = [
+            "list", "bullet", "numbered", "steps", "step one", "step two",
+            "first", "second", "third", "next", "finally"
+        ]
+        if any(marker in normalized for marker in structure_markers):
+            return True
+
+        if text.count(",") >= 2 and (" and " in normalized or " then " in normalized):
+            return True
+
+        return False
+
+    def _should_use_compact_formatter(self, clean_text, user_text):
+        if not clean_text:
+            return True
+        if user_text and user_text.strip():
+            return False
+        if self._looks_like_structured_dictation(clean_text):
+            return False
+        return len(clean_text) <= 280
+
+    def _should_fast_path_refine(self, clean_text, user_text):
+        if not clean_text:
+            return False
+        if user_text and user_text.strip():
+            return False
+        if self.custom_dictionary:
+            return False
+        if self.character != "Writing Assistant" or self.tone != "Natural":
+            return False
+        if self._looks_like_structured_dictation(clean_text):
+            return False
+        if "\n" in clean_text or len(clean_text) > 48:
+            return False
+        if len(clean_text.split()) > 10:
+            return False
+        return True
+
+    def _fast_path_cleanup(self, text):
+        normalized = re.sub(r'\s+', ' ', text or '').strip()
+        if not normalized:
+            return text
+
+        normalized = re.sub(r'\bi\b', 'I', normalized)
+        if normalized and normalized[0].islower():
+            normalized = normalized[0].upper() + normalized[1:]
+        if normalized[-1].isalnum():
+            normalized += "."
+        return normalized
+
     def correct(self, text, is_command=False, language=None, language_prob=0.0, user_text=None):
         clean_text = text.strip()
         if not self.model or not clean_text:
@@ -591,6 +795,7 @@ class GrammarChecker:
 
         try:
             prompt_type = self.profile.get("prompt_type", "llama")
+            use_compact_formatter = False
 
             if is_command:
                 system_prompt = self.command_prompt or (
@@ -599,8 +804,22 @@ class GrammarChecker:
                 )
                 user_content = text
             else:
+                # Resolve Custom Instruction if not explicitly provided
+                if not user_text and hasattr(self, 'custom_prompts'):
+                    prompt_key = f"{self.character}|{self.tone}"
+                    user_text = self.custom_prompts.get(prompt_key, "")
+
+                if self._should_fast_path_refine(clean_text, user_text):
+                    log_print(f" [Fast Refine Path] Skipping LLM for simple short dictation ({len(clean_text)} chars).")
+                    return self._fast_path_cleanup(text)
+
                 core_directive = self.get_effective_prompt(language=language, language_prob=language_prob, user_text=user_text)
-                system_prompt = models_config.get_system_formatter(language=language)
+                use_compact_formatter = self._should_use_compact_formatter(clean_text, user_text)
+                system_prompt = models_config.get_system_formatter(
+                    language=language,
+                    prompt_type=prompt_type,
+                    compact=use_compact_formatter
+                )
                 user_content = f"[Core Directive]: {core_directive}\n[Transcript]: {text}\nOutput: "
 
             # Format based on model type
@@ -609,6 +828,11 @@ class GrammarChecker:
                 prompt = f"{action}: {text}"
                 stop_tokens = ["\n"]
             elif prompt_type == "chatml":
+                system_prompt += (
+                    "\nTHINKING MODE IS DISABLED. Do not output <think> tags, internal reasoning, "
+                    "or analysis. Return only the final answer inside <refined> tags."
+                )
+                user_content = f"/no_think\n{user_content}"
                 prompt = (
                     f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
                     f"<|im_start|>user\n{user_content}<|im_end|>\n"
@@ -625,7 +849,18 @@ class GrammarChecker:
             
             # 2. Proportional max_tokens cap to prevent runaway generation
             input_tokens_est = max(len(clean_text) // 3, len(clean_text.split()))
-            max_tokens = min(2048, max(128, input_tokens_est * 4))
+            if IS_MAC:
+                if prompt_type == "chatml":
+                    max_tokens = min(96 if use_compact_formatter else 128, max(24, input_tokens_est))
+                else:
+                    max_tokens = min(96 if use_compact_formatter else 144, max(32, int(input_tokens_est * 1.5)))
+            else:
+                max_tokens = min(2048, max(128, input_tokens_est * 4))
+
+            log_print(
+                f" Refiner prompt mode: {'compact' if use_compact_formatter else 'full'} "
+                f"(prompt_type={prompt_type}, prompt_chars={len(system_prompt) + len(user_content)}, max_tokens={max_tokens})"
+            )
 
             if IS_MAC:
                 # --- MLX Execution ---
@@ -660,6 +895,9 @@ class GrammarChecker:
                 
             if prompt_type == "t5":
                 return raw_response
+
+            # Qwen-family chat models may still emit internal reasoning blocks.
+            raw_response = self._strip_thinking_blocks(raw_response)
 
             # Extract text purely from inside the <refined> tags 
             import re
@@ -732,6 +970,29 @@ class GrammarChecker:
 
         return text
 
+    def _strip_thinking_blocks(self, text):
+        """Remove leaked Qwen thinking blocks before we parse the answer."""
+        if not text:
+            return text
+
+        stripped = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL | re.IGNORECASE).strip()
+        if stripped != text:
+            log_print(f" [Thinking Strip] Removed {len(text) - len(stripped)} chars of leaked reasoning.")
+            return stripped
+
+        # Some Qwen responses stream an opening <think> block without a closing tag.
+        if text.lstrip().lower().startswith("<think>"):
+            split_match = re.search(r'</think>\s*', text, flags=re.IGNORECASE)
+            if split_match:
+                candidate = text[split_match.end():].strip()
+                log_print(" [Thinking Strip] Removed prefixed <think> block.")
+                return candidate
+
+            log_print(" [Thinking Strip] Response contains only leaked reasoning. Reverting to empty candidate.")
+            return ""
+
+        return text
+
     # --- Prompt-echo fingerprints (substrings the LLM may regurgitate) ---
     _PROMPT_FINGERPRINTS = [
         "core directive",
@@ -751,6 +1012,9 @@ class GrammarChecker:
             
         # 1. Detect prompt leakage (LLM echoeing its instructions)
         ref_lower = refined_text.lower()
+        if "<think>" in ref_lower or ref_lower.startswith("okay, let's") or ref_lower.startswith("okay, the user"):
+            log_print(" [Hallucination Guard] Detected leaked reasoning content. Reverting to original.")
+            return original_text
         for finger in self._PROMPT_FINGERPRINTS:
             if finger in ref_lower and len(refined_text) > len(original_text) * 2:
                 log_print(f" [Hallucination Guard] Detected prompt fingerprint '{finger}'. Reverting to original.")
@@ -781,13 +1045,17 @@ class GrammarChecker:
             log_print("Grammar Model Unloaded.")
 
 class VoiceInputApp:
-    def __init__(self):
+    def __init__(self, headless=False):
+        global DOWNLOAD_PROGRESS_REPORTER
+        self.headless = headless
+        self.running = True
+        self.mic_active = False
         log_print("Initializing Voice Input Application...")
         
         self.keyboard_controller = keyboard.Controller()
         
         # Load Config
-        self.hotkey = keyboard.Key.f8 # Default
+        self.hotkey = keyboard.Key.space # Default
         self.sound_enabled = True
         self.auto_stop_enabled = True
         self.silence_timeout_ms = 10000
@@ -795,9 +1063,12 @@ class VoiceInputApp:
         self.custom_prompts = {}
         self.character = "Writing Assistant"
         self.tone = "Natural"
+        self.paste_delay_seconds = 0
         self.current_refiner = ""
         self.dictation_prompt = None
         self.command_prompt = None
+        self.active_mlx_repo = None
+        self.active_whisper_repo = None
         
         self.sound_manager = SoundManager(self.sound_enabled)
         
@@ -806,9 +1077,8 @@ class VoiceInputApp:
         self.audio_buffer = [] 
         self.is_listening = False
         self.is_speaking = False
-        self.running = True
         self.stream = None
-        self.mic_active = False
+        self.audio_stream_lock = threading.Lock()
         
         self.models_ready = False
         self.loading_status = "Initializing..."
@@ -826,6 +1096,9 @@ class VoiceInputApp:
         self.vad_model = None
         self.asr_model = None
         self.vad_iterator = None
+        self.mlx_asr_local_path = None
+        self.mlx_asr_warmed = False
+        self.mlx_qwen_asr_local_path = None
         
         # Tray Icon (placeholder)
         self.icon = None
@@ -834,21 +1107,28 @@ class VoiceInputApp:
         self.last_activity_time = time.time()
         self.heavy_models_loaded = False
         self.model_lock = threading.Lock()
-        self.vram_timeout = 60 # Seconds before unloading
+        self.vram_timeout = 300 # Seconds before unloading
         self.pending_wakeup = False # Auto-start recording after loading?
+        self.model_reload_requested = False
         
         # Hotkey support
-        self.hotkey_str = "f8"
-        self.target_mods = set() # e.g. {'ctrl', 'shift'}
-        self.target_key = "f8"
+        self.hotkey_str = "ctrl+shift+space"
+        self.target_mods = {"ctrl", "shift"} # e.g. {'ctrl', 'shift'}
+        self.target_key = "space"
         self.active_mods = set()
         self.settings_process = None
         self.last_toggle_time = 0 # Hotkey de-bounce timer
         self.last_config_reload_time = 0 # Cooldown for config polling
         self._last_prefs_hash = None # Hash-based change detection
+        self.last_mic_retry_time = 0
+        self.mic_retry_interval = 5.0
+        DOWNLOAD_PROGRESS_REPORTER = self.emit_download_progress
         
         # Load Config (FINAL STEP of init to prevent overwriting by defaults)
         self.load_config()
+
+        self.loading_status = "Loading VAD..."
+        self.load_vad()
         
         # Set initial state to show loading spinner
         self.update_status("INITIALIZING")
@@ -859,7 +1139,7 @@ class VoiceInputApp:
     def initial_load(self):
         # Run model cleanup FIRST to avoid race conditions with loading
         try:
-            prefs_path = os.path.join(BASE_DIR, ".user_prefs.json")
+            prefs_path = os.path.join(APP_DATA_DIR, ".user_prefs.json")
             if os.path.exists(prefs_path):
                 with open(prefs_path, "r", encoding="utf-8") as f:
                     prefs = json.load(f)
@@ -868,28 +1148,294 @@ class VoiceInputApp:
                     self.cleanup_stale_models(cleanup_days)
         except: pass
 
-        self.loading_status = "Loading VAD..."
-        self.update_tray_tooltip()
-        self.load_vad()
-        
         # We load heavy models initially so it's ready for first use, 
         # then let the saver handle unloading if unused.
         self.load_heavy_models()
+
+    def get_mlx_asr_target_dir(self, repo_id=None):
+        repo_id = repo_id or self.active_mlx_repo or WHISPER_REPO
+        if not repo_id:
+            return None
+        repo_folder_name = repo_id.split("/")[-1]
+        return os.path.join(APP_DATA_DIR, "models", repo_folder_name)
+
+    def is_mlx_asr_dir_ready(self, target_dir):
+        if not target_dir or not os.path.isdir(target_dir):
+            return False
+
+        required_files = ["config.json"]
+        try:
+            dir_entries = os.listdir(target_dir)
+        except Exception:
+            return False
+
+        has_weights = any(
+            entry.endswith(".npz") or entry.endswith(".safetensors")
+            for entry in dir_entries
+        )
+        has_required_files = all(os.path.exists(os.path.join(target_dir, file_name)) for file_name in required_files)
+        # Some MLX Whisper repos use weights.npz while others ship weights.safetensors.
+        # Treat tokenizer files as optional so we don't get stuck re-downloading healthy model folders.
+        return has_weights and has_required_files
+
+    def is_mlx_qwen_asr_dir_ready(self, target_dir):
+        if not target_dir or not os.path.isdir(target_dir):
+            return False
+
+        try:
+            dir_entries = os.listdir(target_dir)
+        except Exception:
+            return False
+
+        has_weights = any(entry.endswith(".safetensors") for entry in dir_entries)
+        has_config = os.path.exists(os.path.join(target_dir, "config.json"))
+        has_tokenizer = (
+            os.path.exists(os.path.join(target_dir, "tokenizer.json")) or
+            os.path.exists(os.path.join(target_dir, "tokenizer_config.json"))
+        )
+        return has_weights and has_config and has_tokenizer
+
+    def resolve_local_mlx_asr_dir(self, repo_id=None, whisper_model=None):
+        repo_id = repo_id or self.active_mlx_repo or WHISPER_REPO
+        whisper_model = whisper_model or WHISPER_SIZE
+
+        candidates = []
+        if repo_id:
+            repo_folder_name = repo_id.split("/")[-1]
+            candidates.append(os.path.join(APP_DATA_DIR, "models", repo_folder_name))
+            candidates.append(os.path.join(BASE_DIR, "models", repo_folder_name))
+        if self.active_whisper_repo:
+            whisper_repo_folder_name = self.active_whisper_repo.split("/")[-1]
+            candidates.append(os.path.join(APP_DATA_DIR, "models", whisper_repo_folder_name))
+            candidates.append(os.path.join(BASE_DIR, "models", whisper_repo_folder_name))
+        if whisper_model:
+            candidates.append(os.path.join(BASE_DIR, "models", f"whisper-{whisper_model}"))
+
+        seen = set()
+        for candidate in candidates:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            if self.is_mlx_asr_dir_ready(candidate):
+                return candidate
+        return None
+
+    def resolve_local_mlx_qwen_asr_dir(self, repo_id=None):
+        repo_id = repo_id or self.active_mlx_repo or WHISPER_REPO
+        if not repo_id:
+            return None
+
+        repo_folder_name = repo_id.split("/")[-1]
+        candidates = [
+            os.path.join(APP_DATA_DIR, "models", repo_folder_name),
+            os.path.join(BASE_DIR, "models", repo_folder_name),
+        ]
+
+        seen = set()
+        for candidate in candidates:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            if self.is_mlx_qwen_asr_dir_ready(candidate):
+                return candidate
+        return None
+
+    def ensure_mlx_asr_model_available(self, download_if_missing=True):
+        if not (IS_MAC and ASR_BACKEND == "whisper"):
+            return None
+
+        mlx_repo = self.active_mlx_repo or WHISPER_REPO
+        resolved_dir = self.resolve_local_mlx_asr_dir(repo_id=mlx_repo)
+        if resolved_dir:
+            self.mlx_asr_local_path = resolved_dir
+            return resolved_dir
+
+        if not download_if_missing:
+            return None
+
+        target_dir = self.get_mlx_asr_target_dir(repo_id=mlx_repo)
+        if not target_dir:
+            raise RuntimeError("MLX ASR target directory could not be determined.")
+
+        os.makedirs(target_dir, exist_ok=True)
+        log_print(f"MLX-Whisper model missing locally. Downloading {mlx_repo} to {target_dir}...")
+        self.update_status("DOWNLOADING")
+        self.emit_download_progress(0.0, f"Preparing {mlx_repo}")
+        snapshot_download(
+            repo_id=mlx_repo,
+            local_dir=target_dir,
+            tqdm_class=PrivoxDownloadTqdm
+        )
+
+        repo_tag_file = os.path.join(target_dir, ".repo_id")
+        try:
+            with open(repo_tag_file, "w", encoding="utf-8") as f:
+                f.write(mlx_repo)
+        except Exception:
+            pass
+
+        if not self.is_mlx_asr_dir_ready(target_dir):
+            raise RuntimeError(f"MLX ASR model download completed but required files are missing in {target_dir}")
+
+        self.mlx_asr_local_path = target_dir
+        self.emit_download_progress(1.0, "Model download complete")
+        return target_dir
+
+    def ensure_mlx_qwen_asr_model_available(self, download_if_missing=True):
+        if not (IS_MAC and ASR_BACKEND == "mlx_qwen_asr"):
+            return None
+
+        mlx_repo = self.active_mlx_repo or WHISPER_REPO
+        resolved_dir = self.resolve_local_mlx_qwen_asr_dir(repo_id=mlx_repo)
+        if resolved_dir:
+            self.mlx_qwen_asr_local_path = resolved_dir
+            return resolved_dir
+
+        if not download_if_missing:
+            return None
+
+        target_dir = self.get_mlx_asr_target_dir(repo_id=mlx_repo)
+        if not target_dir:
+            raise RuntimeError("MLX Qwen-ASR target directory could not be determined.")
+
+        os.makedirs(target_dir, exist_ok=True)
+        log_print(f"MLX Qwen-ASR model missing locally. Downloading {mlx_repo} to {target_dir}...")
+        self.update_status("DOWNLOADING")
+        self.emit_download_progress(0.0, f"Preparing {mlx_repo}")
+        snapshot_download(
+            repo_id=mlx_repo,
+            local_dir=target_dir,
+            tqdm_class=PrivoxDownloadTqdm
+        )
+
+        repo_tag_file = os.path.join(target_dir, ".repo_id")
+        try:
+            with open(repo_tag_file, "w", encoding="utf-8") as f:
+                f.write(mlx_repo)
+        except Exception:
+            pass
+
+        if not self.is_mlx_qwen_asr_dir_ready(target_dir):
+            raise RuntimeError(f"MLX Qwen-ASR model download completed but required files are missing in {target_dir}")
+
+        self.mlx_qwen_asr_local_path = target_dir
+        self.emit_download_progress(1.0, "Model download complete")
+        return target_dir
+
+    def transcribe_with_mlx_qwen_asr(self, audio_data):
+        if self.asr_model is None:
+            return ""
+
+        audio_np = audio_data.astype(np.float32)
+        try:
+            if hasattr(self.asr_model, "transcribe"):
+                results = self.asr_model.transcribe(audio_np)
+                if isinstance(results, list) and results:
+                    first = results[0]
+                    return (first.get("text", "") if isinstance(first, dict) else getattr(first, "text", str(first))).strip()
+                if hasattr(results, "text"):
+                    return str(results.text).strip()
+                if isinstance(results, dict):
+                    return str(results.get("text", "")).strip()
+                if isinstance(results, str):
+                    return results.strip()
+            if hasattr(self.asr_model, "generate"):
+                import mlx.core as mx
+                results = self.asr_model.generate(audio=[mx.array(audio_np)])
+                if hasattr(results, "text"):
+                    return str(results.text).strip()
+                if isinstance(results, dict):
+                    return str(results.get("text", "")).strip()
+                if isinstance(results, str):
+                    return results.strip()
+        except Exception as error:
+            log_print(f" MLX Qwen-ASR Critical Error: {error}")
+            return ""
+
+        log_print(" MLX Qwen-ASR returned an unsupported response shape.")
+        return ""
+
+    def get_mlx_llm_target_dir(self, repo_id=None):
+        repo_id = repo_id or self.grammar_checker.profile.get("mlx_repo")
+        if not repo_id:
+            return None
+        repo_folder_name = repo_id.split("/")[-1]
+        return os.path.join(APP_DATA_DIR, "models", repo_folder_name)
+
+    def is_mlx_llm_dir_ready(self, target_dir):
+        if not target_dir or not os.path.isdir(target_dir):
+            return False
+
+        try:
+            dir_entries = os.listdir(target_dir)
+        except Exception:
+            return False
+
+        has_weights = any(entry.endswith(".safetensors") for entry in dir_entries)
+        has_config = os.path.exists(os.path.join(target_dir, "config.json"))
+        has_tokenizer = (
+            os.path.exists(os.path.join(target_dir, "tokenizer.json")) or
+            os.path.exists(os.path.join(target_dir, "tokenizer_config.json"))
+        )
+        return has_weights and has_config and has_tokenizer
+
+    def resolve_local_mlx_llm_dir(self, repo_id=None):
+        repo_id = repo_id or self.grammar_checker.profile.get("mlx_repo")
+        if not repo_id:
+            return None
+
+        repo_folder_name = repo_id.split("/")[-1]
+        candidates = [
+            os.path.join(APP_DATA_DIR, "models", repo_folder_name),
+            os.path.join(BASE_DIR, "models", repo_folder_name),
+        ]
+
+        for candidate in candidates:
+            if self.is_mlx_llm_dir_ready(candidate):
+                return candidate
+        return None
+
+    def emit_download_progress(self, progress, status):
+        percent = -1
+        if progress is not None:
+            percent = max(0, min(100, int(round(progress * 100))))
+        safe_status = (status or "Downloading models").replace("|", "/")
+        log_print(f"DETAIL: DOWNLOAD_PROGRESS|{percent}|{safe_status}")
 
     def load_vad(self):
         # 1. Load VAD Model (Silero)
         log_print("Loading Silero VAD...", end="", flush=True)
         try:
+            torch.set_num_threads(1)
+            if hasattr(torch, "set_num_interop_threads"):
+                torch.set_num_interop_threads(1)
+
             # Force Torch Hub to use the local models folder for VAD
             hub_dir = os.path.join(BASE_DIR, "models", "hub")
             if not os.path.exists(hub_dir):
                 os.makedirs(hub_dir, exist_ok=True)
             torch.hub.set_dir(hub_dir)
-            
-            self.vad_model, utils = torch.hub.load(repo_or_dir='snakers4/silero-vad',
-                                                  model='silero_vad',
-                                                  force_reload=False,
-                                                  onnx=False)
+
+            repo_dir = os.path.join(hub_dir, "snakers4_silero-vad_master")
+            if os.path.exists(os.path.join(repo_dir, "hubconf.py")):
+                log_print(f"Loading Silero VAD from local cache: {repo_dir}")
+                self.vad_model, utils = torch.hub.load(
+                    repo_or_dir=repo_dir,
+                    source='local',
+                    model='silero_vad',
+                    force_reload=False,
+                    trust_repo=True,
+                    onnx=False
+                )
+            else:
+                log_print("Local Silero cache missing. Loading from torch.hub repository...")
+                self.vad_model, utils = torch.hub.load(
+                    repo_or_dir='snakers4/silero-vad',
+                    model='silero_vad',
+                    force_reload=False,
+                    trust_repo=True,
+                    onnx=False
+                )
             (self.get_speech_timestamps, self.save_audio, self.read_audio, self.VADIterator, self.collect_chunks) = utils
             self.vad_iterator = self.VADIterator(self.vad_model, 
                                                  threshold=VAD_THRESHOLD, 
@@ -900,7 +1446,8 @@ class VoiceInputApp:
         except Exception as e:
             log_print(f"\nError loading VAD: {e}")
             self.loading_status = "Error Loading VAD"
-            self.update_tray_tooltip()
+            if not self.headless:
+                self.update_tray_tooltip()
             return
 
     def load_heavy_models(self):
@@ -911,7 +1458,8 @@ class VoiceInputApp:
 
             log_print("Loading Heavy Models (Wake up)...")
             self.loading_status = "Loading Models..."
-            self.update_tray_tooltip()
+            if not self.headless:
+                self.update_tray_tooltip()
 
             def load_grammar():
                 try:
@@ -974,11 +1522,32 @@ class VoiceInputApp:
                             # We deliberately OMIT forced_aligner for speed and lower VRAM
                         )
                         log_print(f"Qwen3ASRModel initialized successfully.")
+                    elif ASR_BACKEND == "mlx_qwen_asr":
+                        local_mlx_path = self.ensure_mlx_qwen_asr_model_available(download_if_missing=True)
+                        log_print(f"ASR Diagnostic - Initializing Apple MLX Qwen-ASR from {local_mlx_path}...")
+                        from mlx_audio.stt.utils import load_model as load_mlx_audio_model
+                        self.asr_model = load_mlx_audio_model(local_mlx_path)
+                        self.mlx_qwen_asr_local_path = local_mlx_path
+                        log_print("MLX Qwen-ASR initialized successfully.")
                     elif IS_MAC:
                         # MLX-Whisper initialization on Mac
-                        log_print(f"ASR Diagnostic - Initializing Apple MLX-Whisper...")
+                        local_mlx_path = self.ensure_mlx_asr_model_available(download_if_missing=True)
+                        log_print(f"ASR Diagnostic - Initializing Apple MLX-Whisper from {local_mlx_path}...")
                         import mlx_whisper
                         self.asr_model = mlx_whisper
+                        self.mlx_asr_local_path = local_mlx_path
+                        if self.mlx_asr_local_path and not self.mlx_asr_warmed:
+                            log_print("Warming up MLX-Whisper with a silent startup pass...")
+                            try:
+                                warmup_audio = np.zeros(SAMPLE_RATE, dtype=np.float32)
+                                self.asr_model.transcribe(
+                                    warmup_audio,
+                                    path_or_hf_repo=self.mlx_asr_local_path
+                                )
+                                self.mlx_asr_warmed = True
+                                log_print("MLX-Whisper warm-up complete.")
+                            except Exception as warmup_error:
+                                log_print(f"MLX-Whisper warm-up skipped due to error: {warmup_error}")
                         log_print(f"MLX-Whisper initialized successfully.")
                     else:
                         compute_type = "float16" if is_gpu else "int8"
@@ -1015,7 +1584,9 @@ class VoiceInputApp:
             if not results[1]: # Whisper is mandatory
                 log_print("CRITICAL: ASR model failed to load.")
                 self.loading_status = "ASR Load Error"
-                self.update_tray_tooltip()
+                self.update_status("ERROR")
+                if not self.headless:
+                    self.update_tray_tooltip()
                 self.pending_wakeup = False
                 return
 
@@ -1038,7 +1609,7 @@ class VoiceInputApp:
                 # Tiny delay to ensure UI updates and avoid race conditions with sound manager
                 time.sleep(0.1) 
                 self.start_listening()
-            else:
+            elif not self.headless:
                 self.sound_manager.play_start()
   
 
@@ -1060,14 +1631,15 @@ class VoiceInputApp:
             
             self.heavy_models_loaded = False
             self.loading_status = "Idle (VRAM Free)"
-            self.update_tray_tooltip()
-            self.update_status("SLEEP") # Trigger flat line animation
+            if not self.headless:
+                self.update_tray_tooltip()
+                self.update_status("SLEEP") # Trigger flat line animation
             log_print("Models Unloaded. VRAM released.")
 
     def track_model_usage(self, model_name):
         """Update last_used timestamp for the given model in hidden prefs."""
         try:
-            prefs_path = os.path.join(BASE_DIR, ".user_prefs.json")
+            prefs_path = os.path.join(APP_DATA_DIR, ".user_prefs.json")
             if os.path.exists(prefs_path):
                 # RE-READ to ensure we have latest state (avoid race conditions with GUI)
                 if os.path.exists(prefs_path):
@@ -1085,11 +1657,49 @@ class VoiceInputApp:
         except Exception as e:
             log_print(f"Error tracking usage: {e}")
 
+    def normalize_asr_preference(self, value):
+        if not isinstance(value, str):
+            return value
+
+        normalized = value.strip()
+        legacy_aliases = {
+            "turbo": "Whisper Large v3 Turbo (Multilingual)",
+            "large-v3-turbo": "Whisper Large v3 Turbo (Multilingual)",
+            "distil-large-v3": "Distil-Whisper Large v3 (English)",
+            "small": "OpenAI Whisper Small",
+            "qwen2-audio-7b": "Whisper Large v3 Turbo (Multilingual)",
+            "Qwen2-Audio-7B": "Whisper Large v3 Turbo (Multilingual)",
+        }
+        return legacy_aliases.get(normalized, normalized)
+
+    def normalize_llm_preference(self, value):
+        if not isinstance(value, str):
+            return value
+
+        normalized = value.strip()
+        legacy_aliases = {
+            "Standard (Llama 3.2)": models_config.DEFAULT_LLM,
+            "Multilingual (Qwen 3.5 9B)": "Multilingual (Qwen 3 8B)",
+            "Qwen3.5-9B-Q4_K_M.gguf": "Multilingual (Qwen 3 8B)",
+            "Multilingual (Qwen 3.5 4B)": "Multilingual (Qwen 3 4B)",
+            "Qwen3.5-4B-Q4_K_M.gguf": "Multilingual (Qwen 3 4B)",
+            "Qwen3-8B-Q4_K_M.gguf": "Multilingual (Qwen 3 8B)",
+            "Qwen3-4B-Q4_K_M.gguf": "Multilingual (Qwen 3 4B)",
+            "Qwen2.5-7B-Instruct-Q4_K_M.gguf": "Multilingual (Qwen 2.5 7B)",
+            "Llama-3.2-3B-Instruct-Q4_K_M.gguf": "Llama 3.2 3B Instruct",
+        }
+        return legacy_aliases.get(normalized, normalized)
+
     def load_config(self):
         """Unified configuration loader with split protection and migration."""
         try:
-            config_path = os.path.join(BASE_DIR, "config.json")
-            prefs_path = os.path.join(BASE_DIR, ".user_prefs.json")
+            config_path = os.path.join(APP_DATA_DIR, "config.json")
+            prefs_path = os.path.join(APP_DATA_DIR, ".user_prefs.json")
+            old_refiner = getattr(self, "current_refiner", "")
+            old_active_asr = getattr(self, "active_asr_name", "")
+            old_asr_repo = getattr(self, "active_mlx_repo", None) or globals().get("WHISPER_REPO", "")
+            old_asr_backend = globals().get("ASR_BACKEND", "whisper")
+            self.model_reload_requested = False
             
             # --- 1. Load Technical Config (Static/Public) ---
             config = {}
@@ -1107,8 +1717,7 @@ class VoiceInputApp:
             pref_keys = [
                 "hotkey", "sound_enabled", "vram_timeout", "character", "tone", 
                 "custom_prompts", "auto_stop_enabled", "silence_timeout_ms", 
-                "custom_dictionary", "current_refiner", "whisper_model",
-                "asr_library", "llm_library"
+                "paste_delay_seconds", "custom_dictionary", "current_refiner", "whisper_model"
             ]
             
             migrated = False
@@ -1129,9 +1738,34 @@ class VoiceInputApp:
                     json.dump(config, f, indent=4)
                 
             # --- 3b. Force transition for the new default if still on old default (ONE-TIME) ---
+            prefs_modified = False
+
             if prefs.get("current_refiner") == "CoEdit Large (T5)" and not prefs.get("_migrate_llama_3_2"):
                 prefs["current_refiner"] = models_config.DEFAULT_LLM
                 prefs["_migrate_llama_3_2"] = True
+                prefs_modified = True
+
+            if (prefs.get("vram_timeout") in [None, 60]) and not prefs.get("_migrate_vram_timeout_300"):
+                prefs["vram_timeout"] = 300
+                prefs["_migrate_vram_timeout_300"] = True
+                prefs_modified = True
+
+            for library_key in ["asr_library", "llm_library"]:
+                if library_key in prefs:
+                    del prefs[library_key]
+                    prefs_modified = True
+
+            normalized_whisper_model = self.normalize_asr_preference(prefs.get("whisper_model"))
+            if normalized_whisper_model != prefs.get("whisper_model"):
+                prefs["whisper_model"] = normalized_whisper_model
+                prefs_modified = True
+
+            normalized_refiner = self.normalize_llm_preference(prefs.get("current_refiner", models_config.DEFAULT_LLM))
+            if normalized_refiner != prefs.get("current_refiner"):
+                prefs["current_refiner"] = normalized_refiner
+                prefs_modified = True
+
+            if prefs_modified:
                 with open(prefs_path, "w", encoding="utf-8") as f:
                     json.dump(prefs, f, indent=4)
             
@@ -1141,13 +1775,21 @@ class VoiceInputApp:
 
             # --- 4. Apply Settings ---
             # Parse hotkey_str (e.g. "ctrl+shift+k")
-            new_hotkey_str = prefs.get("hotkey", "f8").lower()
+            new_hotkey_str = prefs.get("hotkey", "ctrl+shift+space").lower()
             hotkey_changed = new_hotkey_str != getattr(self, 'hotkey_str', '')
             self.hotkey_str = new_hotkey_str
             
-            parts = [p.strip() for p in self.hotkey_str.split('+')]
-            self.target_mods = set([p for p in parts if p in ["ctrl", "shift", "alt", "cmd"]])
-            self.target_key = parts[-1] if parts else "f8"
+            parts = [p.strip().lower() for p in self.hotkey_str.split('+')]
+            # Support multiple aliases for modifiers
+            mod_map = {
+                "cmd": "cmd", "command": "cmd", "⌘": "cmd",
+                "alt": "alt", "option": "alt", "⌥": "alt",
+                "ctrl": "ctrl", "control": "ctrl", "⌃": "ctrl",
+                "shift": "shift", "⇧": "shift"
+            }
+            self.target_mods = set([mod_map[p] for p in parts if p in mod_map])
+            self.target_key = parts[-1] if parts else "space"
+            
             log_print(f"Parsed Hotkey: Mods={self.target_mods}, Key={self.target_key}")
             
             # UPDATE HOTKEY IN-PLACE (No listener restart)
@@ -1159,7 +1801,8 @@ class VoiceInputApp:
                 self.active_mods.clear()
             
             # Update Tray ToolTip context
-            self.update_tray_tooltip()
+            if not self.headless:
+                self.update_tray_tooltip()
             
             self.last_config_reload_time = time.time()
             # Update hash tracker and mtime after all potential logic is done
@@ -1169,10 +1812,15 @@ class VoiceInputApp:
                  self._last_prefs_mtime = os.path.getmtime(prefs_path)
                 
             # Update Tray ToolTip context
-            self.update_tray_tooltip()
+            if not self.headless:
+                self.update_tray_tooltip()
 
             self.sound_enabled = prefs.get("sound_enabled", True)
             self.auto_stop_enabled = prefs.get("auto_stop_enabled", True)
+            try:
+                self.paste_delay_seconds = max(0, int(prefs.get("paste_delay_seconds", 0)))
+            except Exception:
+                self.paste_delay_seconds = 0
             old_silence = getattr(self, "silence_timeout_ms", 10000)
             # Backend Clamping: Min 5s
             self.silence_timeout_ms = max(5000, prefs.get("silence_timeout_ms", 10000))
@@ -1187,45 +1835,76 @@ class VoiceInputApp:
                                                      speech_pad_ms=SPEECH_PAD_MS)
 
             self.custom_dictionary = prefs.get("custom_dictionary", [])
-            self.vram_timeout = max(5, prefs.get("vram_timeout", 60))
+            self.vram_timeout = max(5, prefs.get("vram_timeout", 300))
             self.character = prefs.get("character", "Writing Assistant")
             self.tone = prefs.get("tone", "Natural")
             self.custom_prompts = prefs.get("custom_prompts", {})
-            old_refiner = getattr(self, "current_refiner", "")
-            self.current_refiner = prefs.get("current_refiner", models_config.DEFAULT_LLM)
+            self.current_refiner = self.normalize_llm_preference(prefs.get("current_refiner", models_config.DEFAULT_LLM))
             
-            # Library Loading (Prefer User Prefs > Config > Default)
-            self.asr_library = prefs.get("asr_library", config.get("asr_library", models_config.ASR_LIBRARY))
-            self.llm_library = prefs.get("llm_library", config.get("llm_library", models_config.LLM_LIBRARY))
+            # Library definitions are app-curated data. Keep prefs limited to the selected model names.
+            self.asr_library = models_config.ASR_LIBRARY
+            self.llm_library = models_config.LLM_LIBRARY
 
             # Filter libraries
             self.asr_library = [m for m in self.asr_library if self.verify_model(m, "asr")]
             self.llm_library = [m for m in self.llm_library if self.verify_model(m, "llm")]
 
+            available_asr_names = {
+                alias
+                for model in self.asr_library
+                for alias in (model.get("name"), model.get("whisper_model"))
+                if alias
+            }
+            if self.asr_library and self.normalize_asr_preference(prefs.get("whisper_model", models_config.DEFAULT_ASR)) not in available_asr_names:
+                fallback_asr = next(
+                    (m["name"] for m in self.asr_library if m.get("name") == models_config.DEFAULT_ASR),
+                    self.asr_library[0]["name"]
+                )
+                log_print(f"Selected ASR '{prefs.get('whisper_model')}' is unavailable in this runtime. Falling back to '{fallback_asr}'.")
+                prefs["whisper_model"] = fallback_asr
+                with open(prefs_path, "w", encoding="utf-8") as f:
+                    json.dump(prefs, f, indent=4)
+
+            available_llm_names = {
+                alias
+                for model in self.llm_library
+                for alias in (model.get("name"), model.get("file_name"))
+                if alias
+            }
+            if self.llm_library and self.normalize_llm_preference(prefs.get("current_refiner", models_config.DEFAULT_LLM)) not in available_llm_names:
+                fallback_llm = next(
+                    (m["name"] for m in self.llm_library if m.get("name") == models_config.DEFAULT_LLM),
+                    self.llm_library[0]["name"]
+                )
+                log_print(f"Selected LLM '{prefs.get('current_refiner')}' is unavailable in this runtime. Falling back to '{fallback_llm}'.")
+                prefs["current_refiner"] = fallback_llm
+                with open(prefs_path, "w", encoding="utf-8") as f:
+                    json.dump(prefs, f, indent=4)
+
+            self.current_refiner = self.normalize_llm_preference(prefs.get("current_refiner", models_config.DEFAULT_LLM))
+
             # Sync Current Profile from Library
             profile = {}
             for p in self.llm_library:
-                if p["name"] == self.current_refiner:
+                # Robust matching: check both human-readable name and internal filename
+                if p["name"] == self.current_refiner or p.get("file_name") == self.current_refiner:
                     profile = {
                         "repo_id": p.get("repo_id"),
                         "file_name": p.get("file_name"),
                         "prompt_type": p.get("prompt_type"),
-                        "description": p.get("description", "")
+                        "description": p.get("description", ""),
+                        "mlx_repo": p.get("mlx_repo")
                     }
                     # REMOVED recursive usage tracking here
                     break
             
             if hasattr(self, 'grammar_checker'):
-                # --- Refiner Model Hot-Reload ---
-                if self.current_refiner != old_refiner:
+                self.grammar_checker.profile = profile
+
+                if old_refiner and self.current_refiner != old_refiner:
                     log_print(f"Refiner change detected: {old_refiner} -> {self.current_refiner}")
-                    self.grammar_checker.profile = profile
-                    if self.heavy_models_loaded:
-                        log_print("Hot-swapping Grammar Model...")
-                        self.grammar_checker.unload_model()
-                        self.grammar_checker.load_model()
-                else:
-                    self.grammar_checker.profile = profile
+                    self.grammar_checker.unload_model()
+                    self.model_reload_requested = True
                 
                 # Clear context cache if personality/tone changes abruptly to prevent bleed
                 if self.grammar_checker.character != self.character or self.grammar_checker.tone != self.tone:
@@ -1238,22 +1917,47 @@ class VoiceInputApp:
             
             # ASR Model resolution
             global WHISPER_SIZE, WHISPER_REPO, ASR_BACKEND
-            old_whisper = WHISPER_SIZE
-            self.active_asr_name = prefs.get("whisper_model", models_config.DEFAULT_ASR)
+            self.active_asr_name = self.normalize_asr_preference(prefs.get("whisper_model", models_config.DEFAULT_ASR))
             active_asr = self.active_asr_name
             
             # Find in library
             WHISPER_REPO = "Systran/faster-distil-whisper-large-v3" # Defaults
             WHISPER_SIZE = "distil-large-v3"
+            self.active_mlx_repo = None
+            self.active_whisper_repo = WHISPER_REPO
 
             ASR_BACKEND = "whisper"
             for asr in self.asr_library:
-                if asr["name"] == active_asr:
+                if asr["name"] == active_asr or asr.get("whisper_model") == active_asr:
                     # Sync with library technical names
-                    WHISPER_REPO = asr.get("whisper_repo") or asr.get("repo")
+                    self.active_mlx_repo = asr.get("mlx_repo")
+                    self.active_whisper_repo = asr.get("whisper_repo") or asr.get("repo")
+                    if IS_MAC and asr.get("mlx_repo"):
+                        WHISPER_REPO = asr.get("mlx_repo")
+                    else:
+                        WHISPER_REPO = asr.get("whisper_repo") or asr.get("repo")
+                        
                     WHISPER_SIZE = asr.get("whisper_model") or asr.get("name")
-                    ASR_BACKEND = asr.get("backend", "whisper")
+                    ASR_BACKEND = asr.get("mac_backend") if (IS_MAC and asr.get("mac_backend")) else asr.get("backend", "whisper")
+                    log_print(f" Resolved ASR: {active_asr} -> Repo: {WHISPER_REPO} (Backend: {ASR_BACKEND})")
                     break
+
+            if old_active_asr and (
+                active_asr != old_active_asr or
+                WHISPER_REPO != old_asr_repo or
+                ASR_BACKEND != old_asr_backend
+            ):
+                log_print(f"ASR change detected: {old_active_asr} -> {active_asr}. Scheduling reload...")
+                self.asr_model = None
+                self.mlx_asr_local_path = None
+                self.mlx_asr_warmed = False
+                self.mlx_qwen_asr_local_path = None
+                self.model_reload_requested = True
+
+            if self.model_reload_requested:
+                self.heavy_models_loaded = False
+                self.models_ready = False
+                self.loading_status = "Switching Models..."
             
             # REMOVED cleanup_stale_models from here to prevent recursive reload loops
 
@@ -1263,10 +1967,17 @@ class VoiceInputApp:
 
     def verify_model(self, model_data, model_type):
         """Verifies if a model repository or local path exists."""
-        repo = model_data.get("repo")
+        repo = model_data.get("repo") or model_data.get("repo_id") or model_data.get("whisper_repo")
         local_path = model_data.get("local_path")
         whisper_model = model_data.get("whisper_model")
         file_name = model_data.get("file_name")
+        mlx_repo = model_data.get("mlx_repo")
+        backend = model_data.get("mac_backend") if (model_type == "asr" and IS_MAC and model_data.get("mac_backend")) else model_data.get("backend", "whisper")
+        preferred_repo = mlx_repo if (model_type in {"asr", "llm"} and IS_MAC and mlx_repo) else repo
+
+        if model_type == "asr" and backend == "qwen_asr":
+            if importlib.util.find_spec("qwen_asr") is None:
+                return False
         
         # 1. Check local path if provided
         if local_path:
@@ -1282,33 +1993,32 @@ class VoiceInputApp:
         # 2. Check standard 'models/' directory for repo-based models (Offline Support)
         models_dir = os.path.join(BASE_DIR, "models")
         if model_type == "asr" and whisper_model:
+            if IS_MAC and mlx_repo:
+                if self.resolve_local_mlx_asr_dir(repo_id=mlx_repo, whisper_model=whisper_model):
+                    return True
             target = os.path.join(models_dir, f"whisper-{whisper_model}")
             # For faster-whisper we check model.bin, for transformers (Qwen) we check config.json
             if os.path.isdir(target) and (os.path.exists(os.path.join(target, "model.bin")) or os.path.exists(os.path.join(target, "config.json"))):
                 return True
         elif model_type == "llm" and file_name:
+            if IS_MAC and mlx_repo and self.resolve_local_mlx_llm_dir(repo_id=mlx_repo):
+                return True
             target = os.path.join(models_dir, file_name)
             if os.path.exists(target):
                 return True
 
-        # 3. Check HuggingFace Repo (Fast head request) - Fallback for un-downloaded models
-        if repo:
-            try:
-                # We use a cached check if possible to avoid hitting HF on every startup
-                # For now, a simple check is fine. In production we might skip this unless config changed.
-                api = HfApi()
-                api.repo_info(repo_id=repo)
-                return True
-            except:
-                log_print(f"Verification Failed for model (and not found locally): {repo}")
-                return False
+        # 3. Keep curated remote models visible even before they are downloaded.
+        # Otherwise macOS MLX models get filtered out at startup and we fall back
+        # to the wrong non-MLX repo/path during the actual download step.
+        if preferred_repo:
+            return True
         
         return False
 
     def cleanup_stale_models(self, days):
         """Deletes models that haven't been used in X days."""
         try:
-            prefs_path = os.path.join(BASE_DIR, ".user_prefs.json")
+            prefs_path = os.path.join(APP_DATA_DIR, ".user_prefs.json")
             if not os.path.exists(prefs_path): return
             
             with open(prefs_path, "r", encoding="utf-8") as f:
@@ -1389,6 +2099,8 @@ class VoiceInputApp:
             "READY": "Ready",
             "RECORDING": "Listening...",
             "PROCESSING": "Processing...",
+            "TRANSCRIBING": "Transcribing...",
+            "REFINING": "Refining...",
             "DOWNLOADING": "Downloading Model...",
             "ERROR": "Error/No Mic",
             "SLEEP": "Sleeping (VRAM Saver Active)",
@@ -1397,6 +2109,11 @@ class VoiceInputApp:
 
         if status_text:
             self.loading_status = status_text
+            
+        if self.headless:
+            log_print(f"STATUS: {status}")
+            return
+            
         self.update_tray_tooltip()
 
     def animation_loop(self):
@@ -1424,7 +2141,7 @@ class VoiceInputApp:
                     frame += 1
                     time.sleep(0.08) # 12fps
                     
-                elif self.ui_state in ["PROCESSING", "DOWNLOADING", "INITIALIZING"]:
+                elif self.ui_state in ["PROCESSING", "TRANSCRIBING", "REFINING", "DOWNLOADING", "INITIALIZING"]:
                     # Spinner Animation for processing, downloading, and initializing
                     new_icon = self.draw_spinner(frame, base_img)
                     frame += 1
@@ -1644,26 +2361,36 @@ class VoiceInputApp:
     def start_listening(self):
         self.last_activity_time = time.time()
         log_print("\n[Start Listening]", flush=True)
-        self.sound_manager.play_start()
         self.is_listening = True
         self.is_speaking = False
         self.audio_buffer = []
         if self.vad_iterator:
             self.vad_iterator.reset_states()
-        self.update_status("RECORDING")
+        if self.headless:
+            log_print("STATUS: RECORDING")
+        else:
+            self.update_status("RECORDING")
+            self.sound_manager.play_start()
 
     def stop_listening(self):
         log_print(" [Stopped]", flush=True)
-        self.sound_manager.play_stop()
+        if not self.headless:
+            self.sound_manager.play_stop()
         self.is_listening = False
-        self.update_status("PROCESSING")
+        if not self.headless:
+            self.update_status("PROCESSING")
+        else:
+            log_print("STATUS: PROCESSING")
         
         if len(self.audio_buffer) > 0:
             audio_segment = np.array(self.audio_buffer)
             # Run transcription in a separate thread so we don't block the keyboard listener!
             threading.Thread(target=self.transcribe, args=(audio_segment,), daemon=True).start()
         else:
-             self.update_status("READY")
+            if not self.headless:
+                self.update_status("READY")
+            else:
+                log_print("STATUS: READY")
              
         self.audio_buffer = []
         self.last_activity_time = time.time()
@@ -1679,12 +2406,18 @@ class VoiceInputApp:
             
             if duration < (MIN_SPEECH_DURATION_MS / 1000):
                 log_print(f" [Audio too short - Ignored]")
-                self.update_status("READY")
+                if not self.headless:
+                    self.update_status("READY")
+                else:
+                    log_print("STATUS: READY")
                 return
 
             if max_amp < 0.001: 
                 log_print(f" [Audio too quiet - Ignored]")
-                self.update_status("READY")
+                if not self.headless:
+                    self.update_status("READY")
+                else:
+                    log_print("STATUS: READY")
                 return
 
             # Ensure models are loaded before transcribing
@@ -1693,10 +2426,17 @@ class VoiceInputApp:
                 self.load_heavy_models()
                 if not self.asr_model:
                      log_print("ASR Model still missing after lazy load attempt.")
-                     self.update_status("READY")
+                     if not self.headless:
+                        self.update_status("READY")
+                     else:
+                        log_print("STATUS: READY")
                      return
 
-            log_print(f" Transcribing Using Backend: {ASR_BACKEND} (Model: {WHISPER_SIZE if ASR_BACKEND == 'whisper' else 'SenseVoiceSmall'})...", flush=True)
+            log_print(f" Transcribing Using Backend: {ASR_BACKEND} (Model: {getattr(self, 'active_asr_name', WHISPER_SIZE)})...", flush=True)
+            if not self.headless:
+                self.update_status("TRANSCRIBING")
+            else:
+                log_print("STATUS: TRANSCRIBING")
             t0 = time.time()
             
             raw_text = ""
@@ -1730,18 +2470,25 @@ class VoiceInputApp:
                 if results and len(results) > 0:
                     raw_text = results[0].get('text', '') if isinstance(results[0], dict) else getattr(results[0], 'text', str(results[0]))
                 log_print(f" Qwen3-ASR Result: '{raw_text}'")
+            elif ASR_BACKEND == "mlx_qwen_asr":
+                model_source = self.mlx_qwen_asr_local_path or self.active_mlx_repo or WHISPER_REPO
+                log_print(f" Transcribing Using MLX Qwen-ASR (Source: {model_source})...")
+                raw_text = self.transcribe_with_mlx_qwen_asr(audio_data)
+                log_print(f" MLX Qwen-ASR Result: '{raw_text}'")
             elif IS_MAC:
                 # MLX-Whisper
-                log_print(f" Transcribing Using MLX-Whisper...")
-                # Find the local model path
-                local_whisper = os.path.join(BASE_DIR, "models", f"whisper-{WHISPER_SIZE}")
-                # usage: mlx_whisper.transcribe(audio, path_or_hf_repo)
-                results = self.asr_model.transcribe(
-                    audio_data.astype(np.float32), 
-                    path_or_hf_repo=local_whisper if os.path.exists(local_whisper) else WHISPER_REPO
-                )
-                raw_text = results.get('text', "").strip()
-                log_print(f" MLX-Whisper Result - Raw: '{raw_text}'")
+                local_mlx_path = self.mlx_asr_local_path or self.ensure_mlx_asr_model_available(download_if_missing=True)
+                log_print(f" Transcribing Using MLX-Whisper (Source: {local_mlx_path or WHISPER_REPO})...")
+                try:
+                    results = self.asr_model.transcribe(
+                        audio_data.astype(np.float32), 
+                        path_or_hf_repo=local_mlx_path or WHISPER_REPO
+                    )
+                    raw_text = results.get('text', "").strip()
+                    log_print(f" MLX-Whisper Result - Raw: '{raw_text}'")
+                except Exception as asr_e:
+                    log_print(f" MLX-ASR Critical Error: {asr_e}")
+                    raw_text = ""
             else:
                 # Faster-Whisper
                 segments, info = self.asr_model.transcribe(
@@ -1766,7 +2513,10 @@ class VoiceInputApp:
             
             if not raw_text:
                 log_print(" [Empty Transcription Result]")
-                self.update_status("READY")
+                if not self.headless:
+                    self.update_status("READY")
+                else:
+                    log_print("STATUS: READY")
                 return
 
             # --- Logic for Command Mode (DISABLED FOR NOW) ---
@@ -1779,6 +2529,10 @@ class VoiceInputApp:
             #     log_print(f" [Command Mode Detected] Input: {command_text}")
             
             log_print(f" Refining format ({self.current_refiner})...")
+            if not self.headless:
+                self.update_status("REFINING")
+            else:
+                log_print("STATUS: REFINING")
             t2 = time.time()
             detected_lang = info.language if (info and ASR_BACKEND == 'whisper') else None
             detected_prob = info.language_probability if (info and ASR_BACKEND == 'whisper') else 0.0
@@ -1793,63 +2547,110 @@ class VoiceInputApp:
                 self.paste_text(final_text)
             except Exception as e:
                 log_print(f"Typing Error: {e}")
-                self.sound_manager.play_error()
+                if not self.headless:
+                    self.sound_manager.play_error()
                 
         except Exception as e:
             log_print(f"ASR Error: {e}")
             self.loading_status = "ASR Error"
-            self.sound_manager.play_error()
+            if not self.headless:
+                self.sound_manager.play_error()
         finally:
             # Only reset to READY if we haven't hit an error state
             if self.loading_status not in ["ASR Error", "Refiner Error"]:
-                self.update_status("READY")
+                if not self.headless:
+                    self.update_status("READY")
+                else:
+                    log_print("STATUS: READY")
 
     def paste_text(self, text):
         try:
             original_clipboard = pyperclip.paste()
             pyperclip.copy(text)
-            time.sleep(0.05) 
+            initial_clipboard_delay = 0.01
+            if self.paste_delay_seconds > 0:
+                log_print(f"Paste delay active. Waiting {self.paste_delay_seconds}s before inserting text...")
+            time.sleep(initial_clipboard_delay + self.paste_delay_seconds)
             
-            modifier = keyboard.Key.cmd if IS_MAC else keyboard.Key.ctrl
-            
-            with self.keyboard_controller.pressed(modifier):
-                self.keyboard_controller.press('v')
-                self.keyboard_controller.release('v')
+            if IS_MAC:
+                # Use AppleScript to paste on macOS to bypass pynput Sandbox inheritance blocks
+                import subprocess
+                subprocess.run([
+                    "osascript", 
+                    "-e", 
+                    'tell application "System Events" to keystroke "v" using command down'
+                ])
+            else:
+                modifier = keyboard.Key.cmd if IS_MAC else keyboard.Key.ctrl
+                with self.keyboard_controller.pressed(modifier):
+                    self.keyboard_controller.press('v')
+                    self.keyboard_controller.release('v')
                 
-            time.sleep(0.2) 
+            time.sleep(0.05)
             pyperclip.copy(original_clipboard)
         except Exception as e:
             log_print(f"Paste Error: {e}")
-            self.keyboard_controller.type(text)
+            if not self.headless:
+                self.keyboard_controller.type(text)
 
     def start_audio_stream(self):
-        try:
-            # Diagnostic: Log input device
-            try:
-                device_info = sd.query_devices(kind='input')
-                log_print(f"Audio Diagnostic - Using Default Input: {device_info.get('name')} (Channels: {device_info.get('max_input_channels')})")
-            except Exception as de:
-                log_print(f"Audio Diagnostic - Could not query input device: {de}")
+        with self.audio_stream_lock:
+            self.last_mic_retry_time = time.time()
+            if self.mic_active and self.stream is not None:
+                log_print("Microphone stream already active. Skipping duplicate start request.")
+                log_print("DETAIL: MICROPHONE_STREAM_ACTIVE")
+                return
 
-            self.stream = sd.InputStream(
-                callback=self.audio_callback,
-                channels=1,
-                samplerate=SAMPLE_RATE,
-                blocksize=BLOCK_SIZE
-            )
-            self.stream.start()
-            self.mic_active = True
-            log_print("Microphone Stream Started.")
-        except Exception as e:
-            log_print(f"Microphone Error: {e}")
-            self.mic_active = False
-            self.update_status("ERROR")
-            self.sound_manager.play_error()
+            log_print("DETAIL: MICROPHONE_RECONNECTING")
+            try:
+                if self.stream is not None:
+                    try:
+                        self.stream.stop()
+                    except Exception:
+                        pass
+                    try:
+                        self.stream.close()
+                    except Exception:
+                        pass
+                    self.stream = None
+
+                # Diagnostic: Log input device
+                try:
+                    device_info = sd.query_devices(kind='input')
+                    log_print(f"Audio Diagnostic - Using Default Input: {device_info.get('name')} (Channels: {device_info.get('max_input_channels')})")
+                except Exception as de:
+                    log_print(f"Audio Diagnostic - Could not query input device: {de}")
+
+                self.stream = sd.InputStream(
+                    callback=self.audio_callback,
+                    channels=1,
+                    samplerate=SAMPLE_RATE,
+                    blocksize=BLOCK_SIZE
+                )
+                self.stream.start()
+                self.mic_active = True
+                log_print("Microphone Stream Started.")
+                log_print("DETAIL: MICROPHONE_STREAM_ACTIVE")
+                if self.ui_state == "ERROR" and self.models_ready and not self.is_listening:
+                    self.update_status("READY")
+            except Exception as e:
+                log_print(f"Microphone Error: {e}")
+                self.mic_active = False
+                self.stream = None
+                log_print("DETAIL: MICROPHONE_STREAM_INACTIVE")
+                log_print("DETAIL: MICROPHONE_UNAVAILABLE")
+                self.update_status("ERROR")
+                if not self.headless:
+                    self.sound_manager.play_error()
 
     def processing_loop(self):
         self.start_audio_stream()
             
         while self.running:
+            if not self.mic_active and (time.time() - self.last_mic_retry_time) >= self.mic_retry_interval:
+                log_print("Microphone inactive. Attempting automatic audio reconnect...")
+                self.start_audio_stream()
+
             # VRAM Saver Check
             if self.heavy_models_loaded and not self.is_listening and self.ui_state != "PROCESSING":
                 if (time.time() - self.last_activity_time) > self.vram_timeout:
@@ -1857,7 +2658,7 @@ class VoiceInputApp:
 
             # Config Polling (Hot-reload)
             try:
-                prefs_path = os.path.join(BASE_DIR, ".user_prefs.json")
+                prefs_path = os.path.join(APP_DATA_DIR, ".user_prefs.json")
                 if os.path.exists(prefs_path):
                     mtime = os.path.getmtime(prefs_path)
                     if not hasattr(self, '_last_prefs_mtime'):
@@ -2032,13 +2833,17 @@ class VoiceInputApp:
 
         if not self.vad_model or self.asr_model is None:
             log_print("Ignored Hotkey: Models not fully loaded.")
+            self.update_status("INITIALIZING")
             self.sound_manager.play_error()
             return
 
         if not self.mic_active:
-            log_print("Ignored Hotkey: No Microphone Active")
-            self.sound_manager.play_error()
-            return
+            log_print("Hotkey pressed while microphone is inactive. Attempting audio reconnect...")
+            self.start_audio_stream()
+            if not self.mic_active:
+                log_print("Ignored Hotkey: No Microphone Active")
+                self.sound_manager.play_error()
+                return
             
         if not self.is_listening:
             # If it's currently processing an old prompt, clicking the hotkey again should start a NEW recording gracefully.
@@ -2048,7 +2853,47 @@ class VoiceInputApp:
         else:
             self.stop_listening()
 
+    def headless_ipc_loop(self):
+        """Reads stdin from the Swift parent process for IPC commands."""
+        log_print("Started Headless IPC Loop listening on stdin.")
+        while self.running:
+            try:
+                line = sys.stdin.readline()
+                if not line:
+                    break
+                command = line.strip().upper()
+                if command == "QUIT":
+                    log_print("IPC Command: QUIT received.")
+                    self.running = False
+                    os._exit(0)
+                elif command == "TOGGLE" or command == "RECORD":
+                    log_print(f"IPC Command: {command} received. Toggling recording...")
+                    self.toggle_hotkey()
+                elif command == "RECONNECT_AUDIO":
+                    log_print("IPC Command: RECONNECT_AUDIO received. Restarting microphone stream...")
+                    self.start_audio_stream()
+                elif command == "RELOAD_CONFIG":
+                    log_print("IPC Command: RELOAD_CONFIG received. Reloading preferences...")
+                    self.load_config()
+                    if self.model_reload_requested or not self.heavy_models_loaded:
+                        log_print("Config change requires model initialization. Restarting model loader...")
+                        self.update_status("INITIALIZING")
+                        threading.Thread(target=self.load_heavy_models, daemon=True).start()
+            except Exception as e:
+                log_print(f"IPC Read Error: {e}")
+                time.sleep(1)
+
     def run(self):
+        # Start Threads
+        threading.Thread(target=self.processing_loop, daemon=True).start()
+        
+        # --- Headless Mode ---
+        if self.headless:
+            log_print("Running in headless mode. Bypassing PyStray and Pynput.")
+            self.headless_ipc_loop()
+            return
+        
+        # --- GUI Mode (Windows/Linux) ---
         # Single Instance Mutex Check (Windows)
         self.mutex_handle = None
         if sys.platform == 'win32':
@@ -2086,8 +2931,6 @@ class VoiceInputApp:
 
         print("System Tray started. Check your taskbar.")
         
-        # Start Threads
-        threading.Thread(target=self.processing_loop, daemon=True).start()
         threading.Thread(target=self.animation_loop, daemon=True).start()
         
         # Start Keyboard Listener (Manual Listener for better compatibility)
@@ -2129,7 +2972,8 @@ if __name__ == "__main__":
         else:
             logging.warning("GPU NOT DETECTED early. Processing may be slow.")
         
-        app = VoiceInputApp()
+        is_headless = "--headless" in sys.argv
+        app = VoiceInputApp(headless=is_headless)
         app.run()
     except Exception as e:
         import traceback

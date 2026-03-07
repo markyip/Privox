@@ -541,13 +541,25 @@ class SettingsGUI(QMainWindow):
         # --- Migration: Unified Descriptive Naming ---
         if self.prefs.get("whisper_model") == "distil-large-v3":
             self.prefs["whisper_model"] = "Distil-Whisper Large v3 (English)"
+        if self.prefs.get("whisper_model") in ["qwen2-audio-7b", "Qwen2-Audio-7B"]:
+            self.prefs["whisper_model"] = "Whisper Large v3 Turbo (Multilingual)"
         if self.prefs.get("current_refiner") == "Standard (Llama 3.2)":
             self.prefs["current_refiner"] = models_config.DEFAULT_LLM
+        if self.prefs.get("current_refiner") == "Multilingual (Qwen 3.5 9B)":
+            self.prefs["current_refiner"] = "Multilingual (Qwen 3 8B)"
+        if self.prefs.get("current_refiner") == "Multilingual (Qwen 3.5 4B)":
+            self.prefs["current_refiner"] = "Multilingual (Qwen 3 4B)"
         # If any of the above were found in tech_config but not yet in prefs, this ensures sync
         if self.tech_config.get("whisper_model") == "distil-large-v3":
             self.tech_config["whisper_model"] = "Distil-Whisper Large v3 (English)"
+        if self.tech_config.get("whisper_model") in ["qwen2-audio-7b", "Qwen2-Audio-7B"]:
+            self.tech_config["whisper_model"] = "Whisper Large v3 Turbo (Multilingual)"
         if self.tech_config.get("current_refiner") == "Standard (Llama 3.2)":
             self.tech_config["current_refiner"] = models_config.DEFAULT_LLM
+        if self.tech_config.get("current_refiner") == "Multilingual (Qwen 3.5 9B)":
+            self.tech_config["current_refiner"] = "Multilingual (Qwen 3 8B)"
+        if self.tech_config.get("current_refiner") == "Multilingual (Qwen 3.5 4B)":
+            self.tech_config["current_refiner"] = "Multilingual (Qwen 3 4B)"
             
         # --- Migration: Force default transition to Llama 3.2 if on old CoEdit default (ONE-TIME) ---
         if self.prefs.get("current_refiner") == "CoEdit Large (T5)" and not self.prefs.get("_migrate_llama_3_2"):
@@ -930,12 +942,12 @@ class SettingsGUI(QMainWindow):
 
         self.check_sound.setChecked(self.config.get("sound_enabled", True))
         self.check_startup.setChecked(self.check_startup_status())
-        self.vram_spin.setValue(max(5, int(self.config.get("vram_timeout", 60))))
+        self.vram_spin.setValue(max(5, int(self.config.get("vram_timeout", 300))))
         
         # Auto-stop conversion display (ms to s)
         stop_ms = self.config.get("silence_timeout_ms", 10000)
         self.stop_spin.setValue(max(5, int(stop_ms/1000)))
-        self.hk_val.setText(self.config.get("hotkey", "F8").upper())
+        self.hk_val.setText(self.config.get("hotkey", "CTRL+SHIFT+SPACE").upper())
         
         # Initial prompt load
         self.on_prompt_change()
@@ -1157,7 +1169,7 @@ class SettingsGUI(QMainWindow):
         hk_info = QVBoxLayout()
         hk_title = QLabel("RECORDING HOTKEY")
         hk_title.setStyleSheet("font-weight: 800; color: rgba(255, 255, 255, 0.4); border: none; font-size: 11px; letter-spacing: 1px;")
-        self.hk_val = QLabel("F8")
+        self.hk_val = QLabel("CTRL+SHIFT+SPACE")
         self.hk_val.setStyleSheet("font-size: 32px; font-weight: 900; color: #ffffff; border: none; letter-spacing: -1px;")
         hk_info.addWidget(hk_title)
         hk_info.addWidget(self.hk_val)
@@ -1680,7 +1692,7 @@ class SettingsGUI(QMainWindow):
             if hk_str.lower() in self.CONFLICTING_HOTKEYS:
                 disp_conflict = " + ".join([p.upper() for p in parts])
                 # Reset display to old hotkey and keep recording mode active
-                old_hk = self.prefs.get("hotkey", "F8").upper()
+                old_hk = self.prefs.get("hotkey", "CTRL+SHIFT+SPACE").upper()
                 self.hk_val.setText(old_hk)
                 self.hk_val.setToolTip("")
                 self.show_toast(f"⚠  {disp_conflict} conflicts with a system shortcut — try another.", toast_type="warning")

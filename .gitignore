@@ -37,10 +37,12 @@ build_log.txt
 
 # Build Artifacts
 build/
+build_mac/
 dist/
 *.spec
 *.exe
 _internal_libs/
+build_logs/
 
 # Models
 models/
@@ -56,6 +58,9 @@ models/
 .idea/
 *.swp
 *.swo
+
+# Test scripts
+test_*.py
 
 # Debug files
 debug_*.py
@@ -79,12 +84,22 @@ ehthumbs.db
 Desktop.ini
 .DS_Store
 
+# macOS / Xcode
+*.xcuserdata/
+xcuserdata/
+DerivedData/
+*.xcworkspace
+*.xcodeproj
+swift.log
+
 # Misc / Cleanup
 IDEAS.md
 design-system/
 .agent/
 .cursor/
 .gemini/
+backups/
+docs/
 
 # User Prefs
 .user_prefs.json

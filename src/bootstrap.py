@@ -11,6 +11,7 @@ import zipfile
 import urllib.request
 import json
 import winreg
+from ctypes import wintypes
 
 # --- 0. Hard Environment Isolation (MUST BE FIRST) ---
 os.environ["PYTHONNOUSERSITE"] = "1"

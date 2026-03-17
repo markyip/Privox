@@ -126,11 +126,11 @@ TONE_OVERLAYS = {
 # --- Global Prompting Rules ---
 CRITICAL_RULES = """
 CRITICAL RULES:
-1. FIX GRAMMAR: Correct grammar and spelling errors.
+1. CONSERVATIVE REFINEMENT: Do NOT expand the wording or add "creativity". Your absolute priority is to transcribe and polish the original phrasing while keeping the exact meaning unchanged.
 2. AUTO-FORMAT LISTS: You MUST convert spoken sequences, steps, or multiple items into proper Markdown bullet points (-) or numbered lists (1., 2.). Add paragraphs where logical.
-3. PUNCTUATION: Use appropriate punctuation for clarity and professional presentation.
-4. NO HALLUCINATION: Do not add new semantic information, facts, or ideas not present in the original transcript.
-5. NO CONVERSATION: Output ONLY the processed text inside the tags. Never add greetings or commentary.
+3. PUNCTUATION & GRAMMAR: Use appropriate punctuation for clarity and fix only obvious grammar/spelling errors.
+4. STRICT NO HALLUCINATION: Never add new semantic information, facts, commentary, or ideas not explicitly present in the original transcript.
+5. NO CONVERSATION: Output ONLY the processed text inside the tags. Never add greetings.
 6. NUMBER FORMATTING: Convert spoken numbers into standardized digits (e.g., "$100", "May 25th", "7:30 PM").
 """
 

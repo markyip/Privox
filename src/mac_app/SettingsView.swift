@@ -6,7 +6,7 @@ struct UserPrefs: Codable {
     var character: String = "Writing Assistant"
     var tone: String = "Natural"
     var whisper_model: String = "Distil-Whisper Large v3 (English)"
-    var current_refiner: String = "Llama 3.2 3B Instruct"
+    var current_refiner: String = "Gemma 4 E2B Instruct"
     var custom_dictionary: [String] = []
     
     // Additional settings
@@ -34,7 +34,7 @@ func normalizeASRPreference(_ value: String) -> String {
         return "Distil-Whisper Large v3 (English)"
     case "small":
         return "OpenAI Whisper Small"
-    case "Qwen2-Audio-7B", "qwen2-audio-7b":
+    case "Qwen2-Audio-7B", "qwen2-audio-7b", "Qwen-ASR v3 0.6B", "Qwen-ASR v3 1.7B":
         return "Whisper Large v3 Turbo (Multilingual)"
     default:
         return value
@@ -44,13 +44,13 @@ func normalizeASRPreference(_ value: String) -> String {
 func normalizeLLMPreference(_ value: String) -> String {
     switch value.trimmingCharacters(in: .whitespacesAndNewlines) {
     case "Standard (Llama 3.2)":
-        return "Llama 3.2 3B Instruct"
-    case "Multilingual (Qwen 3.5 9B)", "Qwen3.5-9B-Q4_K_M.gguf", "Qwen3-8B-Q4_K_M.gguf":
-        return "Multilingual (Qwen 3 8B)"
-    case "Multilingual (Qwen 3.5 4B)", "Qwen3.5-4B-Q4_K_M.gguf", "Qwen3-4B-Q4_K_M.gguf":
-        return "Multilingual (Qwen 3 4B)"
-    case "Qwen2.5-7B-Instruct-Q4_K_M.gguf":
-        return "Multilingual (Qwen 2.5 7B)"
+        return "Gemma 4 E2B Instruct"
+    case "Multilingual (Qwen 3.5 9B)", "Qwen3.5-9B-Q4_K_M.gguf", "Qwen3-8B-Q4_K_M.gguf",
+         "Multilingual (Qwen 3.5 4B)", "Qwen3.5-4B-Q4_K_M.gguf", "Qwen3-4B-Q4_K_M.gguf",
+         "Multilingual (Qwen 3 8B)", "Multilingual (Qwen 3 4B)", "Fast Multilingual (Qwen 3 1.7B)",
+         "Multilingual (Qwen 2.5 7B)", "Qwen3-1.7B-4bit-DWQ", "Qwen3-1.7B-Instruct",
+         "Qwen2.5-7B-Instruct-Q4_K_M.gguf":
+        return "Gemma 4 E2B Instruct"
     case "Llama-3.2-3B-Instruct-Q4_K_M.gguf":
         return "Llama 3.2 3B Instruct"
     default:
@@ -83,20 +83,8 @@ struct AnyCodable: Codable {
     }
 }
 
-struct HotkeyAssessment {
-    let level: String
-    let message: String
-    let color: Color
-    let isBlocked: Bool
-}
-
-let privoxRecommendedHotkeys = [
-    "ctrl+shift+space",
-    "cmd+alt+z",
-    "cmd+shift+;"
-]
-
-func assessHotkey(_ hotkey: String) -> HotkeyAssessment {
+/// Returns a user-visible error when the hotkey must be rejected; `nil` if acceptable.
+func blockedHotkeyReason(_ hotkey: String) -> String? {
     let normalized = normalizeHotkeyString(hotkey)
     let blockedHotkeys: Set<String> = [
         "cmd+space",
@@ -110,47 +98,18 @@ func assessHotkey(_ hotkey: String) -> HotkeyAssessment {
     ]
 
     if normalized.isEmpty || normalized == "..." {
-        return HotkeyAssessment(
-            level: "Pending",
-            message: "Choose a shortcut with at least one modifier key.",
-            color: .secondary,
-            isBlocked: false
-        )
+        return nil
     }
 
     if !hotkeyHasModifier(normalized) {
-        return HotkeyAssessment(
-            level: "Blocked",
-            message: "Use at least one modifier key so Privox can detect the shortcut reliably.",
-            color: .red,
-            isBlocked: true
-        )
+        return "Use at least one modifier key so Privox can detect the shortcut reliably."
     }
 
     if blockedHotkeys.contains(normalized) {
-        return HotkeyAssessment(
-            level: "Blocked",
-            message: "This shortcut commonly conflicts with macOS system shortcuts. Pick another one.",
-            color: .red,
-            isBlocked: true
-        )
+        return "This shortcut commonly conflicts with macOS system shortcuts. Pick another one."
     }
 
-    if normalized.contains("space") || (normalized.contains("cmd") && !normalized.contains("alt")) {
-        return HotkeyAssessment(
-            level: "Medium Risk",
-            message: "This combo should work, but it may overlap with input methods or app shortcuts on some Macs.",
-            color: .orange,
-            isBlocked: false
-        )
-    }
-
-    return HotkeyAssessment(
-        level: "Low Risk",
-        message: "This combo is a good candidate for a global Privox hotkey.",
-        color: .green,
-        isBlocked: false
-    )
+    return nil
 }
 
 struct StatusPill: View {
@@ -439,8 +398,6 @@ struct ModelsView: View {
     let asrOptions: [AIModelOption] = [
         AIModelOption(name: "Distil-Whisper Large v3 (English)", description: "Fast & High Quality. Best accuracy with distilled architecture."),
         AIModelOption(name: "OpenAI Whisper Small", description: "Quick processing for low-resource environments."),
-        AIModelOption(name: "Qwen-ASR v3 0.6B", description: "Ultra-fast Qwen v3 ASR with native MLX acceleration on Apple Silicon."),
-        AIModelOption(name: "Qwen-ASR v3 1.7B", description: "High-accuracy Qwen v3 ASR with native MLX acceleration on Apple Silicon."),
         AIModelOption(name: "Whisper Large v3 Turbo (Cantonese)", description: "High-speed Cantonese transcription. Reduced hallucination."),
         AIModelOption(name: "Whisper Large v3 Turbo (Korean)", description: "High-performance Korean transcription. Optimized for speed and accuracy."),
         AIModelOption(name: "Whisper Large v3 Turbo (German)", description: "Precision German recognition. Handles technical and colloquial speech."),
@@ -451,10 +408,8 @@ struct ModelsView: View {
     ]
     
     let llmOptions: [AIModelOption] = [
-        AIModelOption(name: "Llama 3.2 3B Instruct", description: "General purpose balanced refiner for all languages."),
-        AIModelOption(name: "Multilingual (Qwen 3 8B)", description: "High-capacity multilingual refiner with stronger reasoning. Best quality when you can spare more memory."),
-        AIModelOption(name: "Multilingual (Qwen 3 4B)", description: "Balanced multilingual refiner with better reasoning than lightweight 3B-class models."),
-        AIModelOption(name: "Multilingual (Qwen 2.5 7B)", description: "Powerful 7B model with widespread architecture support. Vastly smarter than 3B versions while remaining stable.")
+        AIModelOption(name: "Gemma 4 E2B Instruct", description: "Default reasoning refiner: Google Gemma 4 E2B (Unsloth MLX on Apple Silicon; GGUF on Windows)."),
+        AIModelOption(name: "Llama 3.2 3B Instruct", description: "General purpose balanced refiner for all languages.")
     ]
     
     var body: some View {
@@ -550,21 +505,14 @@ struct ModelsView: View {
 
 struct GeneralView: View {
     @ObservedObject var manager: SettingsManager
-    @ObservedObject var diagnostics = PrivoxDiagnosticsStore.shared
-    @State private var showingCleanupSheet = false
     @State private var isRecordingHotkey = false
     @State private var eventMonitor: Any?
     @State private var isTestingHotkey = false
     @State private var testEventMonitor: Any?
     @State private var previousHotkey = "ctrl+shift+space"
-    @State private var hotkeyStatusMessage = "Recommended default: CTRL+SHIFT+SPACE"
+    @State private var hotkeyStatusMessage = ""
     @State private var hotkeyStatusColor = Color.secondary
-    @State private var cleanupModelsSelected = true
-    @State private var cleanupLogsSelected = false
-    @State private var cleanupPreferencesSelected = false
-    @State private var cleanupUsage: [String: Int64] = [:]
-    @State private var cleanupStatusMessage = "Privox stores models, logs, and preferences separately so you can clean up only what you need."
-    @State private var cleanupStatusColor = Color.secondary
+    @State private var modelsFolderBytes: Int64 = 0
     @State private var showResetAccessibilityAlert = false
     @State private var resetAccessibilityAlertMessage = ""
     @State private var isResettingAccessibility = false
@@ -572,13 +520,7 @@ struct GeneralView: View {
     var body: some View {
         let currentHotkey = normalizeHotkeyString(manager.prefs.hotkey)
         let savedHotkey = normalizeHotkeyString(manager.savedHotkey)
-        let assessment = assessHotkey(currentHotkey)
-        let listenerColor: Color = diagnostics.listenerActive ? .green : .orange
-        let accessibilityColor: Color = diagnostics.accessibilityGranted ? .green : .orange
-        let staleAccessibility = diagnostics.accessibilityGranted && !diagnostics.listenerActive
-        let microphonePermissionColor: Color = diagnostics.microphonePermissionGranted ? .green : .orange
-        let audioStreamColor: Color = diagnostics.audioStreamActive ? .green : .red
-        let backendColor: Color = diagnostics.backendStatus == "ERROR" ? .red : (diagnostics.backendStatus == "RECORDING" ? .pink : .cyan)
+
         let hotkeySaved = currentHotkey == savedHotkey
 
         ScrollView {
@@ -628,34 +570,12 @@ struct GeneralView: View {
                     .background(isTestingHotkey ? Color.cyan.opacity(0.9) : Color.primary.opacity(0.08))
                     .foregroundColor(isTestingHotkey ? .white : .primary)
                     .cornerRadius(6)
-
-                    Button("Use Recommended") {
-                        stopRecording()
-                        stopTesting()
-                        applyHotkeyChange("ctrl+shift+space", message: "Set to recommended hotkey: CTRL+SHIFT+SPACE")
-                    }
-                    .font(.system(size: 12, weight: .bold))
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(Color.primary.opacity(0.08))
-                    .foregroundColor(.primary)
-                    .cornerRadius(6)
                 }
 
                 HStack(spacing: 10) {
-                    StatusPill(title: assessment.level, color: assessment.color)
                     StatusPill(title: hotkeySaved ? "Saved" : "Unsaved", color: hotkeySaved ? .green : .orange)
                     StatusPill(title: hotkeySaved ? "Active Now" : "Save to Apply", color: hotkeySaved ? .cyan : .orange)
-                    if diagnostics.listenerActive {
-                        StatusPill(title: "Listener Ready", color: .green)
-                    } else {
-                        StatusPill(title: "Needs Attention", color: .orange)
-                    }
                 }
-
-                Text(assessment.message)
-                    .font(.system(size: 13))
-                    .foregroundColor(.secondary)
 
                 Text(hotkeySaved
                     ? "Privox is currently listening for \(hotkeyDisplayString(savedHotkey))."
@@ -663,203 +583,11 @@ struct GeneralView: View {
                     .font(.system(size: 13))
                     .foregroundColor(hotkeySaved ? .secondary : .orange)
 
-                Text(hotkeyStatusMessage)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(hotkeyStatusColor)
-
-                Text("Recommended combinations: \(privoxRecommendedHotkeys.map { hotkeyDisplayString($0) }.joined(separator: "  •  "))")
-                    .font(.system(size: 12))
-                    .foregroundColor(.secondary)
+                if !hotkeyStatusMessage.isEmpty {
+                    Text(hotkeyStatusMessage)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(hotkeyStatusColor)
                 }
-                .padding(24)
-                .background(.regularMaterial)
-                .cornerRadius(16)
-                .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.primary.opacity(0.05), lineWidth: 0.5))
-                
-                VStack(alignment: .leading, spacing: 16) {
-                HStack {
-                    VStack(alignment: .leading) {
-                        Text("HOTKEY DIAGNOSTICS")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundColor(.cyan)
-                        Text("Live health status for permissions, the global listener, and the most recent detected shortcut.")
-                            .font(.system(size: 13))
-                            .foregroundColor(.secondary)
-                    }
-                    Spacer()
-                    
-                    StatusPill(title: diagnostics.backendStatus, color: backendColor)
-                }
-
-                if diagnostics.backendStatus == "DOWNLOADING" || diagnostics.backendStatus == "INITIALIZING" {
-                    DiagnosticsProgressCard(
-                        title: diagnostics.backendStatus == "DOWNLOADING" ? "MODEL DOWNLOAD" : "STARTUP",
-                        bodyText: diagnostics.downloadStatus,
-                        tint: diagnostics.backendStatus == "DOWNLOADING" ? .blue : .cyan,
-                        progress: diagnostics.backendStatus == "DOWNLOADING" ? diagnostics.downloadProgress : nil
-                    )
-                }
-
-                HStack(spacing: 14) {
-                    DiagnosticsMetricCard(
-                        title: "Accessibility",
-                        value: diagnostics.accessibilityGranted ? "Granted" : "Missing",
-                        subtitle: diagnostics.accessibilityGranted ? "Global keyboard access is available." : "Privox cannot capture the hotkey until you allow Accessibility.",
-                        tint: accessibilityColor
-                    )
-                    DiagnosticsMetricCard(
-                        title: "Listener",
-                        value: diagnostics.listenerActive ? "Active" : "Inactive",
-                        subtitle: diagnostics.listenerStatus,
-                        tint: listenerColor
-                    )
-                }
-
-                if !diagnostics.accessibilityGranted {
-                    DiagnosticsHintCard(
-                        title: "WHY THIS CAN HAPPEN",
-                        bodyText: "macOS Accessibility permission is granted to the exact app build you launched. If you rebuilt Privox, macOS may treat the new build as a different app even if the name is the same. Use \"Reset Accessibility Access\" below to clear the old permission, then quit and relaunch to grant access for this version.",
-                        tint: .orange
-                    )
-                }
-
-                if staleAccessibility {
-                    DiagnosticsHintCard(
-                        title: "STALE ACCESSIBILITY PERMISSION",
-                        bodyText: "Accessibility shows as Granted but the hotkey listener could not start. This often happens after updating Privox. Use \"Reset Accessibility Access\" below, then quit and relaunch the app to grant access for this version.",
-                        tint: .orange
-                    )
-                }
-
-                if !diagnostics.accessibilityGranted || !diagnostics.microphonePermissionGranted || !diagnostics.listenerActive {
-                    DiagnosticsHintCard(
-                        title: "RECOVERY FLOW",
-                        bodyText: diagnostics.permissionRecoveryStatus,
-                        tint: !diagnostics.accessibilityGranted || !diagnostics.microphonePermissionGranted ? .orange : .cyan
-                    )
-                }
-
-                HStack(spacing: 14) {
-                    DiagnosticsMetricCard(
-                        title: "Mic Permission",
-                        value: diagnostics.microphonePermissionGranted ? "Granted" : "Missing",
-                        subtitle: diagnostics.microphonePermissionStatus,
-                        tint: microphonePermissionColor
-                    )
-                    DiagnosticsMetricCard(
-                        title: "Audio Stream",
-                        value: diagnostics.audioStreamActive ? "Live" : "Offline",
-                        subtitle: diagnostics.audioStreamStatus,
-                        tint: audioStreamColor
-                    )
-                }
-
-                HStack(spacing: 14) {
-                    DiagnosticsMetricCard(
-                        title: "Last Seen",
-                        value: diagnostics.lastDetectedHotkey,
-                        subtitle: "Last event at \(diagnostics.lastEventTimestamp)",
-                        tint: .cyan
-                    )
-                    DiagnosticsMetricCard(
-                        title: "Last Trigger",
-                        value: diagnostics.lastTriggeredHotkey,
-                        subtitle: diagnostics.backendDetail,
-                        tint: backendColor
-                    )
-                }
-
-                HStack(spacing: 12) {
-                    Button("Open Accessibility Settings") {
-                        let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
-                        NSWorkspace.shared.open(url)
-                    }
-                    .buttonStyle(SecondaryCapsuleButtonStyle())
-
-                    Button("Reveal Current App") {
-                        NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
-                    }
-                    .buttonStyle(SecondaryCapsuleButtonStyle())
-
-                    Button("Open Microphone Settings") {
-                        let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!
-                        NSWorkspace.shared.open(url)
-                    }
-                    .buttonStyle(SecondaryCapsuleButtonStyle())
-
-                    Button("Check Permissions Now") {
-                        if let appDelegate = NSApplication.shared.delegate as? AppDelegate {
-                            appDelegate.refreshPermissionsAndRecoveryState()
-                        }
-                    }
-                    .buttonStyle(SecondaryCapsuleButtonStyle())
-
-                    Button("Refresh Listener") {
-                        if let appDelegate = NSApplication.shared.delegate as? AppDelegate {
-                            appDelegate.refreshGlobalHotkeyListener(force: true)
-                        }
-                    }
-                    .buttonStyle(SecondaryCapsuleButtonStyle())
-
-                    Button(isResettingAccessibility ? "Resetting…" : "Reset Accessibility Access") {
-                        guard let appDelegate = NSApplication.shared.delegate as? AppDelegate else { return }
-                        isResettingAccessibility = true
-                        appDelegate.resetAccessibilityAccess { success, message in
-                            resetAccessibilityAlertMessage = message
-                            showResetAccessibilityAlert = true
-                            isResettingAccessibility = false
-                            if success {
-                                let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
-                                NSWorkspace.shared.open(url)
-                            }
-                        }
-                    }
-                    .buttonStyle(SecondaryCapsuleButtonStyle())
-                    .background(staleAccessibility ? Color.orange.opacity(0.2) : Color.clear)
-                    .cornerRadius(8)
-                    .disabled(isResettingAccessibility)
-                }
-                .alert("Reset Accessibility", isPresented: $showResetAccessibilityAlert) {
-                    Button("OK", role: .cancel) {}
-                } message: {
-                    Text(resetAccessibilityAlertMessage)
-                }
-
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("DIRECT PIPELINE TEST")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(.secondary)
-
-                    Text("Bypass the global hotkey listener and send the same toggle command straight to the backend. Use this to verify recording and transcription separately from keyboard detection.")
-                        .font(.system(size: 13))
-                        .foregroundColor(.secondary)
-
-                    HStack(spacing: 12) {
-                        let directPipelineStatus = diagnostics.backendStatus
-                        let isPipelineBusy = isDirectPipelineBusy(directPipelineStatus)
-                        let directPipelineButtonTitle = directPipelineTitle(for: directPipelineStatus)
-                        let directPipelineDescription = directPipelineDescription(for: directPipelineStatus)
-
-                        Button(directPipelineButtonTitle) {
-                            guard !isPipelineBusy else { return }
-                            hotkeyStatusMessage = diagnostics.backendStatus == "RECORDING"
-                                ? "Direct test sent: stopping the active recording."
-                                : "Direct test sent: starting recording without the hotkey listener."
-                            hotkeyStatusColor = .cyan
-                            BackendManager.shared.sendCommand("TOGGLE")
-                        }
-                        .buttonStyle(PrimaryButtonStyle())
-                        .disabled(isPipelineBusy)
-
-                        Text(directPipelineDescription)
-                            .font(.system(size: 12))
-                            .foregroundColor(.secondary)
-                    }
-                }
-                .padding(18)
-                .background(.thinMaterial)
-                .cornerRadius(14)
-                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.cyan.opacity(0.14), lineWidth: 1))
                 }
                 .padding(24)
                 .background(.regularMaterial)
@@ -932,65 +660,34 @@ struct GeneralView: View {
                         Text("CLEANUP & UNINSTALL")
                             .font(.system(size: 11, weight: .bold))
                             .foregroundColor(.red)
-                        Text("Review what Privox stores locally, clean selected data safely, or generate a guided uninstall helper.")
+                        Text("See how much space downloaded models use, or open the models folder in Finder.")
                             .font(.system(size: 13))
                             .foregroundColor(.secondary)
                     }
                     Spacer()
                 }
 
-                HStack(spacing: 14) {
-                    DiagnosticsMetricCard(
-                        title: "Models",
-                        value: formatByteCount(cleanupUsage["models"] ?? 0),
-                        subtitle: "Downloaded ASR and LLM files",
-                        tint: .red
-                    )
-                    DiagnosticsMetricCard(
-                        title: "Logs",
-                        value: formatByteCount(cleanupUsage["logs"] ?? 0),
-                        subtitle: "Runtime diagnostics and crash clues",
-                        tint: .orange
-                    )
-                    DiagnosticsMetricCard(
-                        title: "Preferences",
-                        value: formatByteCount(cleanupUsage["preferences"] ?? 0),
-                        subtitle: "Hotkey, prompts, and app settings",
-                        tint: .pink
-                    )
-                }
+                DiagnosticsMetricCard(
+                    title: "Models",
+                    value: formatByteCount(modelsFolderBytes),
+                    subtitle: "Downloaded ASR and LLM files",
+                    tint: .red
+                )
 
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Current data folder")
+                    Text("Models folder")
                         .font(.system(size: 11, weight: .bold))
                         .foregroundColor(.secondary)
-                    Text(privoxAppDataDirectory().path)
+                    Text(privoxAppDataDirectory().appendingPathComponent("models").path)
                         .font(.system(size: 12, weight: .medium, design: .monospaced))
                         .foregroundColor(.secondary)
                         .textSelection(.enabled)
                 }
 
-                HStack(spacing: 12) {
-                    Button("Select Cleanup...") {
-                        refreshCleanupMetrics()
-                        showingCleanupSheet = true
-                    }
-                    .buttonStyle(PrimaryButtonStyle())
-
-                    Button("Reveal Data Folder") {
-                        NSWorkspace.shared.activateFileViewerSelecting([privoxAppDataDirectory()])
-                    }
-                    .buttonStyle(SecondaryCapsuleButtonStyle())
-
-                    Button("Create Uninstall Script") {
-                        createUninstallScript()
-                    }
-                    .buttonStyle(SecondaryCapsuleButtonStyle())
+                Button("Open Models Folder") {
+                    openModelsFolder()
                 }
-
-                Text(cleanupStatusMessage)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(cleanupStatusColor)
+                .buttonStyle(PrimaryButtonStyle())
                 }
                 .padding(24)
                 .background(Color.red.opacity(0.08))
@@ -1008,11 +705,8 @@ struct GeneralView: View {
             .padding(.bottom, 8)
         }
         .scrollIndicators(.hidden)
-        .sheet(isPresented: $showingCleanupSheet) {
-            cleanupSheetView
-        }
         .onAppear {
-            refreshCleanupMetrics()
+            refreshModelsFolderSize()
         }
         .onDisappear {
             stopRecording()
@@ -1090,10 +784,8 @@ struct GeneralView: View {
     
     private func handleKeyPress(_ event: NSEvent) {
         guard let candidate = hotkeyString(from: event) else { return }
-        let assessment = assessHotkey(candidate)
-
-        if assessment.isBlocked {
-            hotkeyStatusMessage = assessment.message
+        if let reason = blockedHotkeyReason(candidate) {
+            hotkeyStatusMessage = reason
             hotkeyStatusColor = .red
             stopRecording()
             return
@@ -1102,7 +794,7 @@ struct GeneralView: View {
         applyHotkeyChange(
             candidate,
             message: "Captured hotkey: \(hotkeyDisplayString(candidate))",
-            color: assessment.color
+            color: .green
         )
         stopRecording()
     }
@@ -1142,226 +834,16 @@ struct GeneralView: View {
         stopTesting()
     }
 
-    // MARK: - App logic
-    private var cleanupSheetView: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text("Cleanup Privox Data")
-                .font(.system(size: 24, weight: .heavy))
-
-            Text("Choose what to remove. Privox will restart its backend after cleanup so the app stays usable.")
-                .font(.system(size: 13))
-                .foregroundColor(.secondary)
-
-            VStack(alignment: .leading, spacing: 14) {
-                Toggle(isOn: $cleanupModelsSelected) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Downloaded models")
-                        Text("\(formatByteCount(cleanupUsage["models"] ?? 0)) currently stored for ASR and LLM inference.")
-                            .font(.system(size: 12))
-                            .foregroundColor(.secondary)
-                    }
-                }
-
-                Toggle(isOn: $cleanupLogsSelected) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Logs")
-                        Text("\(formatByteCount(cleanupUsage["logs"] ?? 0)) of diagnostic output. Fresh logs may be created again after cleanup.")
-                            .font(.system(size: 12))
-                            .foregroundColor(.secondary)
-                    }
-                }
-
-                Toggle(isOn: $cleanupPreferencesSelected) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Preferences")
-                        Text("\(formatByteCount(cleanupUsage["preferences"] ?? 0)) of saved settings, prompts, and hotkey preferences.")
-                            .font(.system(size: 12))
-                            .foregroundColor(.secondary)
-                    }
-                }
-            }
-            .toggleStyle(SwitchToggleStyle(tint: .red))
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Estimated reclaimed space")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(.secondary)
-                Text(formatByteCount(selectedCleanupBytes()))
-                    .font(.system(size: 28, weight: .heavy))
-            }
-            .padding(18)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.thinMaterial)
-            .cornerRadius(14)
-            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.red.opacity(0.14), lineWidth: 1))
-
-            HStack {
-                Spacer()
-                Button("Cancel") {
-                    showingCleanupSheet = false
-                }
-                .buttonStyle(SecondaryCapsuleButtonStyle())
-
-                Button("Clean Selected Data") {
-                    performCleanup()
-                    showingCleanupSheet = false
-                }
-                .buttonStyle(PrimaryButtonStyle())
-                .disabled(selectedCleanupBytes() == 0)
-            }
-        }
-        .padding(24)
-        .frame(width: 560)
-        .background(.regularMaterial)
+    // MARK: - Models folder
+    private func openModelsFolder() {
+        let modelsURL = privoxAppDataDirectory().appendingPathComponent("models", isDirectory: true)
+        try? FileManager.default.createDirectory(at: modelsURL, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(modelsURL)
+        refreshModelsFolderSize()
     }
 
-    private func performCleanup() {
-        let fileManager = FileManager.default
-        var removedDescriptions: [String] = []
-        var removedSomething = false
-
-        BackendManager.shared.stopBackend()
-
-        if cleanupModelsSelected {
-            let modelsURL = privoxAppDataDirectory().appendingPathComponent("models")
-            if fileManager.fileExists(atPath: modelsURL.path) {
-                try? fileManager.removeItem(at: modelsURL)
-                removedDescriptions.append("models")
-                removedSomething = true
-            }
-        }
-
-        if cleanupLogsSelected {
-            var removedLogs = false
-            let logURLs = [
-                privoxAppDataDirectory().appendingPathComponent("swift.log"),
-                privoxAppDataDirectory().appendingPathComponent("privox_app.log")
-            ]
-            for url in logURLs where fileManager.fileExists(atPath: url.path) {
-                try? fileManager.removeItem(at: url)
-                removedLogs = true
-                removedSomething = true
-            }
-            if removedLogs {
-                removedDescriptions.append("logs")
-            }
-        }
-
-        if cleanupPreferencesSelected {
-            var removedPreferences = false
-            let prefsURLs = [
-                privoxAppDataDirectory().appendingPathComponent(".user_prefs.json"),
-                privoxAppDataDirectory().appendingPathComponent("config.json")
-            ]
-            for url in prefsURLs where fileManager.fileExists(atPath: url.path) {
-                try? fileManager.removeItem(at: url)
-                removedPreferences = true
-                removedSomething = true
-            }
-            manager.prefs = UserPrefs()
-            if removedPreferences {
-                removedDescriptions.append("preferences")
-            }
-        }
-
-        BackendManager.shared.startBackend()
-        refreshCleanupMetrics()
-
-        if removedSomething {
-            cleanupStatusMessage = "Cleanup completed for \(removedDescriptions.joined(separator: ", "))."
-            cleanupStatusColor = .green
-        } else {
-            cleanupStatusMessage = "Nothing needed cleaning in the selected categories."
-            cleanupStatusColor = .secondary
-        }
-    }
-
-    private func createUninstallScript() {
-        let desktopURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop", isDirectory: true)
-        let scriptURL = desktopURL.appendingPathComponent("Uninstall Privox.command")
-        let script = """
-        #!/bin/zsh
-        set -e
-
-        APP_SUPPORT="$HOME/Library/Application Support/Privox"
-        LEGACY="$HOME/.privox"
-
-        echo "Privox uninstall helper"
-        echo
-        echo "This will remove downloaded models, logs, and preferences from:"
-        echo "  $APP_SUPPORT"
-        echo "  $LEGACY"
-        echo
-        read '?Continue? [y/N] ' reply
-        echo
-        if [[ ! "$reply" =~ ^[Yy]$ ]]; then
-          echo "Cancelled."
-          exit 0
-        fi
-
-        pkill -f "/Privox.app/Contents/MacOS/Privox" >/dev/null 2>&1 || true
-        rm -rf "$APP_SUPPORT" "$LEGACY"
-
-        echo "Privox data removed."
-        echo "You can now drag Privox.app to the Trash if you no longer need it."
-        read '?Press Enter to close.'
-        """
-
-        do {
-            try FileManager.default.createDirectory(at: desktopURL, withIntermediateDirectories: true)
-            try script.write(to: scriptURL, atomically: true, encoding: .utf8)
-            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
-            NSWorkspace.shared.activateFileViewerSelecting([scriptURL])
-            cleanupStatusMessage = "Created uninstall helper on your Desktop."
-            cleanupStatusColor = .green
-        } catch {
-            cleanupStatusMessage = "Failed to create uninstall helper: \(error.localizedDescription)"
-            cleanupStatusColor = .red
-        }
-    }
-
-    private func selectedCleanupBytes() -> Int64 {
-        var total: Int64 = 0
-        if cleanupModelsSelected {
-            total += cleanupUsage["models"] ?? 0
-        }
-        if cleanupLogsSelected {
-            total += cleanupUsage["logs"] ?? 0
-        }
-        if cleanupPreferencesSelected {
-            total += cleanupUsage["preferences"] ?? 0
-        }
-        return total
-    }
-
-    private func refreshCleanupMetrics() {
-        cleanupUsage = [
-            "models": directorySize(at: privoxAppDataDirectory().appendingPathComponent("models")),
-            "logs": fileSizes(at: [
-                privoxAppDataDirectory().appendingPathComponent("swift.log"),
-                privoxAppDataDirectory().appendingPathComponent("privox_app.log")
-            ]),
-            "preferences": fileSizes(at: [
-                privoxAppDataDirectory().appendingPathComponent(".user_prefs.json"),
-                privoxAppDataDirectory().appendingPathComponent("config.json")
-            ])
-        ]
-    }
-
-    private func fileSizes(at urls: [URL]) -> Int64 {
-        urls.reduce(0) { partialResult, url in
-            partialResult + fileSize(at: url)
-        }
-    }
-
-    private func fileSize(at url: URL) -> Int64 {
-        guard
-            let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-            let size = attributes[.size] as? NSNumber
-        else {
-            return 0
-        }
-        return size.int64Value
+    private func refreshModelsFolderSize() {
+        modelsFolderBytes = directorySize(at: privoxAppDataDirectory().appendingPathComponent("models"))
     }
 
     private func directorySize(at url: URL) -> Int64 {

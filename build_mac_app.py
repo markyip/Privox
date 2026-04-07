@@ -1,7 +1,9 @@
 import os
+import platform
 import subprocess
 import shutil
 import sys
+import glob
 
 # --- Build Configuration ---
 APP_NAME = "Privox"
@@ -148,6 +150,17 @@ else:
 # --- 2. Compile Swift ---
 print("Compiling Swift application...")
 
+# Match host CPU: arm64 for Apple Silicon, x86_64 for Intel (hardcoding arm64 breaks Intel Macs).
+_machine = platform.machine().lower()
+if _machine in ("arm64", "aarch64"):
+    _swift_target = "arm64-apple-macosx13.0"
+elif _machine in ("x86_64", "amd64", "i386"):
+    _swift_target = "x86_64-apple-macosx13.0"
+else:
+    print(f"Warning: unknown platform.machine()={_machine!r}; using arm64-apple-macosx13.0")
+    _swift_target = "arm64-apple-macosx13.0"
+print(f"Swift compile target: {_swift_target}")
+
 # We expect src/mac_app/App.swift to exist. 
 # We'll compile it into the MacOS directory of our app bundle.
 swift_files = [os.path.join(SOURCE_DIR, f) for f in os.listdir(SOURCE_DIR) if f.endswith('.swift')]
@@ -159,7 +172,7 @@ if not swift_files:
 compile_cmd = [
     "swiftc",
     "-parse-as-library",
-    "-target", "arm64-apple-macosx13.0", # Build for Apple Silicon, macOS 13+
+    "-target", _swift_target,
     *swift_files,
     "-o", f"{MACOS_DIR}/{APP_NAME}"
 ]
@@ -169,6 +182,8 @@ try:
     print(f"Successfully compiled {APP_NAME} to {MACOS_DIR}/{APP_NAME}")
 except subprocess.CalledProcessError as e:
     print(f"Compilation failed: {e}")
+    print("Hints: install Xcode Command Line Tools (xcode-select --install), ensure `swiftc` is on PATH,")
+    print("  and on Intel Macs the build now uses x86_64-apple-macosx13.0 (not arm64).")
     exit(1)
 
 # --- 3. Copy Assets ---
@@ -184,21 +199,137 @@ print(f"App Bundle created successfully at {APP_DIR}")
 # --- 3b. Code signing ---
 apply_codesign(APP_DIR)
 
+def prune_pixi_bundle_for_mac(env_root: str) -> None:
+    """Remove unnecessary files from the copied .pixi env to reduce DMG size.
+    Safe for macOS runtime: we only remove headers, docs, caches, tests, and
+    packages that are not used on the Mac MLX path (faster_whisper, funasr, modelscope,
+    and heavy frameworks like PyTorch that the bundled app no longer depends on).
+    """
+    removed = 0
+
+    # 1. Remove C/C++ headers (not needed at runtime)
+    include_dir = os.path.join(env_root, "include")
+    if os.path.isdir(include_dir):
+        shutil.rmtree(include_dir, ignore_errors=True)
+        removed += 1
+
+    # 2. Remove share/man, share/doc
+    for sub in ("man", "doc", "info"):
+        d = os.path.join(env_root, "share", sub)
+        if os.path.isdir(d):
+            shutil.rmtree(d, ignore_errors=True)
+            removed += 1
+
+    # 3. __pycache__ and *.pyc under lib
+    lib_root = os.path.join(env_root, "lib")
+    if os.path.isdir(lib_root):
+        for pycache in glob.glob(os.path.join(lib_root, "**", "__pycache__"), recursive=True):
+            if os.path.isdir(pycache):
+                shutil.rmtree(pycache, ignore_errors=True)
+                removed += 1
+        for pyc in glob.glob(os.path.join(lib_root, "**", "*.pyc"), recursive=True):
+            try:
+                os.remove(pyc)
+                removed += 1
+            except OSError:
+                pass
+
+    # 4. site-packages: remove tests/ and test/ dirs
+    for pydir in ("python3.12", "python3.11", "python3.10"):
+        site = os.path.join(lib_root, pydir, "site-packages")
+        if not os.path.isdir(site):
+            continue
+        for name in os.listdir(site):
+            if name in ("tests", "test") and os.path.isdir(os.path.join(site, name)):
+                shutil.rmtree(os.path.join(site, name), ignore_errors=True)
+                removed += 1
+            pkg_dir = os.path.join(site, name)
+            if os.path.isdir(pkg_dir):
+                for sub in ("tests", "test"):
+                    t = os.path.join(pkg_dir, sub)
+                    if os.path.isdir(t):
+                        shutil.rmtree(t, ignore_errors=True)
+                        removed += 1
+
+    # 5. Mac bundle does not use these at runtime (ASR is MLX-Whisper only)
+    for pkg in ("faster_whisper", "funasr", "modelscope"):
+        for pydir in ("python3.12", "python3.11", "python3.10"):
+            site = os.path.join(env_root, "lib", pydir, "site-packages")
+            if not os.path.isdir(site):
+                continue
+            for pattern in (pkg, pkg.replace("_", "-"), f"{pkg}-*.dist-info"):
+                for path in glob.glob(os.path.join(site, pattern)):
+                    if os.path.exists(path):
+                        if os.path.isdir(path):
+                            shutil.rmtree(path, ignore_errors=True)
+                        else:
+                            try:
+                                os.remove(path)
+                            except OSError:
+                                pass
+                        removed += 1
+
+    # 6. Remove PyTorch stack and heavy GUI libs that are unused in the macOS
+    # app bundle at runtime. The Swift UI is the primary GUI; Python-side PySide6
+    # / customtkinter are only needed for the standalone GUI, not the bundled app.
+    heavy_pkgs = ("torch", "torchaudio", "torchvision", "PySide6", "customtkinter")
+    for pydir in ("python3.12", "python3.11", "python3.10"):
+        site = os.path.join(env_root, "lib", pydir, "site-packages")
+        if not os.path.isdir(site):
+            continue
+        for pkg in heavy_pkgs:
+            for pattern in (
+                pkg,
+                pkg.replace("_", "-"),
+                f"{pkg}-*.dist-info",
+                f"{pkg.lower()}-*.dist-info",
+            ):
+                for path in glob.glob(os.path.join(site, pattern)):
+                    if os.path.exists(path):
+                        if os.path.isdir(path):
+                            shutil.rmtree(path, ignore_errors=True)
+                        else:
+                            try:
+                                os.remove(path)
+                            except OSError:
+                                pass
+                        removed += 1
+
+    if removed:
+        print(f"Pruned {removed} items from bundled .pixi environment.")
+
+
 # --- 4. DMG Packaging ---
 if "--create-dmg" in sys.argv:
+    slim_build = "--slim" in sys.argv
     print("\n--- Packaging DMG ---")
-    print("Copying App Resources (This may take several minutes due to the size of the ML environment)...")
-    
-    # 4a. Copy source code
+    if slim_build:
+        print("Slim build: app will use user's local Python/MLX (no .pixi bundled).")
+    else:
+        print("Copying App Resources (This may take several minutes due to the size of the ML environment)...")
+
+    # 4a. Copy source code (always needed so backend can run)
     shutil.copytree("src", f"{RESOURCES_DIR}/src", dirs_exist_ok=True)
     if os.path.exists("assets"):
         shutil.copytree("assets", f"{RESOURCES_DIR}/assets", dirs_exist_ok=True)
-        
-    # 4b. Copy .pixi environment (Preserving Symlinks is CRITICAL for Conda/Pixi)
-    if os.path.exists(".pixi"):
+
+    # 4b. Copy .pixi environment unless --slim (user will use PRIVOX_PYTHON or venv)
+    dest_pixi = f"{RESOURCES_DIR}/.pixi"
+    if slim_build:
+        if os.path.exists(dest_pixi):
+            shutil.rmtree(dest_pixi)
+            print("Removed existing .pixi from bundle (slim build).")
+        print("Skipping .pixi bundle (--slim). User must have Python + MLX installed and set PRIVOX_PYTHON or use ~/Library/Application Support/Privox/venv.")
+    elif os.path.exists(".pixi"):
         print("Copying .pixi environment...")
-        shutil.copytree(".pixi", f"{RESOURCES_DIR}/.pixi", dirs_exist_ok=True, symlinks=True)
-    
+        if os.path.exists(dest_pixi):
+            shutil.rmtree(dest_pixi)
+        shutil.copytree(".pixi", dest_pixi, symlinks=True)
+        dest_env = os.path.join(dest_pixi, "envs", "default")
+        if os.path.isdir(dest_env):
+            print("Pruning bundled .pixi (strip include, docs, cache, unused Mac packages)...")
+            prune_pixi_bundle_for_mac(dest_env)
+
     # 4c. Create DMG using hdiutil
     print("Building DMG using hdiutil...")
     dmg_path = f"{BUILD_DIR}/{APP_NAME}.dmg"
@@ -226,6 +357,7 @@ if "--create-dmg" in sys.argv:
 else:
     print(f"To run: open {APP_DIR}")
     print(f"To build DMG: python build_mac_app.py --create-dmg")
+    print(f"Slim DMG (use local Python/MLX): python build_mac_app.py --create-dmg --slim")
     print("")
     print("Stable-signing tips:")
     print("  export PRIVOX_SIGNING_IDENTITY='Developer ID Application: Your Name (TEAMID)'")

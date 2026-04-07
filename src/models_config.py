@@ -48,8 +48,6 @@ def get_app_data_dir(base_fallback_dir):
 ASR_LIBRARY = [
     {"name": "Distil-Whisper Large v3 (English)", "whisper_repo": "Systran/faster-distil-whisper-large-v3", "mlx_repo": "mlx-community/distil-whisper-large-v3", "whisper_model": "distil-large-v3", "repo": "Systran/faster-distil-whisper-large-v3", "description": "Fast & High Quality. Best accuracy with distilled architecture."},
     {"name": "OpenAI Whisper Small", "whisper_repo": "openai/whisper-small", "mlx_repo": "mlx-community/whisper-small", "whisper_model": "small", "repo": "openai/whisper-small", "description": "Quick processing for low-resource environments."},
-    {"name": "Qwen-ASR v3 0.6B", "whisper_repo": "Qwen/Qwen3-ASR-0.6B", "mlx_repo": "mlx-community/Qwen3-ASR-0.6B-4bit", "whisper_model": "qwen3-asr-0.6b", "repo": "Qwen/Qwen3-ASR-0.6B", "backend": "qwen_asr", "mac_backend": "mlx_qwen_asr", "description": "Ultra-fast Qwen v3 ASR with native MLX acceleration on Apple Silicon."},
-    {"name": "Qwen-ASR v3 1.7B", "whisper_repo": "Qwen/Qwen3-ASR-1.7B", "mlx_repo": "mlx-community/Qwen3-ASR-1.7B-4bit", "whisper_model": "qwen3-asr-1.7b", "repo": "Qwen/Qwen3-ASR-1.7B", "backend": "qwen_asr", "mac_backend": "mlx_qwen_asr", "description": "High-accuracy Qwen v3 ASR with native MLX acceleration on Apple Silicon."},
     {"name": "Whisper Large v3 Turbo (Cantonese)", "whisper_repo": "ylpeter/faster-whisper-large-v3-turbo-cantonese-16", "mlx_repo": "mlx-community/whisper-large-v3-turbo", "whisper_model": "large-v3-turbo", "repo": "ylpeter/faster-whisper-large-v3-turbo-cantonese-16", "description": "High-speed Cantonese transcription. Reduced hallucination."},
     {"name": "Whisper Large v3 Turbo (Korean)", "whisper_repo": "ghost613/faster-whisper-large-v3-turbo-korean", "mlx_repo": "mlx-community/whisper-large-v3-turbo", "whisper_model": "large-v3-turbo", "repo": "ghost613/faster-whisper-large-v3-turbo-korean", "description": "High-performance Korean transcription. Optimized for speed and accuracy."},
     {"name": "Whisper Large v3 Turbo (German)", "whisper_repo": "aseifert/faster-whisper-large-v3-turbo-german", "mlx_repo": "mlx-community/whisper-large-v3-turbo", "whisper_model": "large-v3-turbo", "repo": "aseifert/faster-whisper-large-v3-turbo-german", "description": "Precision German recognition. Handles technical and colloquial speech."},
@@ -62,42 +60,26 @@ ASR_LIBRARY = [
 # --- Refiner (LLM) Library ---
 LLM_LIBRARY = [
     {
-        "name": "Llama 3.2 3B Instruct", 
-        "repo_id": "bartowski/Llama-3.2-3B-Instruct-GGUF", 
+        "name": "Gemma 4 E2B Instruct",
+        "repo_id": "unsloth/gemma-4-E2B-it-GGUF",
+        "mlx_repo": "unsloth/gemma-4-E2B-it-UD-MLX-4bit",
+        "file_name": "gemma-4-E2B-it-Q4_K_M.gguf",
+        "prompt_type": "gemma",
+        "description": "Default reasoning refiner: Google Gemma 4 E2B (edge). Unsloth MLX on Apple Silicon; GGUF on Windows.",
+    },
+    {
+        "name": "Llama 3.2 3B Instruct",
+        "repo_id": "bartowski/Llama-3.2-3B-Instruct-GGUF",
         "mlx_repo": "mlx-community/Llama-3.2-3B-Instruct-4bit",
-        "file_name": "Llama-3.2-3B-Instruct-Q4_K_M.gguf", 
+        "file_name": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
         "prompt_type": "llama",
-        "description": "General purpose balanced refiner for all languages."
+        "description": "General purpose balanced refiner for all languages.",
     },
-    {
-        "name": "Multilingual (Qwen 3 8B)", 
-        "repo_id": "Qwen/Qwen3-8B-GGUF", 
-        "mlx_repo": "mlx-community/Qwen3-8B-4bit",
-        "file_name": "Qwen3-8B-Q4_K_M.gguf", 
-        "prompt_type": "chatml",
-        "description": "High-capacity multilingual refiner with stronger reasoning. Best quality when you can spare more memory."
-    },
-    {
-        "name": "Multilingual (Qwen 3 4B)", 
-        "repo_id": "Qwen/Qwen3-4B-GGUF", 
-        "mlx_repo": "mlx-community/Qwen3-4B-4bit",
-        "file_name": "Qwen3-4B-Q4_K_M.gguf", 
-        "prompt_type": "chatml",
-        "description": "Balanced multilingual refiner with better reasoning than lightweight 3B-class models."
-    },
-    {
-        "name": "Multilingual (Qwen 2.5 7B)", 
-        "repo_id": "bartowski/Qwen2.5-7B-Instruct-GGUF", 
-        "mlx_repo": "mlx-community/Qwen2.5-7B-Instruct-4bit",
-        "file_name": "Qwen2.5-7B-Instruct-Q4_K_M.gguf", 
-        "prompt_type": "chatml",
-        "description": "Powerful 7B model with widespread architecture support. Vastly smarter than 3B versions while remaining stable."
-    }
 ]
 
 # --- Defaults ---
 DEFAULT_ASR = "Distil-Whisper Large v3 (English)"
-DEFAULT_LLM = "Llama 3.2 3B Instruct"
+DEFAULT_LLM = "Gemma 4 E2B Instruct"
 
 # --- Persona Lenses ---
 # These are the systematic instructions applied to each persona
@@ -213,6 +195,8 @@ LANGUAGE_EXAMPLES = {
 
 def get_system_formatter(language=None, prompt_type="llama", compact=False):
     """Generates a system prompt with language-relevant few-shot examples."""
+    if prompt_type == "gemma":
+        prompt_type = "llama"
     lang_key = language if language in LANGUAGE_EXAMPLES else "en"
     ex = LANGUAGE_EXAMPLES[lang_key]
     
@@ -272,7 +256,7 @@ Output:
 </good_example_2>
 """
         formatter = f"""
-You are a precise text-processing API for ChatML/Qwen-style models. Your job is to process the user's transcript according to the Core Directive.
+You are a precise text-processing API for ChatML-style models. Your job is to process the user's transcript according to the Core Directive.
 You MUST return exactly one assistant answer that begins with <refined> and ends with </refined>.
 You MUST NOT output <think> tags, internal reasoning, analysis, commentary, markdown fences, or any text outside <refined> tags.
 

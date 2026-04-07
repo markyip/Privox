@@ -619,11 +619,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         
         if let parsedStr = hotkeyString(from: event) {
-            appLog("[\(Date())] Detected Global Hotkey: \(parsedStr) | Expected: \(expected)")
             PrivoxDiagnosticsStore.shared.recordDetectedHotkey(parsedStr, matched: parsedStr == expected)
 
             if parsedStr == expected {
-                appLog(">>> MATCH! Triggering Python IPC TOGGLE <<<")
                 PrivoxDiagnosticsStore.shared.setBackendDetail("Hotkey matched and IPC toggle sent")
                 BackendManager.shared.sendCommand("TOGGLE")
             }

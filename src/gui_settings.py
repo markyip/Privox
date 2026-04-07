@@ -120,19 +120,13 @@ class ModelUpdateWorker(QObject):
                 sys.__stderr__.write(f"[UI LOG] {msg}\n")
             except: pass
 
-        # Initial heartbeat
-        print("[DEBUG] Worker thread started. Emitting heartbeat...", flush=True)
         ui_log("Starting model setup engine...")
 
-        print("[DEBUG] Redirecting stderr...", flush=True)
         old_stderr = sys.stderr
         sys.stderr = StderrInterceptor(old_stderr, self.signals.progress.emit)
         
         try:
-            print("[DEBUG] Calling download_models.main()...", flush=True)
-            # Re-ensure path for download_models internal imports if any
             download_models.main(log_callback=ui_log)
-            print("[DEBUG] download_models.main() finished successfully.", flush=True)
             self.signals.finished.emit(True, "")
         except Exception as e:
             self.signals.finished.emit(False, str(e))
@@ -541,25 +535,27 @@ class SettingsGUI(QMainWindow):
         # --- Migration: Unified Descriptive Naming ---
         if self.prefs.get("whisper_model") == "distil-large-v3":
             self.prefs["whisper_model"] = "Distil-Whisper Large v3 (English)"
-        if self.prefs.get("whisper_model") in ["qwen2-audio-7b", "Qwen2-Audio-7B"]:
+        _qwen_asr_names = ("qwen2-audio-7b", "Qwen2-Audio-7B", "Qwen-ASR v3 0.6B", "Qwen-ASR v3 1.7B")
+        if self.prefs.get("whisper_model") in _qwen_asr_names:
             self.prefs["whisper_model"] = "Whisper Large v3 Turbo (Multilingual)"
-        if self.prefs.get("current_refiner") == "Standard (Llama 3.2)":
+        _legacy_qwen_llm = (
+            "Standard (Llama 3.2)",
+            "Multilingual (Qwen 3.5 9B)",
+            "Multilingual (Qwen 3.5 4B)",
+            "Multilingual (Qwen 3 8B)",
+            "Multilingual (Qwen 3 4B)",
+            "Fast Multilingual (Qwen 3 1.7B)",
+            "Multilingual (Qwen 2.5 7B)",
+        )
+        if self.prefs.get("current_refiner") in _legacy_qwen_llm:
             self.prefs["current_refiner"] = models_config.DEFAULT_LLM
-        if self.prefs.get("current_refiner") == "Multilingual (Qwen 3.5 9B)":
-            self.prefs["current_refiner"] = "Multilingual (Qwen 3 8B)"
-        if self.prefs.get("current_refiner") == "Multilingual (Qwen 3.5 4B)":
-            self.prefs["current_refiner"] = "Multilingual (Qwen 3 4B)"
         # If any of the above were found in tech_config but not yet in prefs, this ensures sync
         if self.tech_config.get("whisper_model") == "distil-large-v3":
             self.tech_config["whisper_model"] = "Distil-Whisper Large v3 (English)"
-        if self.tech_config.get("whisper_model") in ["qwen2-audio-7b", "Qwen2-Audio-7B"]:
+        if self.tech_config.get("whisper_model") in _qwen_asr_names:
             self.tech_config["whisper_model"] = "Whisper Large v3 Turbo (Multilingual)"
-        if self.tech_config.get("current_refiner") == "Standard (Llama 3.2)":
+        if self.tech_config.get("current_refiner") in _legacy_qwen_llm:
             self.tech_config["current_refiner"] = models_config.DEFAULT_LLM
-        if self.tech_config.get("current_refiner") == "Multilingual (Qwen 3.5 9B)":
-            self.tech_config["current_refiner"] = "Multilingual (Qwen 3 8B)"
-        if self.tech_config.get("current_refiner") == "Multilingual (Qwen 3.5 4B)":
-            self.tech_config["current_refiner"] = "Multilingual (Qwen 3 4B)"
             
         # --- Migration: Force default transition to Llama 3.2 if on old CoEdit default (ONE-TIME) ---
         if self.prefs.get("current_refiner") == "CoEdit Large (T5)" and not self.prefs.get("_migrate_llama_3_2"):
@@ -960,8 +956,6 @@ class SettingsGUI(QMainWindow):
             idx = self.llm_combo.findText(current_llm)
             if idx >= 0:
                 self.llm_combo.setCurrentIndex(idx)
-            else:
-                print(f"DEBUG: Saved Refiner '{current_llm}' not found in library. Defaulting.")
         
         # Initial ASR Config
         current_asr = self.prefs.get("whisper_model", self.config.get("whisper_model"))
@@ -976,7 +970,6 @@ class SettingsGUI(QMainWindow):
 
         # Reset Dirty Flag after load
         self.is_dirty = False
-        print(f"DEBUG: Initial Refiner: {current_llm}")
 
     def switch_tab(self, index):
         self.stack.setCurrentIndex(index)
@@ -1570,8 +1563,6 @@ class SettingsGUI(QMainWindow):
         # Save files
         with open(self.prefs_path, "w", encoding="utf-8") as f:
             json.dump(self.prefs, f, indent=4)
-        
-        print(f"DEBUG: Saved Prefs. Hotkey: {self.prefs.get('hotkey')}, Path: {self.prefs_path}")
         
         # Update tech config if needed
         with open(self.config_path, "w", encoding="utf-8") as f:

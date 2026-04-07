@@ -13,7 +13,7 @@ def main(log_callback=None):
         else:
             log(msg)
 
-    print(f"[DEBUG] download_models.main() entered with log_callback={log_callback}", flush=True)
+    is_mac = sys.platform == "darwin"
     log_local("Initializing model setup engine...")
     # 0. Environment Isolation
     os.environ["PYTHONNOUSERSITE"] = "1"
@@ -74,6 +74,14 @@ def main(log_callback=None):
         
     log_local(f"Checking AI Models (Backend: {asr_backend})...")
 
+    grammar_file = models_config.LLM_LIBRARY[0]["file_name"]
+    grammar_repo = models_config.LLM_LIBRARY[0]["repo_id"]
+    for item in models_config.LLM_LIBRARY:
+        if item["name"] == grammar_name:
+            grammar_file = item.get("file_name", grammar_file)
+            grammar_repo = item.get("repo_id", grammar_repo)
+            break
+
     # 0. SenseVoiceSmall (Alternative)
     if asr_backend == "sensevoice":
         sense_dir = os.path.join(models_dir, "SenseVoiceSmall")
@@ -92,7 +100,6 @@ def main(log_callback=None):
     # 0. Install Llama-cpp-python with CUDA support (WINDOWS/LINUX ONLY)
     log_local("[Stage 2/4] Verifying LLM engine and CUDA dependencies...")
     # We check for version AND CUDA support. 0.2.24 (common in conda) is too old for Llama 3.2.
-    is_mac = sys.platform == "darwin"
     needs_llama_install = False
     has_gpu = False
     
@@ -232,7 +239,6 @@ def main(log_callback=None):
         except: pass
     
     # Robust check: Ensure critical files exist
-    is_mac = sys.platform == "darwin"
     if is_mac:
         # MLX weights can be .safetensors or .npz
         critical_files = ["config.json", "tokenizer.json", "preprocessor_config.json"]
@@ -263,7 +269,6 @@ def main(log_callback=None):
                 break
                 
     if needs_download:
-        is_mac = sys.platform == "darwin"
         # Actual repo is already resolved above based on Mac status
         actual_repo = whisper_repo
         

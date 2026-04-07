@@ -4,7 +4,7 @@ version = "1.0"
 description = "Privox AI Assistant"
 authors = ["Mark"]
 channels = ["conda-forge", "pytorch", "nvidia"]
-platforms = ["win-64", "osx-arm64", "osx-64"]
+platforms = ["win-64", "osx-arm64"]
 
 [tasks]
 start = "python src/voice_input.py"
@@ -19,9 +19,7 @@ macos = "14.0"
 [dependencies]
 python = ">=3.10,<3.13" # Support Python 3.10-3.12
 pip = "*"
-cmake = "*"
-ninja = "*"
-numpy = "<2.0.0" 
+numpy = "<2.0.0"
 pyinstaller = "*"
 setuptools = "==69.5.1"
 
@@ -38,10 +36,8 @@ pywin32 = "*"
 pytorch = { version = "*", channel = "pytorch" }
 torchaudio = { version = "*", channel = "pytorch" }
 torchvision = { version = "*", channel = "pytorch" }
-[target.osx-64.dependencies]
-# Intel Macs (if supported) might still need llama-cpp-python or similar, but MLX is apple-silicon only
-llama-cpp-python = "*"
 
+# Shared runtime: GUI, I/O, downloads. Heavy ASR stacks are target-specific (see below).
 [pypi-dependencies]
 sounddevice = "*"
 pynput = "*"
@@ -49,15 +45,8 @@ pystray = "*"
 pillow = "*"
 pyperclip = "*"
 huggingface_hub = "*"
-faster-whisper = "*"
-funasr = "*"
-modelscope = "*"
-scipy = "*"
 colorama = "*"
-customtkinter = "*"
-diskcache = "*"
 pyside6 = "==6.8.1"
-pyttsx3 = "*"
 
 [target.osx-arm64.pypi-dependencies]
 mlx = "==0.30.6"
@@ -65,9 +54,16 @@ mlx-lm = "==0.30.5"
 mlx-whisper = "*"
 mlx-audio = ">=0.3.1"
 transformers = "==5.0.0rc3"
+onnxruntime = "*"
+# qwen-asr (PyTorch Qwen3-ASR) pins transformers 4.x and conflicts with mlx-lm's transformers 5.x pin.
+# On Apple Silicon use ASR backend mlx_qwen_asr (mlx-audio) instead of qwen_asr.
 
 [target.win-64.pypi-dependencies]
 torch = { version = "==2.6.0+cu124", index = "https://download.pytorch.org/whl/cu124" }
 torchaudio = { version = "==2.6.0+cu124", index = "https://download.pytorch.org/whl/cu124" }
 torchvision = { version = "==0.21.0+cu124", index = "https://download.pytorch.org/whl/cu124" }
 qwen-asr = "*"
+faster-whisper = "*"
+funasr = "*"
+modelscope = "*"
+scipy = "*"

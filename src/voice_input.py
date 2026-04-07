@@ -287,9 +287,10 @@ def show_modern_error(title, message, subtext=""):
             import ctypes
             ctypes.windll.user32.MessageBoxW(0, f"{message}\n\n{subtext}", title, 0x10)
 
+torch = None
+
 try:
     log_print("Importing core utilities...")
-    log_print(f"DEBUG: sys.path is: {sys.path}")
     import wave
     import traceback
     import sounddevice as sd
@@ -297,39 +298,46 @@ try:
     from pynput import keyboard
     import pyperclip
     from huggingface_hub import hf_hub_download, snapshot_download
-    
-    # Global Torch Import (Essential for multi-threaded access)
-    import torch
-    
-    log_print(f"--- TORCH DIAGNOSTICS ---")
-    log_print(f"Python Version: {sys.version}")
-    log_print(f"Torch Version: {torch.__version__}")
-    log_print(f"Torch Path: {getattr(torch, '__file__', 'Unknown')}")
+
+    try:
+        import torch as _torch
+        torch = _torch
+    except ImportError:
+        if IS_WIN:
+            raise
+        log_print("Torch not installed; macOS will use MLX ASR and ONNX Silero VAD.")
+
+    if torch is not None:
+        log_print(f"--- TORCH DIAGNOSTICS ---")
+        log_print(f"Python Version: {sys.version}")
+        log_print(f"Torch Version: {torch.__version__}")
+        log_print(f"Torch Path: {getattr(torch, '__file__', 'Unknown')}")
+        log_print(f"CUDA Available: {torch.cuda.is_available()}")
+        _cuda_ver = getattr(torch.version, "cuda", None)
+        log_print(f"CUDA Version: {_cuda_ver}")
+        try:
+            log_print(f"CuDNN Version: {torch.backends.cudnn.version()}")
+        except Exception:
+            pass
+        if torch.cuda.is_available():
+            log_print(f"Current Device: {torch.cuda.get_device_name(0)}")
+        log_print(f"-------------------------")
+    else:
+        log_print("Torch unavailable; skipping CUDA diagnostics.")
+
     log_print("Importing Model components...")
     if not IS_MAC:
         from llama_cpp import Llama
     log_print("Model components import successful.")
-    log_print(f"CUDA Available: {torch.cuda.is_available()}")
-    log_print(f"CUDA Version: {torch.version.cuda}")
-    log_print(f"CuDNN Version: {torch.backends.cudnn.version()}")
-    if torch.cuda.is_available():
-        log_print(f"Current Device: {torch.cuda.get_device_name(0)}")
-    else:
-        log_print("CUDA NOT AVAILABLE. Possible reasons:")
-        log_print("1. CPU version of Torch installed (check version above)")
-        log_print("2. Missing CUDA DLLs in PATH")
-        log_print("3. GPU driver issues")
-    log_print(f"-------------------------")
-    
+
     # Windows Sound
     try:
         import winsound
     except ImportError:
         winsound = None
-    
+
     log_print("Core imports successful.")
 except Exception as e:
-    import traceback
     err_stack = traceback.format_exc()
     log_print(f"CRITICAL UTILITY IMPORT ERROR: {e}")
     log_print(err_stack)
@@ -364,9 +372,9 @@ WHISPER_SIZE = "distil-large-v3"
 WHISPER_REPO = "Systran/faster-distil-whisper-large-v3"
 ASR_BACKEND = "whisper" 
 
-# Llama 3.2 3B Instruct
-GRAMMAR_REPO = "bartowski/Llama-3.2-3B-Instruct-GGUF"
-GRAMMAR_FILE = "Llama-3.2-3B-Instruct-Q4_K_M.gguf"
+# Default refiner (overridden by prefs / library)
+GRAMMAR_REPO = "unsloth/gemma-4-E2B-it-GGUF"
+GRAMMAR_FILE = "gemma-4-E2B-it-Q4_K_M.gguf"
 
 
 class SoundManager:
@@ -655,7 +663,7 @@ class GrammarChecker:
                         except: pass
                     return None
 
-            is_gpu = torch.cuda.is_available()
+            is_gpu = bool(torch is not None and torch.cuda.is_available())
             n_gpu = 99 if is_gpu else 0
             
             log_print(f"Loading Llama (GPU={is_gpu}, layers={n_gpu}){'  [Quick Reload]' if is_reload else ''}...")
@@ -839,6 +847,32 @@ class GrammarChecker:
                     "<|im_start|>assistant\n"
                 )
                 stop_tokens = ["<|im_end|>"]
+            elif prompt_type == "gemma":
+                system_prompt += (
+                    "\nTHINKING MODE IS DISABLED. Do not output internal reasoning or analysis. "
+                    "Return only the final answer inside <refined> tags."
+                )
+                if IS_MAC and self.tokenizer is not None and hasattr(self.tokenizer, "apply_chat_template"):
+                    messages = [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_content},
+                    ]
+                    try:
+                        prompt = self.tokenizer.apply_chat_template(
+                            messages, tokenize=False, add_generation_prompt=True
+                        )
+                    except Exception as tmpl_err:
+                        log_print(f" apply_chat_template failed ({tmpl_err}); using Gemma turn fallback.")
+                        prompt = (
+                            f"<start_of_turn>user\n{system_prompt}\n\n{user_content}<end_of_turn>\n"
+                            "<start_of_turn>model\n"
+                        )
+                else:
+                    prompt = (
+                        f"<start_of_turn>user\n{system_prompt}\n\n{user_content}<end_of_turn>\n"
+                        "<start_of_turn>model\n"
+                    )
+                stop_tokens = ["<end_of_turn>"]
             else:
                 prompt = (
                     f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n{system_prompt}<|eot_id|>"
@@ -896,7 +930,6 @@ class GrammarChecker:
             if prompt_type == "t5":
                 return raw_response
 
-            # Qwen-family chat models may still emit internal reasoning blocks.
             raw_response = self._strip_thinking_blocks(raw_response)
 
             # Extract text purely from inside the <refined> tags 
@@ -971,7 +1004,7 @@ class GrammarChecker:
         return text
 
     def _strip_thinking_blocks(self, text):
-        """Remove leaked Qwen thinking blocks before we parse the answer."""
+        """Remove leaked model-internal reasoning blocks before we parse the answer."""
         if not text:
             return text
 
@@ -980,7 +1013,7 @@ class GrammarChecker:
             log_print(f" [Thinking Strip] Removed {len(text) - len(stripped)} chars of leaked reasoning.")
             return stripped
 
-        # Some Qwen responses stream an opening <think> block without a closing tag.
+        # Some chat models stream an opening <think> block without a closing tag.
         if text.lstrip().lower().startswith("<think>"):
             split_match = re.search(r'</think>\s*', text, flags=re.IGNORECASE)
             if split_match:
@@ -1098,7 +1131,6 @@ class VoiceInputApp:
         self.vad_iterator = None
         self.mlx_asr_local_path = None
         self.mlx_asr_warmed = False
-        self.mlx_qwen_asr_local_path = None
         
         # Tray Icon (placeholder)
         self.icon = None
@@ -1178,23 +1210,6 @@ class VoiceInputApp:
         # Treat tokenizer files as optional so we don't get stuck re-downloading healthy model folders.
         return has_weights and has_required_files
 
-    def is_mlx_qwen_asr_dir_ready(self, target_dir):
-        if not target_dir or not os.path.isdir(target_dir):
-            return False
-
-        try:
-            dir_entries = os.listdir(target_dir)
-        except Exception:
-            return False
-
-        has_weights = any(entry.endswith(".safetensors") for entry in dir_entries)
-        has_config = os.path.exists(os.path.join(target_dir, "config.json"))
-        has_tokenizer = (
-            os.path.exists(os.path.join(target_dir, "tokenizer.json")) or
-            os.path.exists(os.path.join(target_dir, "tokenizer_config.json"))
-        )
-        return has_weights and has_config and has_tokenizer
-
     def resolve_local_mlx_asr_dir(self, repo_id=None, whisper_model=None):
         repo_id = repo_id or self.active_mlx_repo or WHISPER_REPO
         whisper_model = whisper_model or WHISPER_SIZE
@@ -1217,26 +1232,6 @@ class VoiceInputApp:
                 continue
             seen.add(candidate)
             if self.is_mlx_asr_dir_ready(candidate):
-                return candidate
-        return None
-
-    def resolve_local_mlx_qwen_asr_dir(self, repo_id=None):
-        repo_id = repo_id or self.active_mlx_repo or WHISPER_REPO
-        if not repo_id:
-            return None
-
-        repo_folder_name = repo_id.split("/")[-1]
-        candidates = [
-            os.path.join(APP_DATA_DIR, "models", repo_folder_name),
-            os.path.join(BASE_DIR, "models", repo_folder_name),
-        ]
-
-        seen = set()
-        for candidate in candidates:
-            if candidate in seen:
-                continue
-            seen.add(candidate)
-            if self.is_mlx_qwen_asr_dir_ready(candidate):
                 return candidate
         return None
 
@@ -1280,80 +1275,6 @@ class VoiceInputApp:
         self.mlx_asr_local_path = target_dir
         self.emit_download_progress(1.0, "Model download complete")
         return target_dir
-
-    def ensure_mlx_qwen_asr_model_available(self, download_if_missing=True):
-        if not (IS_MAC and ASR_BACKEND == "mlx_qwen_asr"):
-            return None
-
-        mlx_repo = self.active_mlx_repo or WHISPER_REPO
-        resolved_dir = self.resolve_local_mlx_qwen_asr_dir(repo_id=mlx_repo)
-        if resolved_dir:
-            self.mlx_qwen_asr_local_path = resolved_dir
-            return resolved_dir
-
-        if not download_if_missing:
-            return None
-
-        target_dir = self.get_mlx_asr_target_dir(repo_id=mlx_repo)
-        if not target_dir:
-            raise RuntimeError("MLX Qwen-ASR target directory could not be determined.")
-
-        os.makedirs(target_dir, exist_ok=True)
-        log_print(f"MLX Qwen-ASR model missing locally. Downloading {mlx_repo} to {target_dir}...")
-        self.update_status("DOWNLOADING")
-        self.emit_download_progress(0.0, f"Preparing {mlx_repo}")
-        snapshot_download(
-            repo_id=mlx_repo,
-            local_dir=target_dir,
-            tqdm_class=PrivoxDownloadTqdm
-        )
-
-        repo_tag_file = os.path.join(target_dir, ".repo_id")
-        try:
-            with open(repo_tag_file, "w", encoding="utf-8") as f:
-                f.write(mlx_repo)
-        except Exception:
-            pass
-
-        if not self.is_mlx_qwen_asr_dir_ready(target_dir):
-            raise RuntimeError(f"MLX Qwen-ASR model download completed but required files are missing in {target_dir}")
-
-        self.mlx_qwen_asr_local_path = target_dir
-        self.emit_download_progress(1.0, "Model download complete")
-        return target_dir
-
-    def transcribe_with_mlx_qwen_asr(self, audio_data):
-        if self.asr_model is None:
-            return ""
-
-        audio_np = audio_data.astype(np.float32)
-        try:
-            if hasattr(self.asr_model, "transcribe"):
-                results = self.asr_model.transcribe(audio_np)
-                if isinstance(results, list) and results:
-                    first = results[0]
-                    return (first.get("text", "") if isinstance(first, dict) else getattr(first, "text", str(first))).strip()
-                if hasattr(results, "text"):
-                    return str(results.text).strip()
-                if isinstance(results, dict):
-                    return str(results.get("text", "")).strip()
-                if isinstance(results, str):
-                    return results.strip()
-            if hasattr(self.asr_model, "generate"):
-                import mlx.core as mx
-                results = self.asr_model.generate(audio=[mx.array(audio_np)])
-                if hasattr(results, "text"):
-                    return str(results.text).strip()
-                if isinstance(results, dict):
-                    return str(results.get("text", "")).strip()
-                if isinstance(results, str):
-                    return results.strip()
-        except Exception as error:
-            log_print(f" MLX Qwen-ASR Critical Error: {error}")
-            return ""
-
-        log_print(" MLX Qwen-ASR returned an unsupported response shape.")
-        return ""
 
     def get_mlx_llm_target_dir(self, repo_id=None):
         repo_id = repo_id or self.grammar_checker.profile.get("mlx_repo")
@@ -1403,15 +1324,34 @@ class VoiceInputApp:
         log_print(f"DETAIL: DOWNLOAD_PROGRESS|{percent}|{safe_status}")
 
     def load_vad(self):
-        # 1. Load VAD Model (Silero)
         log_print("Loading Silero VAD...", end="", flush=True)
+        hub_dir = os.path.join(APP_DATA_DIR, "models", "hub")
         try:
+            if IS_MAC and torch is None:
+                from silero_vad_onnx import load_silero_vad_onnx, VADIterator as OnnxVADIterator
+
+                os.makedirs(hub_dir, exist_ok=True)
+                self.vad_model = load_silero_vad_onnx(hub_dir)
+                self._vad_is_onnx = True
+                self.VADIterator = OnnxVADIterator
+                self.get_speech_timestamps = None
+                self.save_audio = None
+                self.read_audio = None
+                self.collect_chunks = None
+                self.vad_iterator = OnnxVADIterator(
+                    self.vad_model,
+                    threshold=VAD_THRESHOLD,
+                    sampling_rate=SAMPLE_RATE,
+                    min_silence_duration_ms=self.silence_timeout_ms,
+                    speech_pad_ms=SPEECH_PAD_MS,
+                )
+                log_print("Done (ONNX).")
+                return
+
             torch.set_num_threads(1)
             if hasattr(torch, "set_num_interop_threads"):
                 torch.set_num_interop_threads(1)
 
-            # Force Torch Hub to use the local models folder for VAD
-            hub_dir = os.path.join(BASE_DIR, "models", "hub")
             if not os.path.exists(hub_dir):
                 os.makedirs(hub_dir, exist_ok=True)
             torch.hub.set_dir(hub_dir)
@@ -1421,27 +1361,36 @@ class VoiceInputApp:
                 log_print(f"Loading Silero VAD from local cache: {repo_dir}")
                 self.vad_model, utils = torch.hub.load(
                     repo_or_dir=repo_dir,
-                    source='local',
-                    model='silero_vad',
+                    source="local",
+                    model="silero_vad",
                     force_reload=False,
                     trust_repo=True,
-                    onnx=False
+                    onnx=False,
                 )
             else:
                 log_print("Local Silero cache missing. Loading from torch.hub repository...")
                 self.vad_model, utils = torch.hub.load(
-                    repo_or_dir='snakers4/silero-vad',
-                    model='silero_vad',
+                    repo_or_dir="snakers4/silero-vad",
+                    model="silero_vad",
                     force_reload=False,
                     trust_repo=True,
-                    onnx=False
+                    onnx=False,
                 )
-            (self.get_speech_timestamps, self.save_audio, self.read_audio, self.VADIterator, self.collect_chunks) = utils
-            self.vad_iterator = self.VADIterator(self.vad_model, 
-                                                 threshold=VAD_THRESHOLD, 
-                                                 sampling_rate=SAMPLE_RATE, 
-                                                 min_silence_duration_ms=self.silence_timeout_ms, 
-                                                 speech_pad_ms=SPEECH_PAD_MS)
+            self._vad_is_onnx = False
+            (
+                self.get_speech_timestamps,
+                self.save_audio,
+                self.read_audio,
+                self.VADIterator,
+                self.collect_chunks,
+            ) = utils
+            self.vad_iterator = self.VADIterator(
+                self.vad_model,
+                threshold=VAD_THRESHOLD,
+                sampling_rate=SAMPLE_RATE,
+                min_silence_duration_ms=self.silence_timeout_ms,
+                speech_pad_ms=SPEECH_PAD_MS,
+            )
             log_print("Done.")
         except Exception as e:
             log_print(f"\nError loading VAD: {e}")
@@ -1474,7 +1423,7 @@ class VoiceInputApp:
 
             def load_asr():
                 try:
-                    is_gpu = torch.cuda.is_available()
+                    is_gpu = bool(torch is not None and torch.cuda.is_available())
                     device_str = "cuda" if is_gpu else "cpu"
                     
                     if ASR_BACKEND == "sensevoice":
@@ -1487,48 +1436,6 @@ class VoiceInputApp:
                             disable_update=True
                         )
                         log_print(f"SenseVoice initialized successfully.")
-                    elif ASR_BACKEND == "qwen_asr":
-                        log_print(f"ASR Diagnostic - Initializing Qwen3ASRModel ({WHISPER_REPO}) on {device_str}...")
-                        from qwen_asr import Qwen3ASRModel
-                        
-                        is_mac_mps = IS_MAC and getattr(torch.backends, "mps", None) and torch.backends.mps.is_available()
-
-                        # Apply memory constraint when on GPU to prevent accelerate from grabbing all VRAM 
-                        # and fighting with llama.cpp already in memory.
-                        if is_gpu:
-                            # 12GB is typical. Let's cap transformers to a safe conservative limit like 6GB 
-                            # (Qwen3-ASR 1.7B takes ~3.5GB in float16)
-                            max_mem = {0: "6GiB", "cpu": "8GiB"}
-                            dtype = torch.float16
-                            device_map = "auto"
-                        elif is_mac_mps:
-                            max_mem = None
-                            dtype = torch.float16
-                            device_map = "mps"
-                            log_print("Apple Silicon (MPS) acceleration ENABLED for Qwen-ASR.")
-                        else:
-                            max_mem = None
-                            dtype = torch.float32
-                            device_map = "cpu"
-
-                        # Load in 16-bit based on CUDA/MPS availability with max_memory constraints
-                        self.asr_model = Qwen3ASRModel.from_pretrained(
-                            WHISPER_REPO,
-                            device_map=device_map,
-                            max_memory=max_mem,
-                            dtype=dtype,
-                            low_cpu_mem_usage=True,
-                            local_files_only=True
-                            # We deliberately OMIT forced_aligner for speed and lower VRAM
-                        )
-                        log_print(f"Qwen3ASRModel initialized successfully.")
-                    elif ASR_BACKEND == "mlx_qwen_asr":
-                        local_mlx_path = self.ensure_mlx_qwen_asr_model_available(download_if_missing=True)
-                        log_print(f"ASR Diagnostic - Initializing Apple MLX Qwen-ASR from {local_mlx_path}...")
-                        from mlx_audio.stt.utils import load_model as load_mlx_audio_model
-                        self.asr_model = load_mlx_audio_model(local_mlx_path)
-                        self.mlx_qwen_asr_local_path = local_mlx_path
-                        log_print("MLX Qwen-ASR initialized successfully.")
                     elif IS_MAC:
                         # MLX-Whisper initialization on Mac
                         local_mlx_path = self.ensure_mlx_asr_model_available(download_if_missing=True)
@@ -1566,20 +1473,10 @@ class VoiceInputApp:
                     self.loading_status = "Error Loading ASR"
                     return False
 
-            # Sequential vs Parallel loading strategy
-            if ASR_BACKEND == "qwen_asr":
-                # Safety Mode: Qwen-ASR uses a different transformer backend. 
-                # Sequential load prevents CUDA race conditions.
-                log_print("Using Sequential Load Strategy (Safety Mode)...")
-                res_grammar = load_grammar()
-                res_asr = load_asr()
-                results = [res_grammar, res_asr]
-            else:
-                # Performance Mode: Load Whisper + LLM in parallel
-                log_print("Using Parallel Load Strategy (Performance Mode)...")
-                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                    futures = [executor.submit(load_grammar), executor.submit(load_asr)]
-                    results = [f.result() for f in futures]
+            log_print("Using Parallel Load Strategy (Performance Mode)...")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                futures = [executor.submit(load_grammar), executor.submit(load_asr)]
+                results = [f.result() for f in futures]
 
             if not results[1]: # Whisper is mandatory
                 log_print("CRITICAL: ASR model failed to load.")
@@ -1626,7 +1523,7 @@ class VoiceInputApp:
             
             # Force Garbage Collection
             gc.collect()
-            if torch.cuda.is_available():
+            if torch is not None and torch.cuda.is_available():
                 torch.cuda.empty_cache()
             
             self.heavy_models_loaded = False
@@ -1669,6 +1566,8 @@ class VoiceInputApp:
             "small": "OpenAI Whisper Small",
             "qwen2-audio-7b": "Whisper Large v3 Turbo (Multilingual)",
             "Qwen2-Audio-7B": "Whisper Large v3 Turbo (Multilingual)",
+            "Qwen-ASR v3 0.6B": models_config.DEFAULT_ASR,
+            "Qwen-ASR v3 1.7B": models_config.DEFAULT_ASR,
         }
         return legacy_aliases.get(normalized, normalized)
 
@@ -1679,13 +1578,19 @@ class VoiceInputApp:
         normalized = value.strip()
         legacy_aliases = {
             "Standard (Llama 3.2)": models_config.DEFAULT_LLM,
-            "Multilingual (Qwen 3.5 9B)": "Multilingual (Qwen 3 8B)",
-            "Qwen3.5-9B-Q4_K_M.gguf": "Multilingual (Qwen 3 8B)",
-            "Multilingual (Qwen 3.5 4B)": "Multilingual (Qwen 3 4B)",
-            "Qwen3.5-4B-Q4_K_M.gguf": "Multilingual (Qwen 3 4B)",
-            "Qwen3-8B-Q4_K_M.gguf": "Multilingual (Qwen 3 8B)",
-            "Qwen3-4B-Q4_K_M.gguf": "Multilingual (Qwen 3 4B)",
-            "Qwen2.5-7B-Instruct-Q4_K_M.gguf": "Multilingual (Qwen 2.5 7B)",
+            "Multilingual (Qwen 3.5 9B)": models_config.DEFAULT_LLM,
+            "Qwen3.5-9B-Q4_K_M.gguf": models_config.DEFAULT_LLM,
+            "Multilingual (Qwen 3.5 4B)": models_config.DEFAULT_LLM,
+            "Qwen3.5-4B-Q4_K_M.gguf": models_config.DEFAULT_LLM,
+            "Qwen3-8B-Q4_K_M.gguf": models_config.DEFAULT_LLM,
+            "Qwen3-4B-Q4_K_M.gguf": models_config.DEFAULT_LLM,
+            "Multilingual (Qwen 3 8B)": models_config.DEFAULT_LLM,
+            "Multilingual (Qwen 3 4B)": models_config.DEFAULT_LLM,
+            "Fast Multilingual (Qwen 3 1.7B)": models_config.DEFAULT_LLM,
+            "Multilingual (Qwen 2.5 7B)": models_config.DEFAULT_LLM,
+            "Qwen2.5-7B-Instruct-Q4_K_M.gguf": models_config.DEFAULT_LLM,
+            "Qwen3-1.7B-4bit-DWQ": models_config.DEFAULT_LLM,
+            "Qwen3-1.7B-Instruct": models_config.DEFAULT_LLM,
             "Llama-3.2-3B-Instruct-Q4_K_M.gguf": "Llama 3.2 3B Instruct",
         }
         return legacy_aliases.get(normalized, normalized)
@@ -1706,6 +1611,32 @@ class VoiceInputApp:
             if os.path.exists(config_path):
                 with open(config_path, "r", encoding="utf-8") as f:
                     config = json.load(f)
+
+            tech_config_dirty = False
+            if config.get("asr_backend") in ("qwen_asr", "mlx_qwen_asr"):
+                config["asr_backend"] = "whisper"
+                wr = config.get("whisper_repo", "")
+                if isinstance(wr, str) and "qwen" in wr.lower():
+                    config["whisper_repo"] = "Systran/faster-distil-whisper-large-v3"
+                tech_config_dirty = True
+            rp = config.get("refiner_profiles")
+            if isinstance(rp, dict):
+                for rk in list(rp.keys()):
+                    if "qwen" in rk.lower():
+                        del rp[rk]
+                        tech_config_dirty = True
+            for gkey in ("grammar_repo", "whisper_repo"):
+                gv = config.get(gkey, "")
+                if isinstance(gv, str) and "qwen" in gv.lower():
+                    if gkey == "grammar_repo":
+                        config["grammar_repo"] = models_config.LLM_LIBRARY[0]["repo_id"]
+                        config["grammar_file"] = models_config.LLM_LIBRARY[0]["file_name"]
+                    else:
+                        config["whisper_repo"] = "Systran/faster-distil-whisper-large-v3"
+                    tech_config_dirty = True
+            if tech_config_dirty and os.path.exists(config_path):
+                with open(config_path, "w", encoding="utf-8") as f:
+                    json.dump(config, f, indent=4)
             
             # --- 2. Load User Preferences (Hidden/Private) ---
             prefs = {}
@@ -1951,7 +1882,6 @@ class VoiceInputApp:
                 self.asr_model = None
                 self.mlx_asr_local_path = None
                 self.mlx_asr_warmed = False
-                self.mlx_qwen_asr_local_path = None
                 self.model_reload_requested = True
 
             if self.model_reload_requested:
@@ -1975,10 +1905,6 @@ class VoiceInputApp:
         backend = model_data.get("mac_backend") if (model_type == "asr" and IS_MAC and model_data.get("mac_backend")) else model_data.get("backend", "whisper")
         preferred_repo = mlx_repo if (model_type in {"asr", "llm"} and IS_MAC and mlx_repo) else repo
 
-        if model_type == "asr" and backend == "qwen_asr":
-            if importlib.util.find_spec("qwen_asr") is None:
-                return False
-        
         # 1. Check local path if provided
         if local_path:
             full_path = os.path.join(BASE_DIR, local_path)
@@ -1997,7 +1923,7 @@ class VoiceInputApp:
                 if self.resolve_local_mlx_asr_dir(repo_id=mlx_repo, whisper_model=whisper_model):
                     return True
             target = os.path.join(models_dir, f"whisper-{whisper_model}")
-            # For faster-whisper we check model.bin, for transformers (Qwen) we check config.json
+            # For faster-whisper we check model.bin; some local folders only have config.json
             if os.path.isdir(target) and (os.path.exists(os.path.join(target, "model.bin")) or os.path.exists(os.path.join(target, "config.json"))):
                 return True
         elif model_type == "llm" and file_name:
@@ -2086,7 +2012,7 @@ class VoiceInputApp:
 
     def update_tray_tooltip(self):
         if self.icon:
-            gpu_status = "GPU" if torch.cuda.is_available() else "CPU"
+            gpu_status = "GPU" if (torch is not None and torch.cuda.is_available()) else "CPU"
             hk_display = getattr(self, 'hotkey_str', 'F8').upper()
             self.icon.title = f"Privox: {self.loading_status} ({gpu_status})\nHotkey: {hk_display}"
 
@@ -2460,21 +2386,6 @@ class VoiceInputApp:
                     raw_text = re.sub(r'<\|.*?\|>', '', raw_text).strip()
                 
                 log_print(f" SenseVoice Result - Raw: '{raw_text}'")
-            elif ASR_BACKEND == "qwen_asr":
-                # Qwen3-ASR (Transformers backend) expects (waveform, sr) tuple
-                results = self.asr_model.transcribe(
-                    audio=(audio_data.astype(np.float32), 16000),
-                    language=None, # Auto-detect
-                    return_time_stamps=False # DISABLE forced alignment
-                )
-                if results and len(results) > 0:
-                    raw_text = results[0].get('text', '') if isinstance(results[0], dict) else getattr(results[0], 'text', str(results[0]))
-                log_print(f" Qwen3-ASR Result: '{raw_text}'")
-            elif ASR_BACKEND == "mlx_qwen_asr":
-                model_source = self.mlx_qwen_asr_local_path or self.active_mlx_repo or WHISPER_REPO
-                log_print(f" Transcribing Using MLX Qwen-ASR (Source: {model_source})...")
-                raw_text = self.transcribe_with_mlx_qwen_asr(audio_data)
-                log_print(f" MLX Qwen-ASR Result: '{raw_text}'")
             elif IS_MAC:
                 # MLX-Whisper
                 local_mlx_path = self.mlx_asr_local_path or self.ensure_mlx_asr_model_available(download_if_missing=True)
@@ -2694,8 +2605,10 @@ class VoiceInputApp:
                 
                 # Check VAD for Manual Toggle Feedback & Auto-Stop
                 if self.vad_iterator:
-                    chunk_tensor = torch.from_numpy(chunk).float()
-                    speech_dict = self.vad_iterator(chunk_tensor, return_seconds=True)
+                    if getattr(self, "_vad_is_onnx", False):
+                        speech_dict = self.vad_iterator(chunk.astype(np.float32), return_seconds=True)
+                    else:
+                        speech_dict = self.vad_iterator(torch.from_numpy(chunk).float(), return_seconds=True)
                     
                     if speech_dict:
                         if 'start' in speech_dict and not self.is_speaking:
@@ -2959,10 +2872,8 @@ class VoiceInputApp:
 
 if __name__ == "__main__":
     try:
-        # 3. Early GPU Check
-        import torch
-        gpu_detected = torch.cuda.is_available()
-        
+        gpu_detected = torch is not None and torch.cuda.is_available()
+
         logging.info("--- VoiceInputApp Startup ---")
         logging.info(f"Python Executable: {sys.executable}")
         logging.info(f"sys.path: {sys.path}")

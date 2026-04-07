@@ -1,0 +1,28 @@
+# Minimal deps for Privox macOS backend when using local Python/MLX (slim install).
+# Install in a venv and point the app to it (see docs/local_mlx_setup.md).
+# Python 3.10–3.12 on Apple Silicon recommended.
+
+# MLX stack (use versions compatible with your Mac)
+mlx>=0.19.0
+mlx-lm>=0.19.0
+mlx-whisper
+mlx-audio>=0.3.1
+
+# VAD (ONNX, no PyTorch needed for VAD on Mac)
+onnxruntime>=1.16.0
+
+# Core runtime
+numpy<2.0.0
+sounddevice
+pynput
+pystray
+pillow
+pyperclip
+huggingface_hub
+scipy
+colorama
+tqdm
+
+# Optional for GUI / config (if backend triggers any)
+# customtkinter
+# PySide6  # if needed by settings GUI

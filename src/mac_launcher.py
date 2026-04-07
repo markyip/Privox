@@ -2,6 +2,20 @@ import os
 import sys
 import datetime
 
+import urllib.request
+import urllib.parse
+import urllib.error
+import http.client
+import http.server
+import http.cookies
+import http.cookiejar
+import email
+import xml.etree.ElementTree
+try:
+    import pkg_resources
+except ImportError:
+    pass
+
 def main():
     if getattr(sys, 'frozen', False):
         # Initial logging for debugging wrapped Apps
@@ -26,10 +40,12 @@ def main():
         lib_base = os.path.join(resources_dir, ".pixi", "envs", "default", "lib")
         python_lib = None
         if os.path.exists(lib_base):
-            for item in os.listdir(lib_base):
+            for item in sorted(os.listdir(lib_base), reverse=True):
                 if item.startswith("python3."):
-                    python_lib = os.path.join(lib_base, item)
-                    break
+                    candidate = os.path.join(lib_base, item)
+                    if os.path.isdir(candidate) and not os.path.islink(candidate):
+                        python_lib = candidate
+                        break
         
         if python_lib and os.path.exists(python_lib):
             site_pkgs = os.path.join(python_lib, "site-packages")
@@ -42,6 +58,17 @@ def main():
             sys.path.insert(1, lib_dynload)
             sys.path.insert(1, python_lib)
             
+            # --- FIX FOR PYINSTALLER PARTIAL PACKAGES ---
+            # PyInstaller bundles small parts of standard libraries (e.g., urllib, ctypes) 
+            # without their submodules. This shadows the full packages in the .pixi environment.
+            # We must append the .pixi package paths to their __path__ so Python can find the rest.
+            for mod_name, mod in list(sys.modules.items()):
+                if hasattr(mod, '__path__') and hasattr(mod.__path__, 'append'):
+                    mod_dir = os.path.join(python_lib, mod_name.replace('.', '/'))
+                    if os.path.isdir(mod_dir):
+                        if mod_dir not in mod.__path__:
+                            mod.__path__.append(mod_dir)
+
             # Also inject the .pixi lib folder for dying dylibs like libc++.dylib
             pixi_lib = lib_base
             if "DYLD_LIBRARY_PATH" in os.environ:

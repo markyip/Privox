@@ -2,13 +2,13 @@
 
 [![Python Version](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-Noncommercial-green.svg)](LICENSE)
-![Platform](https://img.shields.io/badge/platform-Windows-blue?logo=windows)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20(Apple%20Silicon)-lightgrey?logo=apple)
 ![Downloads](https://img.shields.io/github/downloads/markyip/Privox/total)
 [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-Donate-orange?logo=buy-me-a-coffee)](https://www.buymeacoffee.com/markyip)
 
 **Stop typing, start speaking.**
 
-A powerful, private, and fully local voice input assistant for Windows. Privox captures your speech, transcribes it, and refines the text using a locally running AI model — ensuring maximum privacy and complete data control.
+A powerful, private, and fully local voice input assistant for **Windows** and **macOS (Apple Silicon)**. Privox captures your speech, transcribes it, and refines the text using a locally running AI model — ensuring maximum privacy and complete data control.
 
 > [!TIP]
 > **Total Privacy**: Everything stays on your computer. Your voice and your words are never shared with anyone and never leave your machine.
@@ -27,35 +27,59 @@ A powerful, private, and fully local voice input assistant for Windows. Privox c
 
 ### 1. Installation
 
+**Windows**
+
 1. Download **Privox.exe** from our [Releases](https://github.com/markyip/Privox/releases) page.
 2. Run the program and follow the simple on-screen instructions.
-3. On your first run, Privox will take a few minutes to set up its "AI Brains"—then you're ready to go!
+
+**macOS (Apple Silicon only)**
+
+1. Download **Privox.dmg** from [Releases](https://github.com/markyip/Privox/releases).
+2. Open the DMG, drag **Privox.app** into **Applications**.
+3. On first launch, macOS may show a security prompt: use **Open** from the right-click menu if needed, and grant **Microphone** (and related) permissions when asked.
+
+On first run, Privox may take a few minutes to set up its local models—then you're ready to go.
+
+> [!NOTE]
+> **Intel-based Macs are not supported** for the prebuilt macOS app or the Pixi developer environment. Use a Mac with **Apple Silicon (M1 / M2 / M3 / …)**.
 
 ### 2. How to Use
 
-- **Always Ready**: Once launched, Privox lives in your **System Tray** (near the clock). You can right-click the icon to access Settings or exit the app.
-- **Tap your hotkey** (default: `F8`): The app starts listening (you'll see a small animation in your taskbar).
+- **Always Ready**: On **Windows**, Privox lives in the **system tray** (near the clock). On **macOS**, it runs from the **menu bar**; use the icon to open Settings or quit.
+- **Start dictation** (on **Windows**, default hotkey `F8`; on **macOS**, use your configured shortcut): The app starts listening (Windows shows a taskbar animation; macOS uses the menu bar status).
 - **Just Talk**: Speak naturally, as if you were talking to a friend.
-- **Tap your hotkey again**: Stop talking and watch your words appear on the screen, perfectly polished!
+- **Stop dictation** the same way: stop talking and watch your words appear on the screen, perfectly polished!
 
 > [!TIP]
-> **Set it and forget it**: Open **Settings** from the tray icon and enable **Launch at Startup**. This way, Privox is always ready to help as soon as you turn on your computer.
+> **Set it and forget it**: Open **Settings** from the tray (**Windows**) or menu bar (**macOS**) and enable **Launch at Startup** where available, so Privox is ready when you log in.
 
 > [!TIP]
-> **Your Hotkey, Your Way**: Don't like `F8`? You can change it to any key or combination (like `Ctrl+Shift+Space`) in **Settings**. Open Settings by right-clicking the Privox icon in your taskbar.
+> **Your Hotkey, Your Way**: On **Windows**, the default global hotkey is `F8` (change it in **Settings**). On **macOS**, dictation uses the shortcut configured for Accessibility/paste integration (see in-app Settings).
 
 ## ⚙️ Simple Controls
 
-You don't need to be a computer expert to customize Privox. Just right-click the **Privox icon** near your clock (the system tray):
+You don't need to be a computer expert to customize Privox. On **Windows**, right-click the **Privox** system tray icon; on **macOS**, use the **menu bar** icon:
 
 - **Settings**: Change your hotkey, your writing style, or which language you want to use.
 - **Run at Startup**: Have Privox ready for you as soon as you turn on your computer.
 
 ## 🖥️ What You Need
 
-- **Windows 10 or 11**.
-- **A bit of space**: About **15GB** of space for the high-quality AI models.
-- **Modern Hardware**: Works best on computers with an NVIDIA graphics card, but also runs on most modern desktop and laptop PCs.
+**Windows**
+
+- **Windows 10 or 11**
+- About **15 GB** free disk space for models and environment
+- **NVIDIA GPU (CUDA 12+)** recommended; CPU mode is supported
+
+**macOS**
+
+- **macOS 14 or later** on **Apple Silicon** (M1 or newer). Intel Macs are not supported.
+- About **15 GB** free disk space recommended for models and the bundled runtime (more may be needed during builds)
+- Transcription and refinement use **MLX**-accelerated models on the Neural Engine / GPU where applicable
+
+**Both platforms**
+
+- A microphone and enough RAM/VRAM for the models you select in Settings (roughly **~4 GB VRAM** on Windows when both ASR and refiner are loaded; Apple Silicon uses unified memory).
 
 ## 📋 Good to Know
 
@@ -73,7 +97,6 @@ You don't need to be a computer expert to customize Privox. Just right-click the
 
 We're actively working on making Privox even better:
 
-- **🍎 Mac Version**: A native macOS version is currently in development.
 - **♿ Accessibility Version**: A dedicated high-contrast, screen-reader-friendly version is under active development for users with accessibility needs.
 
 ## 🤝 Contributing & Feedback
@@ -110,7 +133,7 @@ You can add custom ASR (voice-to-text) or LLM (refiner) models by editing `src/m
 ```
 
 > [!NOTE]
-> ASR models must be compatible with [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2 format).
+> On **Windows**, ASR models are typically used with [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2 format). On **macOS**, the app prefers **MLX**-format repos from the `mlx_repo` fields in `models_config.py`. For **Qwen ASR** on Mac, use the **MLX** backend (`mlx_qwen_asr`) in settings—the PyTorch `qwen-asr` stack is not shipped in the Apple Silicon Pixi environment because it conflicts with the `mlx-lm` / `transformers` versions required for the refiner.
 
 **To add a new refiner (LLM) model**, append an entry to `LLM_LIBRARY`:
 
@@ -151,6 +174,34 @@ Add domain-specific words (jargon, brand names, acronyms) that the AI should nev
 2. Type a word and press **Enter** or click **Add**.
 
 This is useful for names like `CUDA`, `PyTorch`, `Privox`, or any specialized terminology in your field.
+
+## 🧩 Development (Pixi)
+
+The repo uses [Pixi](https://pixi.sh/) with **two lock platforms**: `win-64` and `osx-arm64`. There is **no** `osx-64` (Intel Mac) environment—develop and build the Mac app on Apple Silicon only.
+
+```bash
+pixi install
+pixi run start          # run voice_input.py
+pixi run build          # PyInstaller bundle (Windows → .exe, macOS → Privox.app)
+```
+
+**macOS DMG (testing / distribution)**
+
+From the project root (where `build_dmg.sh` lives):
+
+```bash
+./build_dmg.sh
+```
+
+The script expects a valid `dist/Privox.app` (run `pixi run build` first if needed). It re-signs the staged app, adds an **Applications** shortcut, and runs `hdiutil` to produce `Privox.dmg`.
+
+Useful environment variables:
+
+| Variable | Purpose |
+|----------|---------|
+| `PRIVOX_MIN_FREE_GB` | Minimum free disk GiB before packaging (default `12`; lower e.g. to `5` only if you understand peak usage during copy/DMG creation) |
+| `PRIVOX_SIGNING_IDENTITY` | Apple **Developer ID Application** identity for stable signing (instead of ad hoc `-`) |
+| `PRIVOX_NOTARY_PROFILE` | `notarytool` keychain profile name to submit and staple the DMG |
 
 ## 📄 A Note on Usage
 

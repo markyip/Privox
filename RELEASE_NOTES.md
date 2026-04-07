@@ -1,12 +1,12 @@
-# Privox v1.0.0 - Initial Release �
+# Privox v1.0.0 - Initial Release
 
-A powerful, private, and fully local voice input assistant for Windows. Privox captures your speech, transcribes it, and refines the text using a locally running AI model — ensuring maximum privacy and complete data control.
+A powerful, private, and fully local voice input assistant for **Windows** and **macOS (Apple Silicon)**. Privox captures your speech, transcribes it, and refines the text using a locally running AI model — ensuring maximum privacy and complete data control.
 
 ## ✨ Key Features
 
 ### 🎙️ High-Precision Transcription
 
-- **Faster-Whisper Engine**: Blazing fast transcription using the latest AI models.
+- **Faster-Whisper (Windows) / MLX-Whisper (macOS)**: Fast local transcription; Windows uses CTranslate2 / faster-whisper, Apple Silicon uses MLX-accelerated models.
 - **True Multilingual Support**: Specialized logic for English, Cantonese, Traditional Chinese, Japanese, Korean, and more.
 - **Intelligent LID (Language Detection)**: Automatically identifies the language you are speaking with high-confidence safety thresholds.
 - **Optimized Performance**: Parallel model loading and optimized wake-up sequences ensure minimal latency when starting or resuming from idle.
@@ -19,7 +19,7 @@ A powerful, private, and fully local voice input assistant for Windows. Privox c
 - **Clean Output**: Automatic meta-commentary stripping removes trailing AI "notes" or internal explanations.
 - **Custom Personas**: Choose how Privox writes—act like a Technical Writer, Engineer, or Lawyer with a single click.
 
-### �️ Private & Secure
+### 🔒 Private & Secure
 
 - **100% Local**: All processing happens on your computer. Your privacy is guaranteed.
 - **Privacy-First Logging**: User text and refined output are never written to logs—only diagnostic metadata is tracked.
@@ -39,9 +39,8 @@ A powerful, private, and fully local voice input assistant for Windows. Privox c
 
 ## 🖥️ System Requirements
 
-- **OS**: Windows 10/11.
-- **GPU**: NVIDIA GPU (CUDA 12+) recommended; CPU support available.
-- **Disk**: ~15GB free space for the high-quality local AI "brains".
+- **Windows**: Windows 10/11; NVIDIA GPU (CUDA 12+) recommended; CPU supported; ~15 GB disk for models.
+- **macOS**: **Apple Silicon only** (M1 or newer), macOS 14+ recommended; **Intel Macs are not supported**. ~15 GB disk for models and runtime; MLX-accelerated ASR/LLM paths.
 
 ---
 

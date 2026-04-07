@@ -215,21 +215,52 @@ class BackendManager {
     }
     
     private func findPythonExecutable() -> String {
-        // 1. Check if running inside bundled App (.pixi is copied into Contents/Resources)
+        let fileManager = FileManager.default
+        let appData = privoxAppDataDirectory()
+
+        // 1. User-configured path: env PRIVOX_PYTHON (use local MLX / system Python)
+        if let envPython = ProcessInfo.processInfo.environment["PRIVOX_PYTHON"],
+           !envPython.isEmpty,
+           fileManager.fileExists(atPath: envPython) {
+            return envPython
+        }
+
+        // 2. User-configured path file (e.g. set by setup script)
+        let pythonPathFile = appData.appendingPathComponent("python_path")
+        if let pathContent = try? String(contentsOf: pythonPathFile, encoding: .utf8),
+           let firstLine = pathContent.split(separator: "\n").first {
+            let candidate = String(firstLine).trimmingCharacters(in: .whitespaces)
+            if !candidate.isEmpty && candidate.hasPrefix("/") && fileManager.fileExists(atPath: candidate) {
+                return candidate
+            }
+        }
+
+        // 3. Standard "Privox venv" locations (user installs MLX here to avoid bundled env)
+        let venvCandidates = [
+            appData.appendingPathComponent("venv/bin/python").path,
+            (fileManager.homeDirectoryForCurrentUser.path as NSString).appendingPathComponent("Library/Application Support/Privox/venv/bin/python"),
+        ]
+        for venvPython in venvCandidates {
+            if fileManager.fileExists(atPath: venvPython) {
+                return venvPython
+            }
+        }
+
+        // 4. Bundled .pixi inside app (full DMG)
         if let resourcePath = Bundle.main.resourcePath {
             let bundledPython = (resourcePath as NSString).appendingPathComponent(".pixi/envs/default/bin/python")
-            if FileManager.default.fileExists(atPath: bundledPython) {
+            if fileManager.fileExists(atPath: bundledPython) {
                 return bundledPython
             }
         }
-        
-        // 2. Check development path (assuming project logic)
+
+        // 5. Development path (local .pixi)
         let localPython = (projectDirectory as NSString).appendingPathComponent(".pixi/envs/default/bin/python")
-        if FileManager.default.fileExists(atPath: localPython) {
+        if fileManager.fileExists(atPath: localPython) {
             return localPython
         }
-        
-        // 3. Absolute fallback to user's python path if broken environment
-        return "/usr/bin/env python" 
+
+        // 6. Fallback: system python from PATH
+        return "/usr/bin/env python"
     }
 }

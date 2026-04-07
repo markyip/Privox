@@ -141,6 +141,23 @@ def log_print(msg, **kwargs):
     # This prevents duplicate log entries.
     print(msg, **kwargs)
 
+log_print("Starting Privox...")
+
+if sys.platform == 'win32':
+    # --- Single Instance Enforcement (Prevents model/log corruption) ---
+    class SingleInstance:
+        def __init__(self):
+            self.mutexname = "Privox_SingleInstance_Mutex_Service"
+            self.mutex = ctypes.windll.kernel32.CreateMutexW(None, False, self.mutexname)
+            self.last_error = ctypes.windll.kernel32.GetLastError()
+            if self.last_error == 183: # ERROR_ALREADY_EXISTS
+                # Use ctypes to show a silent exit or a logging entry. 
+                # We don't want a popup every time a user accidentally double-clicks.
+                # However, for debugging we log it.
+                print("DEBUG: Another instance of Privox is already running. Exiting to prevent corruption.")
+                sys.exit(0)
+    _si = SingleInstance()
+
 def resource_path(relative_path):
     """ Get absolute path to resource, works for dev and for PyInstaller """
     try:
@@ -157,10 +174,6 @@ def resource_path(relative_path):
     except Exception:
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
-
-log_print("Starting Privox...")
-
-# --- 1. System Diagnostics & Path Prioritization ---
 try:
     import sys
     import os
@@ -533,9 +546,16 @@ class GrammarChecker:
 
         return target_dir
 
-    def load_model(self):
+    def load_model(self, attempts=0):
         if self.model:
             return True
+            
+        if attempts > 2:
+            log_print("CRITICAL: Model loading failed after 3 attempts. Stopping to prevent infinite loop.")
+            self.loading_error = "Model loading failed repeatedly. Please check your internet connection or model files."
+            if self.icon:
+                self.icon.notify("Privox Error: Model loading failed repeatedly. Check logs.", "Privox")
+            return False
 
         repo_id = self.profile.get("repo_id", GRAMMAR_REPO)
         file_name = self.profile.get("file_name", GRAMMAR_FILE)
@@ -612,8 +632,11 @@ class GrammarChecker:
                     log_print(f"Model file verified: {model_path} ({f_size / 1024**2:.2f} MB)")
                     if f_size < 100 * 1024**2: 
                          log_print("WARNING: Model file seems too small. Moving to backup/re-download.")
+                         if os.path.exists(model_path + ".bak"):
+                             try: os.remove(model_path + ".bak")
+                             except: pass
                          os.rename(model_path, model_path + ".bak")
-                         return self.load_model() # Recursive retry
+                         return self.load_model(attempts=attempts + 1) # Recursive retry
             except Exception as e:
                 log_print(f"\nCRITICAL: Failed to download/locate model: {e}")
                 self.loading_error = f"Download Failed: {e}"
@@ -645,16 +668,21 @@ class GrammarChecker:
             Llama = GrammarChecker._Llama
             use_verbose = not is_reload
 
-            def _safe_llama_init(m_path, n_gpu):
+            def _safe_llama_init(m_path, n_gpu_layers):
                 try:
                     return Llama(
                         model_path=m_path,
                         n_ctx=4096,
-                        n_gpu_layers=-1,
+                        # IMPORTANT:
+                        # - Use explicit, bounded n_gpu_layers instead of -1 (full offload),
+                        #   which can easily trigger GPU OOM on larger models (e.g. Qwen 3.5 9B)
+                        # - When running on CPU, this will be 0 to avoid any GPU usage.
+                        n_gpu_layers=n_gpu_layers,
                         verbose=use_verbose,
                         n_threads=os.cpu_count() // 2 if os.cpu_count() else 4
                     )
-                except (AssertionError, RuntimeError) as e:
+                except (AssertionError, RuntimeError, ValueError) as e:
+                    # ValueError: some llama-cpp builds use it for invalid/corrupt GGUF
                     log_print(f"CRITICAL: Llama initialization failed ({type(e).__name__}). File likely corrupt.")
                     if os.path.exists(m_path):
                         size_mb = os.path.getsize(m_path) / (1024 * 1024)
@@ -664,14 +692,17 @@ class GrammarChecker:
                     return None
 
             is_gpu = bool(torch is not None and torch.cuda.is_available())
-            n_gpu = 99 if is_gpu else 0
-            
-            log_print(f"Loading Llama (GPU={is_gpu}, layers={n_gpu}){'  [Quick Reload]' if is_reload else ''}...")
-            self.model = _safe_llama_init(model_path, n_gpu)
+            if is_gpu:
+                n_gpu_layers = 40
+            else:
+                n_gpu_layers = 0
+
+            log_print(f"Loading Llama (GPU={is_gpu}, layers={n_gpu_layers}){'  [Quick Reload]' if is_reload else ''}...")
+            self.model = _safe_llama_init(model_path, n_gpu_layers)
             
             if self.model is None:
                 log_print("Model file removed. Restarting load sequence to trigger redownload...")
-                return self.load_model()
+                return self.load_model(attempts=attempts + 1)
 
             self._has_loaded_once = True
             log_print(f"Done. (GPU Acceleration: {'ENABLED' if is_gpu else 'DISABLED'})")
@@ -687,7 +718,7 @@ class GrammarChecker:
                     if os.path.exists(model_path):
                         os.remove(model_path)
                  except: pass
-                 return self.load_model()
+                 return self.load_model(attempts=attempts + 1)
 
             if IS_WIN:
                  show_modern_error("Privox Model Error", f"Error loading Grammar Model (Llama): {e}", f"Traceback:\n{err_trace[:500]}")

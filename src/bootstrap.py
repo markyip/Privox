@@ -10,49 +10,44 @@ import ctypes
 import zipfile
 import urllib.request
 import json
-import time
-
 import platform
 
 # Ultra-Robust Platform Detection
-# We use multiple methods and normalize to be absolutely sure
 _sys_plat = str(sys.platform).lower()
 _plat_sys = str(platform.system()).lower()
 
-IS_MAC = (_sys_plat == 'darwin' or _plat_sys == 'darwin')
-IS_WIN = (_sys_plat == 'win32' or _plat_sys == 'windows' or os.name == 'nt')
+IS_MAC = (_sys_plat == "darwin" or _plat_sys == "darwin")
+IS_WIN = (_sys_plat == "win32" or _plat_sys == "windows" or os.name == "nt")
 
-# Backward compatibility for any remaining lowercase references
 is_mac = IS_MAC
 is_win = IS_WIN
 
 if IS_WIN:
     import winreg
-    import ctypes
+    from ctypes import wintypes
+
 
 def get_app_data_dir():
-    """ Returns ~/Library/Application Support/Privox on Mac, or local dir on Windows. """
+    """Returns ~/Library/Application Support/Privox on Mac, or local dir on Windows."""
     if IS_MAC:
         try:
-            base = os.path.expanduser('~/Library/Application Support')
+            base = os.path.expanduser("~/Library/Application Support")
             target = os.path.join(base, "Privox")
             if not os.path.exists(target):
                 os.makedirs(target, exist_ok=True)
             return target
-        except Exception as e:
-            # Fallback for Mac if Application Support is weird
-            return os.path.join(os.path.expanduser('~'), ".privox")
-            
+        except Exception:
+            return os.path.join(os.path.expanduser("~"), ".privox")
+
     if IS_WIN:
-        appdata = os.environ.get('LOCALAPPDATA')
+        appdata = os.environ.get("LOCALAPPDATA")
         if appdata:
             target = os.path.join(appdata, "Privox")
             if not os.path.exists(target):
                 os.makedirs(target, exist_ok=True)
             return target
-            
-    # Universal fallback: use a hidden folder in HOME
-    target = os.path.join(os.path.expanduser('~'), ".privox")
+
+    target = os.path.join(os.path.expanduser("~"), ".privox")
     if not os.path.exists(target):
         os.makedirs(target, exist_ok=True)
     return target

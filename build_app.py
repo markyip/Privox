@@ -1,16 +1,128 @@
-import PyInstaller.__main__
 import os
+import site
 import shutil
+import subprocess
+import sys
+import time
+
+
+def _drop_user_site_from_sys_path() -> None:
+    """Use Pixi/env site-packages only for the build. A user-site PyInstaller under
+    %APPDATA%\\Python\\... can win on some setups and then fail (e.g. altgraph → pkg_resources).
+    """
+    try:
+        usp = site.getusersitepackages()
+    except Exception:
+        return
+    if not usp or not isinstance(usp, str):
+        return
+    usp_key = os.path.normcase(os.path.abspath(usp))
+    sys.path[:] = [
+        p
+        for p in sys.path
+        if os.path.normcase(os.path.abspath(p)) != usp_key
+    ]
+
+
+_drop_user_site_from_sys_path()
+
+import PyInstaller.__main__
+
+
+def _collect_llama_cpp_binary_args():
+    """Bundle llama.cpp DLLs from the current Python env (e.g. CUDA build) into the onefile MEIPASS tree."""
+    try:
+        import llama_cpp
+    except ImportError:
+        print(
+            "WARNING: llama_cpp not importable in this interpreter; "
+            "PyInstaller will not embed llama_cpp/lib/*.dll. "
+            "Run `pixi run python build_app.py` after a successful env install.",
+            file=sys.stderr,
+        )
+        return []
+
+    pkg_dir = os.path.dirname(llama_cpp.__file__)
+    lib_dir = os.path.join(pkg_dir, "lib")
+    if not os.path.isdir(lib_dir):
+        return []
+
+    args = []
+    for name in sorted(os.listdir(lib_dir)):
+        if not name.lower().endswith(".dll"):
+            continue
+        src = os.path.join(lib_dir, name)
+        args.append(f"--add-binary={src}{os.pathsep}llama_cpp/lib")
+
+    if args:
+        print(f"PyInstaller: embedding {len(args)} file(s) from llama_cpp/lib (CUDA/CPU runtime DLLs).")
+    return args
+
+
+def _collect_zhconv_pyinstaller_args():
+    """Only pass --hidden-import=zhconv if the build interpreter can import it (PyInstaller validates the name)."""
+    try:
+        import zhconv  # noqa: F401
+    except ImportError:
+        print(
+            "WARNING: zhconv not installed in this Python — skipping --hidden-import=zhconv. "
+            "Chinese script post-processing will rely on the Pixi env after install, or run: "
+            "pixi run python build_app.py",
+            file=sys.stderr,
+        )
+        return []
+    return ["--hidden-import=zhconv"]
+
+
+def _terminate_running_privox():
+    """Terminate running Privox-related processes that may lock dist/Privox.exe."""
+    try:
+        # Kill packaged executable if running.
+        subprocess.run(
+            ["taskkill", "/F", "/IM", "Privox.exe"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except Exception:
+        pass
+
+    # Also stop python/pythonw instances running project entrypoints.
+    kill_cmd = (
+        r"Get-CimInstance Win32_Process -Filter ""Name = 'python.exe' OR Name = 'pythonw.exe'"" "
+        r"| Where-Object { $_.CommandLine -match 'voice_input\.py' -or $_.CommandLine -match 'bootstrap\.py' -or $_.CommandLine -match 'gui_settings\.py' } "
+        r"| ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
+    )
+    try:
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command", kill_cmd],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except Exception:
+        pass
+
+    time.sleep(1.0)
+
+# Ensure old processes are not locking output files.
+_terminate_running_privox()
 
 # Clean previous builds
 if os.path.exists('build'):
     shutil.rmtree('build', ignore_errors=True)
 if os.path.exists('dist'):
+    # Retry once in case AV/file indexer briefly holds a handle.
     shutil.rmtree('dist', ignore_errors=True)
+    if os.path.exists('dist'):
+        time.sleep(1.0)
+        shutil.rmtree('dist', ignore_errors=True)
 
 print("Starting PyInstaller Build...")
 
-PyInstaller.__main__.run([
+_pyinstaller_argv = [
     'src/bootstrap.py',
     '--name=Privox',
     '--onefile',
@@ -52,13 +164,30 @@ PyInstaller.__main__.run([
     '--exclude-module=ctranslate2',
     '--exclude-module=tokenizers',
     '--exclude-module=onnxruntime',
-    '--exclude-module=llama_cpp', # Exclude llama_cpp as it is in _internal_libs
+    # llama_cpp: keep package + embed lib/*.dll (CUDA) from build env — do not exclude.
+    '--hidden-import=llama_cpp',
+    '--hidden-import=llama_cpp.llama_cpp',
     '--exclude-module=PIL',
     '--exclude-module=pystray',
     '--exclude-module=sounddevice',
     '--exclude-module=pynput',
     '--exclude-module=pyperclip',
     '--exclude-module=huggingface_hub',
-])
+]
+
+if os.path.isdir("scripts"):
+    _pyinstaller_argv.append("--add-data=scripts;scripts")
+
+# Optional: vendor a CUDA-built llama_cpp_python-*.whl so end users skip source compiles.
+if os.path.isdir("wheels"):
+    whl_count = sum(1 for n in os.listdir("wheels") if n.endswith(".whl"))
+    if whl_count:
+        print(f"PyInstaller: embedding {whl_count} file(s) from wheels/ (bundled llama-cpp-python).")
+    _pyinstaller_argv.append("--add-data=wheels;wheels")
+
+_pyinstaller_argv.extend(_collect_llama_cpp_binary_args())
+_pyinstaller_argv.extend(_collect_zhconv_pyinstaller_args())
+
+PyInstaller.__main__.run(_pyinstaller_argv)
 
 print("Build Complete. Executable is in 'dist/Privox.exe'")

@@ -473,7 +473,7 @@ class SettingsGUI(QMainWindow):
                 self.setWindowIcon(QIcon(icon_path))
                 # Set App ID for Windows Taskbar Grouping
                 if sys.platform == 'win32':
-                    myappid = u'markyip.privox.settings.1.0'
+                    myappid = u'markyip.privox.settings.1.2'
                     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
         except: pass
 
@@ -548,11 +548,34 @@ class SettingsGUI(QMainWindow):
             self.tech_config["whisper_model"] = "Distil-Whisper Large v3 (English)"
         if self.tech_config.get("current_refiner") == "Standard (Llama 3.2)":
             self.tech_config["current_refiner"] = models_config.DEFAULT_LLM
+
+        # --- Migration: removed ASR options (library + old id stored in tech_config) ---
+        removed_asr_labels = frozenset({"Qwen2-Audio-7B", "qwen2-audio-7b"})
+        if self.prefs.get("whisper_model") in removed_asr_labels:
+            self.prefs["whisper_model"] = models_config.DEFAULT_ASR
+        if self.tech_config.get("whisper_model") in removed_asr_labels:
+            self.tech_config["whisper_model"] = models_config.DEFAULT_ASR_WHISPER_MODEL
             
-        # --- Migration: Force default transition to Llama 3.2 if on old CoEdit default (ONE-TIME) ---
-        if self.prefs.get("current_refiner") == "CoEdit Large (T5)" and not self.prefs.get("_migrate_llama_3_2"):
+        # --- Migration: redirect removed refiner names to current default ---
+        removed_refiners = {
+            "CoEdit Large (T5)",
+            "Llama 3.2 3B Instruct",
+            "Multilingual (Qwen 3.5 9B)",
+            "Multilingual (Qwen 2.5 7B)",
+        }
+        if self.prefs.get("current_refiner") in removed_refiners:
             self.prefs["current_refiner"] = models_config.DEFAULT_LLM
-            self.prefs["_migrate_llama_3_2"] = True
+
+        self.config = {**self.tech_config, **self.prefs}
+
+    def _resolve_asr_display_name(self, value):
+        """config.json may use whisper_model id; ASR combo uses ASR_LIBRARY display names."""
+        if not value:
+            return models_config.DEFAULT_ASR
+        for m in self.asr_library:
+            if m["name"] == value or m.get("whisper_model") == value:
+                return m["name"]
+        return models_config.DEFAULT_ASR
 
     CRITICAL_RULES = models_config.CRITICAL_RULES
     DEFAULT_PROMPTS = models_config.DEFAULT_PROMPTS
@@ -823,7 +846,7 @@ class SettingsGUI(QMainWindow):
         self.btn_save_all.clicked.connect(self.save_config)
         sidebar_layout.addWidget(self.btn_save_all)
         
-        footer_label = QLabel("v1.0")
+        footer_label = QLabel("v1.2.0")
         footer_label.setStyleSheet("color: #444444; padding-left: 20px;")
         sidebar_layout.addWidget(footer_label)
 
@@ -877,10 +900,10 @@ class SettingsGUI(QMainWindow):
                         combo.setCurrentIndex(i)
                         return
                 
-                # Special fallback for Refiner: Prefer Llama over CoEdit if default fails
+                # Special fallback for Refiner: prefer Gemma E2B if saved name missing
                 if combo == self.llm_combo:
                     for i in range(combo.count()):
-                        if "llama" in combo.itemText(i).lower():
+                        if "gemma 4 e2b" in combo.itemText(i).lower():
                             combo.setCurrentIndex(i)
                             return
 
@@ -895,7 +918,9 @@ class SettingsGUI(QMainWindow):
         
         set_combo_safe(self.char_combo, self.config.get("character", "Writing Assistant"))
         set_combo_safe(self.tone_combo, self.config.get("tone", "Natural"))
-        set_combo_safe(self.asr_combo, self.config.get("whisper_model", models_config.DEFAULT_ASR))
+        _asr_cfg = self.config.get("whisper_model")
+        _asr_combo_val = models_config.DEFAULT_ASR if _asr_cfg is None else self._resolve_asr_display_name(_asr_cfg)
+        set_combo_safe(self.asr_combo, _asr_combo_val)
         set_combo_safe(self.llm_combo, self.config.get("current_refiner", models_config.DEFAULT_LLM))
 
         # Initialize descriptions
@@ -915,12 +940,14 @@ class SettingsGUI(QMainWindow):
         self.llm_combo.currentIndexChanged.connect(self.mark_dirty)
         self.check_sound.toggled.connect(self.mark_dirty)
         self.check_startup.toggled.connect(self.mark_dirty)
+        self.check_simplified_chinese.toggled.connect(self.mark_dirty)
         self.vram_spin.valueChanged.connect(self.mark_dirty)
         self.stop_spin.valueChanged.connect(self.mark_dirty)
         self.prompt_editor.textChanged.connect(self.mark_dirty)
 
         self.check_sound.setChecked(self.config.get("sound_enabled", True))
         self.check_startup.setChecked(self.check_startup_status())
+        self.check_simplified_chinese.setChecked(bool(self.config.get("use_simplified_chinese_output", False)))
         self.vram_spin.setValue(max(5, int(self.config.get("vram_timeout", 60))))
         
         # Auto-stop conversion display (ms to s)
@@ -945,7 +972,7 @@ class SettingsGUI(QMainWindow):
         # Initial ASR Config
         current_asr = self.prefs.get("whisper_model", self.config.get("whisper_model"))
         if current_asr:
-            idx = self.asr_combo.findText(current_asr)
+            idx = self.asr_combo.findText(self._resolve_asr_display_name(current_asr))
             if idx >= 0:
                 self.asr_combo.setCurrentIndex(idx)
 
@@ -1189,7 +1216,13 @@ class SettingsGUI(QMainWindow):
         self.check_sound = QCheckBox("Play Sound Effects (Beeps)")
         self.check_startup = QCheckBox("Launch Privox at Startup")
         
-        for chk in [self.check_sound, self.check_startup]:
+        self.check_simplified_chinese = QCheckBox("Simplified Chinese output (简体中文)")
+        self.check_simplified_chinese.setToolTip(
+            "Off (default): all Chinese in the final output is normalized to Traditional (繁體中文).\n"
+            "On: all Chinese is normalized to Simplified (简体中文).\n"
+            "Applies regardless of whether dictation was Traditional or Simplified; uses zhconv when available."
+        )
+        for chk in [self.check_sound, self.check_startup, self.check_simplified_chinese]:
             chk.setStyleSheet("QCheckBox::indicator { width: 40px; height: 20px; } padding: 4px;")
             layout.addWidget(chk)
             
@@ -1424,6 +1457,7 @@ class SettingsGUI(QMainWindow):
         self.prefs["whisper_model"] = self.asr_combo.currentText()
         self.prefs["current_refiner"] = self.llm_combo.currentText()
         self.prefs["sound_enabled"] = self.check_sound.isChecked()
+        self.prefs["use_simplified_chinese_output"] = self.check_simplified_chinese.isChecked()
         self.prefs["auto_stop_enabled"] = True 
         
         # Capture current prompt edits before saving

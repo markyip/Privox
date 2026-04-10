@@ -9,7 +9,12 @@ platforms = ["win-64"]
 [tasks]
 start = "python src/voice_input.py"
 start-windowless = "pythonw src/voice_input.py"
-build = "python build_app.py"
+# PYTHONNOUSERSITE: avoid picking PyInstaller from %APPDATA%\Python\... (wrong pkg_resources / setuptools).
+build = { cmd = "python build_app.py", env = { PYTHONNOUSERSITE = "1" } }
+# Refiner (Gemma 4): needs llama-cpp-python >=0.3.20 with CUDA. Optional: copy the built wheel to wheels/ before `pixi run build` to ship it in the installer.
+install-llama-cuda = "python scripts/install_llama_cuda.py"
+# Same env as install-llama-cuda (CUDA CMAKE_ARGS, Ninja, /utf-8). Do not use bare `pixi run pip wheel` for CUDA.
+wheel-llama-cuda = "python scripts/install_llama_cuda.py --wheel"
 
 [system-requirements]
 cuda = "12"
@@ -19,13 +24,26 @@ python = ">=3.10,<3.13" # Support Python 3.10-3.12
 pip = "*"
 cmake = "*"
 ninja = "*"
-numpy = "<2.0.0" 
+# PyTorch 2.6 expects NumPy 2.x internals; keep below 2.4 for numba compatibility.
+numpy = ">=2.0.0,<2.4.0"
+packaging = "*"
 pywin32 = "*"
-pyinstaller = "*"
 setuptools = "==69.5.1"
 
 
+# PyPI deps sized for what src/ actually imports. Large / optional notes:
+# - torch: required (Silero VAD torch.hub, Qwen-ASR, CUDA checks). ~GBs with cu124 wheels.
+# - torchaudio: required by snakers4/silero-vad hubconf.py `dependencies` (torch.hub.load fails without it).
+# - torchvision: removed — not imported by Privox; qwen-asr does not list it as core dep.
+# - funasr / modelscope: removed — SenseVoice path exists in code but is not in ASR_LIBRARY; saves a heavy stack.
+#   If you still use backend "sensevoice", run: pixi add --pypi funasr modelscope
+# - scipy: kept — used transitively by qwen-asr → librosa; pinning range helps conda/pip resolve.
+# - diskcache: required by llama-cpp-python (llama_cache.py); not imported by Privox src directly.
 [pypi-dependencies]
+# Also on PyPI: torch.hub / Silero VAD can import `packaging`; conda-only packaging sometimes missing from site-packages in Pixi merges.
+packaging = ">=23.0"
+# PyInstaller via PyPI — conda-forge record sometimes ends up out of sync on disk; pip keeps it in site-packages.
+pyinstaller = ">=6.3.0"
 sounddevice = "*"
 pynput = "*"
 pystray = "*"
@@ -33,15 +51,10 @@ pillow = "*"
 pyperclip = "*"
 huggingface_hub = "*"
 faster-whisper = "*"
-funasr = "*"
-modelscope = "*"
 scipy = "*"
-colorama = "*"
-customtkinter = "*"
-diskcache = "*"
 pyside6 = "==6.8.1"
-pyttsx3 = "*"
 qwen-asr = "*"
+zhconv = "*"
+diskcache = "*"
 torch = { version = "==2.6.0+cu124", index = "https://download.pytorch.org/whl/cu124" }
 torchaudio = { version = "==2.6.0+cu124", index = "https://download.pytorch.org/whl/cu124" }
-torchvision = { version = "==0.21.0+cu124", index = "https://download.pytorch.org/whl/cu124" }

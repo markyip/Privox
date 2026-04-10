@@ -1,34 +1,8 @@
 {
     "asr_backend": "qwen_asr",
+    "whisper_model": "qwen3-asr-1.7b",
     "whisper_repo": "Qwen/Qwen3-ASR-1.7B",
-    "grammar_repo": "bartowski/Llama-3.2-3B-Instruct-GGUF",
-    "grammar_file": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
-    "refiner_profiles": {
-        "English Specialist (CoEdit)": {
-            "repo_id": "nvhf/coedit-large-Q6_K-GGUF",
-            "file_name": "coedit-large-q6_k.gguf",
-            "prompt_type": "t5",
-            "description": "Premium English refiner. 60x more efficient. No chat glitches."
-        },
-        "Multilingual (Qwen 3.5 9B)": {
-            "repo_id": "unsloth/Qwen3.5-9B-GGUF",
-            "file_name": "Qwen3.5-9B-Q4_K_M.gguf",
-            "prompt_type": "chatml",
-            "description": "Cutting-edge Qwen 3.5 model. Best-in-class performance."
-        },
-        "Multilingual (Qwen 3.5 4B)": {
-            "repo_id": "unsloth/Qwen3.5-4B-GGUF",
-            "file_name": "Qwen3.5-4B-Q4_K_M.gguf",
-            "prompt_type": "chatml",
-            "description": "Smart and light (~4B parameters). Best balance for most users."
-        },
-        "Multilingual (Qwen 2.5 7B)": {
-            "repo_id": "bartowski/Qwen2.5-7B-Instruct-GGUF",
-            "file_name": "Qwen2.5-7B-Instruct-Q4_K_M.gguf",
-            "prompt_type": "chatml",
-            "description": "Powerful 7B model. Smarter and more stable than 3B versions."
-        }
-    },
-    "current_refiner": "English Specialist (CoEdit)",
+    "grammar_repo": "unsloth/gemma-4-E2B-it-GGUF",
+    "grammar_file": "gemma-4-E2B-it-Q4_K_M.gguf",
     "active_character": "Professional Refiner"
 }

@@ -2364,9 +2364,26 @@ class VoiceInputApp:
             
 
     def update_tray_tooltip(self):
-        if self.icon:
-            gpu_status = "GPU" if torch.cuda.is_available() else "CPU"
-            hk_display = getattr(self, 'hotkey_str', 'F8').upper()
+        """Tray title: prefer live ui_state (listening/processing) over loading_status so prefs reload does not clobber RECORDING."""
+        if not self.icon:
+            return
+        gpu_status = "GPU" if torch.cuda.is_available() else "CPU"
+        hk_display = getattr(self, "hotkey_str", "F8").upper()
+        st = getattr(self, "ui_state", "READY")
+
+        if st == "RECORDING":
+            self.icon.title = f"Privox: Listening... ({gpu_status})\nHotkey: {hk_display}"
+        elif st == "PROCESSING":
+            self.icon.title = f"Privox: Processing... ({gpu_status})\nHotkey: {hk_display}"
+        elif st == "INITIALIZING":
+            self.icon.title = f"Privox: {self.loading_status} ({gpu_status})\nHotkey: {hk_display}"
+        elif st == "DOWNLOADING":
+            self.icon.title = f"Privox: Downloading model... ({gpu_status})\nHotkey: {hk_display}"
+        elif st == "ERROR":
+            self.icon.title = f"Privox: Error ({gpu_status})\nHotkey: {hk_display}"
+        elif st == "SLEEP":
+            self.icon.title = f"Privox: Sleeping (VRAM saver) ({gpu_status})\nHotkey: {hk_display}"
+        else:
             self.icon.title = f"Privox: {self.loading_status} ({gpu_status})\nHotkey: {hk_display}"
 
     def update_status(self, status):
@@ -2642,13 +2659,15 @@ class VoiceInputApp:
         if self.vad_iterator:
             self.vad_iterator.reset_states()
         self.update_status("RECORDING")
+        self.update_tray_tooltip()
 
     def stop_listening(self):
         log_print(" [Stopped]", flush=True)
         self.sound_manager.play_stop()
         self.is_listening = False
         self.update_status("PROCESSING")
-        
+        self.update_tray_tooltip()
+
         if len(self.audio_buffer) > 0:
             audio_segment = np.array(self.audio_buffer)
             # Run transcription in a separate thread so we don't block the keyboard listener!

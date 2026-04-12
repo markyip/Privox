@@ -45,41 +45,46 @@ def get_app_data_dir(base_fallback_dir):
     return base_fallback_dir
 
 # --- Voice-to-Text (ASR) Library ---
+# whisper_repo: Windows/Linux (faster-whisper / PyTorch). mlx_repo: Apple Silicon (mlx-whisper / mlx-audio).
 ASR_LIBRARY = [
     {"name": "Distil-Whisper Large v3 (English)", "whisper_repo": "Systran/faster-distil-whisper-large-v3", "mlx_repo": "mlx-community/distil-whisper-large-v3", "whisper_model": "distil-large-v3", "repo": "Systran/faster-distil-whisper-large-v3", "description": "Fast & High Quality. Best accuracy with distilled architecture."},
     {"name": "OpenAI Whisper Small", "whisper_repo": "openai/whisper-small", "mlx_repo": "mlx-community/whisper-small", "whisper_model": "small", "repo": "openai/whisper-small", "description": "Quick processing for low-resource environments."},
-    {"name": "Whisper Large v3 Turbo (Cantonese)", "whisper_repo": "ylpeter/faster-whisper-large-v3-turbo-cantonese-16", "mlx_repo": "mlx-community/whisper-large-v3-turbo", "whisper_model": "large-v3-turbo", "repo": "ylpeter/faster-whisper-large-v3-turbo-cantonese-16", "description": "High-speed Cantonese transcription. Reduced hallucination."},
-    {"name": "Whisper Large v3 Turbo (Korean)", "whisper_repo": "ghost613/faster-whisper-large-v3-turbo-korean", "mlx_repo": "mlx-community/whisper-large-v3-turbo", "whisper_model": "large-v3-turbo", "repo": "ghost613/faster-whisper-large-v3-turbo-korean", "description": "High-performance Korean transcription. Optimized for speed and accuracy."},
-    {"name": "Whisper Large v3 Turbo (German)", "whisper_repo": "aseifert/faster-whisper-large-v3-turbo-german", "mlx_repo": "mlx-community/whisper-large-v3-turbo", "whisper_model": "large-v3-turbo", "repo": "aseifert/faster-whisper-large-v3-turbo-german", "description": "Precision German recognition. Handles technical and colloquial speech."},
-    {"name": "Whisper Large v3 Turbo (French)", "whisper_repo": "Mathos34400/whisper-large-v3-turbo-french-v6", "mlx_repo": "mlx-community/whisper-large-v3-turbo", "whisper_model": "large-v3-turbo", "repo": "Mathos34400/whisper-large-v3-turbo-french-v6", "description": "State-of-the-art French transcription with anti-overfitting optimization."},
-    {"name": "Whisper Large v3 Turbo (Japanese)", "whisper_repo": "XA9/faster-whisper-large-v3-ja", "mlx_repo": "mlx-community/whisper-large-v3-turbo", "whisper_model": "large-v3-turbo", "repo": "XA9/faster-whisper-large-v3-ja", "description": "Superior Japanese performance with CTranslate2 optimization."},
-    {"name": "Whisper Large v2 (Hindi)", "whisper_repo": "collabora/faster-whisper-large-v2-hindi", "mlx_repo": "mlx-community/whisper-large-v2", "whisper_model": "large-v2", "repo": "collabora/faster-whisper-large-v2-hindi", "description": "Fine-tuned for Hindi. Optimized for mixed-code (Hinglish)."},
-    {"name": "Whisper Large v3 Turbo (Multilingual)", "whisper_repo": "deepdml/faster-whisper-large-v3-turbo-ct2", "mlx_repo": "mlx-community/whisper-large-v3-turbo", "whisper_model": "large-v3-turbo", "repo": "deepdml/faster-whisper-large-v3-turbo-ct2", "description": "State-of-the-art multilingual model. Excellent for Singlish, Arabic, and diverse accents."}
+    {"name": "Qwen-ASR v3 0.6B", "whisper_repo": "Qwen/Qwen3-ASR-0.6B", "mlx_repo": "mlx-community/Qwen3-ASR-0.6B-5bit", "whisper_model": "qwen3-asr-0.6b", "repo": "Qwen/Qwen3-ASR-0.6B", "backend": "qwen_asr", "description": "Ultra-fast Qwen v3 ASR. On macOS use mlx-audio (mlx_qwen_asr) with the MLX repo."},
+    {"name": "Qwen-ASR v3 1.7B", "whisper_repo": "Qwen/Qwen3-ASR-1.7B", "mlx_repo": "mlx-community/Qwen3-ASR-1.7B-5bit", "whisper_model": "qwen3-asr-1.7b", "repo": "Qwen/Qwen3-ASR-1.7B", "backend": "qwen_asr", "description": "Powerful Qwen v3 ASR. On macOS use mlx-audio (mlx_qwen_asr) with the MLX repo."},
+    {"name": "Whisper Large v3 Turbo (Multilingual)", "whisper_repo": "deepdml/faster-whisper-large-v3-turbo-ct2", "mlx_repo": "mlx-community/whisper-large-v3-turbo", "whisper_model": "large-v3-turbo", "repo": "deepdml/faster-whisper-large-v3-turbo-ct2", "description": "Multilingual Whisper Large v3 Turbo (CTranslate2). MLX turbo weights on Apple Silicon."},
 ]
 
 # --- Refiner (LLM) Library ---
 LLM_LIBRARY = [
     {
-        "name": "Gemma 4 E2B Instruct",
+        "name": "Gemma 4 E2B (TurboQuant)",
         "repo_id": "unsloth/gemma-4-E2B-it-GGUF",
         "mlx_repo": "unsloth/gemma-4-E2B-it-UD-MLX-4bit",
         "file_name": "gemma-4-E2B-it-Q4_K_M.gguf",
         "prompt_type": "gemma",
-        "description": "Default reasoning refiner: Google Gemma 4 E2B (edge). Unsloth MLX on Apple Silicon; GGUF on Windows.",
+        "turboquant": True,
+        "n_ctx": 3072,
+        "n_gpu_layers": 20,
+        "description": "Gemma 4 E2B tuned for low VRAM with TurboQuant defaults (GGUF on Windows; MLX on macOS).",
     },
     {
-        "name": "Llama 3.2 3B Instruct",
-        "repo_id": "bartowski/Llama-3.2-3B-Instruct-GGUF",
-        "mlx_repo": "mlx-community/Llama-3.2-3B-Instruct-4bit",
-        "file_name": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
-        "prompt_type": "llama",
-        "description": "General purpose balanced refiner for all languages.",
+        "name": "Gemma 4 E4B (TurboQuant)",
+        "repo_id": "unsloth/gemma-4-E4B-it-GGUF",
+        "mlx_repo": "unsloth/gemma-4-E4B-it-UD-MLX-4bit",
+        "file_name": "gemma-4-E4B-it-Q4_K_M.gguf",
+        "prompt_type": "gemma",
+        "turboquant": True,
+        "n_ctx": 3072,
+        "n_gpu_layers": 24,
+        "description": "Gemma 4 E4B with TurboQuant defaults (GGUF on Windows; Unsloth MLX 4-bit on Apple Silicon when available).",
     },
 ]
 
 # --- Defaults ---
-DEFAULT_ASR = "Distil-Whisper Large v3 (English)"
-DEFAULT_LLM = "Gemma 4 E2B Instruct"
+# Display name as stored in .user_prefs.json / ASR combo (must match ASR_LIBRARY "name").
+DEFAULT_ASR = "Qwen-ASR v3 1.7B"
+DEFAULT_ASR_WHISPER_MODEL = "qwen3-asr-1.7b"
+DEFAULT_LLM = "Gemma 4 E2B (TurboQuant)"
 
 # --- Persona Lenses ---
 # These are the systematic instructions applied to each persona
@@ -150,7 +155,12 @@ CRITICAL RULES:
 3. PUNCTUATION & GRAMMAR: Use appropriate punctuation for clarity and fix only obvious grammar/spelling errors.
 4. STRICT NO HALLUCINATION: Never add new semantic information, facts, commentary, or ideas not explicitly present in the original transcript.
 5. NO CONVERSATION: Output ONLY the processed text inside the tags. Never add greetings.
-6. NUMBER FORMATTING: Convert spoken numbers into standardized digits (e.g., "$100", "May 25th", "7:30 PM").
+6. ARABIC NUMERALS (ALL LANGUAGES, 0–9): Whenever the transcript refers to a number—cardinals, ordinals (keep each language’s normal ordinal markers: 1st, 2e, 第3, etc.), counts, measurements, money, dates/times, list positions, math, codes/IDs, ages, percentages, fractions—write the numeric value with Western Arabic digits (0–9), not spelled-out number words in the local language. Applies equally to English, Chinese, Japanese, Korean, French, German, Spanish, Arabic, Hindi, and any other supported language. Examples: "twelve" → "12"; "douze" → "12"; "十五" / "じゅうご" → "15"; "اثنا عشر" → "12"; "बारह" → "12". Lists: "one, two, three" → "1, 2, 3"; space-separated runs → comma-separated digits. Do not replace non-numeric idioms or metaphors with digits when the speaker did not state a quantity. All non-numeric words stay in the transcript language (rule 7).
+7. PRESERVE INPUT LANGUAGE: The transcript may be Chinese, Japanese, Korean, or other languages. Keep the refined text in that SAME language. Never translate to English unless the transcript itself is English. Using Western Arabic digits (0–9) for numeric references is NOT translation and is required (rule 6).
+8. CHINESE SCRIPT: If the Core Directive specifies Traditional or Simplified output for Chinese, follow it for all Chinese characters. Otherwise, match the transcript script (繁體 vs 简体).
+9. CANTONESE: If the transcript contains spoken Cantonese particles (e.g. 嘅、咗、唔), keep colloquial Cantonese; do not rewrite into formal Mandarin book style unless the user asked for formal prose.
+10. SPOKEN ARITHMETIC & OPERATORS (ALL LANGUAGES): When the user dictates math, render with context-appropriate symbols (+ − × ÷ =), not only in English/Chinese. Follow each language’s spoken cues: English (plus/minus/times/divided by/equals); Chinese 加減乘除等於; French (plus/moins/fois/divisé par/égale); German (plus/minus/mal/geteilt durch/ist/gleich); Spanish (más/menos/por/dividido entre/es/igual a); Japanese (たす/ひく/かける/わる/は); Korean (더하기/빼기/곱하기/나누기/은/는); Arabic (زائد/ناقص/ضرب/قسمة/يساوي); Hindi (धन/घटा/गुणा/भाग/बराबर), etc. Use Unicode operators in prose when clear; ASCII (- *) in code-like lines if the transcript implies code. Never add unstated steps or unstated numeric results.
+11. LARGE NUMBERS & MAGNITUDES (ALL LANGUAGES): Normalize big quantities for clarity using regional conventions for grouping and unit words (Chinese 千／百／萬／億; Japanese 万／億; Korean 만／억; Indian lakh/crore; European millions / separators). The digit glyphs themselves MUST remain Western Arabic (0–9) per rule 6 unless the transcript explicitly uses Eastern Arabic-Indic digits (٣٤٥) and you should preserve that style. Prefer one clear numeric form; never invent, omit, or round beyond what was spoken.
 """
 
 # --- language-specific Few-Shot Examples ---

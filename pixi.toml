@@ -9,21 +9,27 @@ platforms = ["win-64", "osx-arm64"]
 [tasks]
 start = "python src/voice_input.py"
 start-windowless = "pythonw src/voice_input.py"
-build = "python build_app.py"
+# PYTHONNOUSERSITE: avoid picking PyInstaller from %APPDATA%\Python\... (wrong pkg_resources / setuptools).
+build = { cmd = "python build_app.py", env = { PYTHONNOUSERSITE = "1" } }
+# Refiner (Gemma 4): needs llama-cpp-python >=0.3.20 with CUDA. Optional: copy the built wheel to wheels/ before `pixi run build` to ship it in the installer.
+install-llama-cuda = "python scripts/install_llama_cuda.py"
+# Same env as install-llama-cuda (CUDA CMAKE_ARGS, Ninja, /utf-8). Do not use bare `pixi run pip wheel` for CUDA.
+wheel-llama-cuda = "python scripts/install_llama_cuda.py --wheel"
 
 [system-requirements]
 macos = "14.0"
-# CUDA is only needed/relevant for Windows/Linux
-# We don't define it globally if we want to run on Mac
 
 [dependencies]
 python = ">=3.10,<3.13" # Support Python 3.10-3.12
 pip = "*"
-numpy = "<2.0.0"
-pyinstaller = "*"
 setuptools = "==69.5.1"
 
 [target.win-64.dependencies]
+cmake = "*"
+ninja = "*"
+# PyTorch 2.6 expects NumPy 2.x internals; keep below 2.4 for numba compatibility.
+numpy = ">=2.0.0,<2.4.0"
+packaging = "*"
 pytorch-cuda = { version = "12.4.*", channel = "pytorch" }
 cuda-toolkit = { version = "12.4.*", channel = "nvidia" }
 cudnn = { version = "9.*", channel = "nvidia" }
@@ -31,14 +37,18 @@ llama-cpp-python = "*"
 pywin32 = "*"
 
 [target.osx-arm64.dependencies]
-# No CUDA on Mac. 
-# We don't strictly need llama-cpp-python if we use MLX
+# Torch + torchaudio: Silero hub deps, optional MPS Qwen path, dev utilities. MLX stack is in pypi target below.
+numpy = ">=2.0.0,<2.4.0"
+packaging = "*"
 pytorch = { version = "*", channel = "pytorch" }
 torchaudio = { version = "*", channel = "pytorch" }
-torchvision = { version = "*", channel = "pytorch" }
 
 # Shared runtime: GUI, I/O, downloads. Heavy ASR stacks are target-specific (see below).
 [pypi-dependencies]
+# Also on PyPI: torch.hub / Silero VAD can import `packaging`; conda-only packaging sometimes missing from site-packages in Pixi merges.
+packaging = ">=23.0"
+# PyInstaller via PyPI — conda-forge record sometimes ends up out of sync on disk; pip keeps it in site-packages.
+pyinstaller = ">=6.3.0"
 sounddevice = "*"
 pynput = "*"
 pystray = "*"
@@ -64,6 +74,6 @@ torchaudio = { version = "==2.6.0+cu124", index = "https://download.pytorch.org/
 torchvision = { version = "==0.21.0+cu124", index = "https://download.pytorch.org/whl/cu124" }
 qwen-asr = "*"
 faster-whisper = "*"
-funasr = "*"
-modelscope = "*"
 scipy = "*"
+zhconv = "*"
+diskcache = "*"

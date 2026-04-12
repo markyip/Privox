@@ -9,6 +9,50 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 import site
 site.ENABLE_USER_SITE = False
 
+def _sanitize_user_site_paths():
+    """Remove user-level site-packages from sys.path to avoid package shadowing."""
+    sanitized = []
+    removed = []
+    for p in sys.path:
+        p_norm = (p or "").replace("\\", "/").lower()
+        if "appdata/roaming/python" in p_norm and "site-packages" in p_norm:
+            removed.append(p)
+            continue
+        sanitized.append(p)
+    sys.path[:] = sanitized
+    return removed
+
+
+_removed_user_site_paths = _sanitize_user_site_paths()
+
+
+def _privox_install_root() -> str:
+    """Directory containing config.json / .pixi / models (same rule as BASE_DIR below)."""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.normpath(sys.executable))
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+# Windows: register Pixi DLL dirs and prepend PATH *before* importing torch/CUDA (logon/Run has a thin PATH).
+if sys.platform == "win32":
+    import ctypes
+
+    _root = _privox_install_root()
+    for _dll_dir in (
+        os.path.join(_root, "_internal", "llama_cpp", "lib"),
+        os.path.join(_root, ".pixi", "envs", "default", "bin"),
+        os.path.join(_root, ".pixi", "envs", "default", "Library", "bin"),
+    ):
+        if os.path.isdir(_dll_dir):
+            try:
+                os.add_dll_directory(_dll_dir)
+            except Exception:
+                pass
+            try:
+                os.environ["PATH"] = _dll_dir + os.pathsep + os.environ.get("PATH", "")
+            except Exception:
+                pass
+
 import logging
 import threading
 import queue
@@ -98,7 +142,7 @@ def setup_logging():
         try: os.makedirs(base_dir, exist_ok=True)
         except: pass
 
-    # Configure logging to always write to file in AppData
+    # Log file next to the executable when frozen, else project / dev folder.
     log_file = os.path.join(base_dir, 'privox_app.log')
     log_level = logging.INFO
     log_format = '%(asctime)s.%(msecs)03d - %(levelname)s - %(message)s'
@@ -114,14 +158,89 @@ def setup_logging():
             logging.StreamHandler(sys.stdout) if sys.stdout else logging.NullHandler()
         ]
     )
-    
+
+    class _ThirdPartyNoiseFilter(logging.Filter):
+        """Libraries sometimes log benign hints as ERROR; downgrade for readable logs."""
+
+        def filter(self, record: logging.LogRecord) -> bool:
+            if record.levelno != logging.ERROR:
+                return True
+            try:
+                msg = record.getMessage()
+            except Exception:
+                return True
+            if "generation flags are not valid" in msg:
+                record.levelno = logging.WARNING
+                record.levelname = "WARNING"
+            return True
+
+    for _h in logging.root.handlers:
+        _h.addFilter(_ThirdPartyNoiseFilter())
+
     # Redirect stdout/stderr
     class LoggerWriter:
         def __init__(self, level):
             self.level = level
+
+        @staticmethod
+        def _is_llama_diagnostic(message_lower):
+            noisy_prefixes = (
+                "llama_", "llm_", "ggml_", "gguf", "cuda :", "device ", "model metadata:",
+                "using gguf chat template:", "using chat eos_token:", "using chat bos_token:",
+            )
+            return (
+                "llama" in message_lower and (
+                    message_lower.startswith(noisy_prefixes)
+                    or "not marked as eog" in message_lower
+                    or "offloading" in message_lower
+                    or "kv buffer size" in message_lower
+                    or "compute buffer size" in message_lower
+                    or "graph nodes" in message_lower
+                )
+            )
+
+        @staticmethod
+        def _stderr_downgrade(message_lower: str) -> str | None:
+            """Map stderr lines that third parties print as 'errors' to a real log level name."""
+            if "using cache found" in message_lower:
+                return "info"
+            if "generation flags are not valid" in message_lower:
+                return "warning"
+            if "pad_token_id" in message_lower and "eos_token_id" in message_lower:
+                return "warning"
+            # llama.cpp / GGML often prints GPU discovery to stderr; not application failures.
+            if message_lower.startswith(("ggml_", "gguf")) or "ggml_cuda_init" in message_lower:
+                return "info"
+            if message_lower.startswith("device ") and (
+                "nvidia" in message_lower
+                or "amd" in message_lower
+                or "compute capability" in message_lower
+                or "vmm:" in message_lower
+            ):
+                return "info"
+            # Transformers + tqdm emit weight-load progress to stderr; not failures.
+            if "loading checkpoint shards" in message_lower or "checkpoint shard" in message_lower:
+                return "info"
+            return None
+
         def write(self, message):
-            if message.strip():
-                self.level(message.strip())
+            msg = message.strip()
+            if not msg:
+                return
+            if self.level == logging.error:
+                ml = msg.lower()
+                tier = LoggerWriter._stderr_downgrade(ml)
+                if tier == "info":
+                    logging.info(msg)
+                    return
+                if tier == "warning":
+                    logging.warning(msg)
+                    return
+                if self._is_llama_diagnostic(ml):
+                    logging.info(msg)
+                    return
+            self.level(msg)
+
         def flush(self):
             pass
 
@@ -140,6 +259,173 @@ def log_print(msg, **kwargs):
     # Only print to stdout. sys.stdout is already redirected to logging.info
     # This prevents duplicate log entries.
     print(msg, **kwargs)
+
+
+def transcription_logging_enabled() -> bool:
+    """Packaged exe: do not persist ASR/refiner output or transcript-adjacent diagnostics to the log file."""
+    if (os.environ.get("PRIVOX_LOG_TRANSCRIPTION") or "").strip().lower() in ("1", "true", "yes", "on"):
+        return True
+    return not getattr(sys, "frozen", False)
+
+
+def log_transcription(msg, **kwargs):
+    if transcription_logging_enabled():
+        log_print(msg, **kwargs)
+
+
+def _contains_cjk_char(s: str) -> bool:
+    return any("\u4e00" <= c <= "\u9fff" for c in (s or ""))
+
+
+def _apply_chinese_output_script(text: str | None, use_simplified: bool) -> str:
+    """Normalize Chinese in final text: Traditional by default, or Simplified when user opts in (zhconv)."""
+    if not (text and str(text).strip()):
+        return text or ""
+    if not _contains_cjk_char(text):
+        return text
+    try:
+        import zhconv
+    except ImportError:
+        return text
+    try:
+        return zhconv.convert(text, "zh-hans" if use_simplified else "zh-hant")
+    except Exception:
+        return text
+
+
+# English cardinal words → digits for dictated lists (e.g. "one, two, three, four" → "1, 2, 3, 4").
+_EN_CARDINAL_WORDS: dict[str, str] = {
+    "zero": "0",
+    "one": "1",
+    "two": "2",
+    "three": "3",
+    "four": "4",
+    "five": "5",
+    "six": "6",
+    "seven": "7",
+    "eight": "8",
+    "nine": "9",
+    "ten": "10",
+    "eleven": "11",
+    "twelve": "12",
+    "thirteen": "13",
+    "fourteen": "14",
+    "fifteen": "15",
+    "sixteen": "16",
+    "seventeen": "17",
+    "eighteen": "18",
+    "nineteen": "19",
+    "twenty": "20",
+    "thirty": "30",
+    "forty": "40",
+    "fifty": "50",
+    "sixty": "60",
+    "seventy": "70",
+    "eighty": "80",
+    "ninety": "90",
+}
+_EN_CARDINAL_ALT = "|".join(sorted(_EN_CARDINAL_WORDS.keys(), key=len, reverse=True))
+_EN_SPOKEN_LIST_RE = re.compile(
+    rf"(?<![\w/])(?P<body>(?:{_EN_CARDINAL_ALT})(?:\s*(?:,|\band\b)\s*(?:{_EN_CARDINAL_ALT}))+)",
+    re.IGNORECASE,
+)
+# Space-separated small cardinals only (three+ in a row); avoids "no one" style false positives.
+_EN_SMALL_ALT = "one|two|three|four|five|six|seven|eight|nine|ten"
+_EN_SPOKEN_SPACE_RUN_RE = re.compile(
+    rf"(?<![\w])(?P<body>(?:{_EN_SMALL_ALT})(?:\s+(?:{_EN_SMALL_ALT})){{2,}})(?!\w)",
+    re.IGNORECASE,
+)
+
+
+def _convert_english_spoken_digit_lists(text: str) -> str:
+    """Turn comma/'and'-linked or space-run spoken cardinals into Arabic numerals."""
+    if not text:
+        return text
+
+    sep_re = re.compile(r"\s*,\s*|\s+\band\b\s+", re.IGNORECASE)
+
+    def _repl_comma_and(m: re.Match) -> str:
+        body = m.group("body")
+        parts = [p.strip().lower() for p in sep_re.split(body) if p.strip()]
+        if len(parts) < 2:
+            return m.group(0)
+        digits: list[str] = []
+        for p in parts:
+            if p not in _EN_CARDINAL_WORDS:
+                return m.group(0)
+            digits.append(_EN_CARDINAL_WORDS[p])
+        return ", ".join(digits)
+
+    out = _EN_SPOKEN_LIST_RE.sub(_repl_comma_and, text)
+
+    def _repl_space_run(m: re.Match) -> str:
+        body = m.group("body")
+        parts = body.split()
+        if len(parts) < 3:
+            return m.group(0)
+        digits: list[str] = []
+        for p in parts:
+            pl = p.lower()
+            if pl not in _EN_CARDINAL_WORDS:
+                return m.group(0)
+            digits.append(_EN_CARDINAL_WORDS[pl])
+        return ", ".join(digits)
+
+    return _EN_SPOKEN_SPACE_RUN_RE.sub(_repl_space_run, out)
+
+
+def _finalize_refiner_text(text: str | None, use_simplified_zh: bool) -> str:
+    """Spoken English number lists → digits, then Chinese script normalization."""
+    if text is None:
+        return ""
+    t = _convert_english_spoken_digit_lists(str(text))
+    return _apply_chinese_output_script(t, use_simplified_zh)
+
+
+_numpy_metadata_shim_installed = False
+
+
+def ensure_numpy_version_visible_to_metadata():
+    """HuggingFace transformers checks numpy via importlib.metadata.version('numpy').
+    Mixed conda/pip installs sometimes leave importable numpy but broken/missing dist-info,
+    which yields got_ver=None and crashes ctranslate2/faster-whisper import."""
+    global _numpy_metadata_shim_installed
+    if _numpy_metadata_shim_installed:
+        return
+    import importlib.metadata as im
+    try:
+        v = im.version("numpy")
+        if v:
+            _numpy_metadata_shim_installed = True
+            return
+    except Exception:
+        pass
+    try:
+        import numpy as np
+        nv = str(np.__version__)
+    except Exception as e:
+        log_print(f"WARNING: Could not read numpy version for metadata shim: {e}")
+        return
+    _orig = im.version
+
+    def _version_with_numpy_fallback(dist_name, *, _o=_orig, _nv=nv):
+        if dist_name == "numpy":
+            try:
+                got = _o(dist_name)
+                if got:
+                    return got
+            except Exception:
+                pass
+            return _nv
+        return _o(dist_name)
+
+    im.version = _version_with_numpy_fallback  # type: ignore[assignment]
+    _numpy_metadata_shim_installed = True
+    log_print(
+        "NOTICE: Patched importlib.metadata.version('numpy') to use numpy.__version__ "
+        f"({nv}); consider `pixi install` or reinstalling numpy to fix package metadata."
+    )
+
 
 log_print("Starting Privox...")
 
@@ -182,6 +468,8 @@ try:
     # We MUST ensure standard libraries are reachable BEFORE we clobber sys.path
     log_print(f"System Diagnostic - Python Interpreter: {sys.executable}")
     log_print(f"System Diagnostic - sys.prefix: {sys.prefix}")
+    if _removed_user_site_paths:
+        log_print(f"System Diagnostic - Removed user site-packages paths: {len(_removed_user_site_paths)}")
     
     # Check for core modules
     try:
@@ -379,6 +667,8 @@ BLOCK_SIZE = 512
 VAD_THRESHOLD = 0.5 
 MIN_SPEECH_DURATION_MS = 250
 SPEECH_PAD_MS = 500
+# If chunk RMS reaches this, we treat it as "there was audible input" even when VAD misses (quiet gain).
+INITIAL_SPEECH_ENERGY_RMS = 0.00085
 
 # Models
 WHISPER_SIZE = "distil-large-v3" 
@@ -449,6 +739,73 @@ class SoundManager:
             ).start()
 
 
+def _infer_language_from_transcript(text: str) -> tuple[str | None, float]:
+    """Guess ISO-ish language for refiner prompts when ASR has no LID (e.g. qwen_asr). Returns (code, confidence)."""
+    if not text or not text.strip():
+        return None, 0.0
+    han = len(re.findall(r"[\u4e00-\u9fff\u3400-\u4dbf]", text))
+    hiragana = len(re.findall(r"[\u3040-\u309f]", text))
+    katakana = len(re.findall(r"[\u30a0-\u30ff]", text))
+    hangul = len(re.findall(r"[\uac00-\ud7af]", text))
+    latin = len(re.findall(r"[A-Za-z]", text))
+    total = han + hiragana + katakana + hangul + latin
+    if total == 0:
+        return None, 0.0
+    kana = hiragana + katakana
+    if hangul >= total * 0.22 and hangul >= max(han, kana):
+        return "ko", 0.88
+    if kana > 0 and (kana >= total * 0.12 or han <= kana * 3):
+        return "ja", 0.85
+    if han >= total * 0.18:
+        return "zh", 0.9
+    if latin >= total * 0.72:
+        return "en", 0.75
+    return None, 0.0
+
+
+# Distinctive Han forms: count to guess Traditional vs Simplified output (refiner often flips script).
+_TRAD_DISTINCT = frozenset(
+    "這邊體廣門聽國學會還開長東車時來說話點過個們問間關頭員團選種總從應該計記訊議務質產親龍鳥魚馬風雲參與舊嚴據處樂極構樹機殺歲歸歷畢畫異當發盜盡監盤眾確碩礎顯題館鐵際線聲電腦裏經師場見覽觀討許訪評詳誤課講識讀變讓貓負貢貧貨購贊贈趕跡軌農釋鋼錄錯鍾險隱雖韓項順預領頻養餘騎鬆鹽麗點齊齡臺灣華書導師顯響腦腳臟與舊艱蘭號處術衛衝裝製複規視覺親覽覺觀計訊記訓託許訟訪評詞話該詳語誤說課謂講證識譯警護譽豐豫貓貝負貢貧貨販貪購賽贊贈趕趨跡跟路跳躍身軌軍農邊達遠遲郵鄉酒釋針鋼錄錯鍵鐘鐵鑽隊際險隱集雖電霧項順預領頻願類顯風飛餘餅騎體鬱魚鳥鹽麗麟齊齡"
+)
+_SIMP_DISTINCT = frozenset(
+    "这边体广门听国学会还开长东车时点过来说边个们问间关头员团选种总从应该计记讯议务质产亲龙鸟鱼马云参与旧严据处乐极构树机杀岁归历毕画异当发盗尽监盘众确硕础显题馆铁际线声电脑里经师场见览观讨许访评详误课讲识读变让猫负贫货购赞赠赶迹轨农释钢录错钟险隐虽韩项顺预领频养余骑松盐丽点齐龄台湾华书导师显响脑脚脏与旧艰兰号处术卫冲装制复规视觉亲览觉观计讯记训托许讼访评词话该详语误说课谓讲证识译警护誉丰豫猫贝负贡贫货贩贪购赛赞赠赶趋迹跟路跳跃身轨军农边达远迟邮乡酒释针钢录错键钟铁钻队际险隐集虽电雾项顺预领频愿类显风飞余饼骑体郁鱼鸟盐丽麟齐龄"
+)
+# Spoken Cantonese particles / forms (preserve in refiner; do not 書面語化).
+_CANTONESE_ORAL_MARKERS = frozenset(
+    "嘅咗唔佢冇啲囉咩喺乜咁咪喇喎噉囖吖嘛啱呃啫咋畀俾掂求其係嚟啱哋噃啩啲"
+)
+
+
+def _infer_chinese_script_variant(text: str) -> tuple[str | None, float]:
+    """Return ('traditional'|'simplified', confidence) or (None, 0) if unclear."""
+    if not text:
+        return None, 0.0
+    t = 0
+    s = 0
+    for ch in text:
+        if ch in _TRAD_DISTINCT:
+            t += 1
+        if ch in _SIMP_DISTINCT:
+            s += 1
+    if t == 0 and s == 0:
+        return None, 0.0
+    if t >= 2 and t >= s * 2:
+        return "traditional", min(0.95, 0.55 + 0.05 * min(t, 8))
+    if s >= 2 and s >= t * 2:
+        return "simplified", min(0.95, 0.55 + 0.05 * min(s, 8))
+    if t > s:
+        return "traditional", 0.6
+    if s > t:
+        return "simplified", 0.6
+    return None, 0.0
+
+
+def _looks_like_cantonese_oral(text: str) -> bool:
+    if not text:
+        return False
+    return any(ch in text for ch in _CANTONESE_ORAL_MARKERS)
+
+
 # --- Persona & Tone Logic (Moved to models_config.py) ---
 # Dictionaries CHARACTER_LENSES and TONE_OVERLAYS are now imported from models_config.
 
@@ -465,6 +822,7 @@ class GrammarChecker:
         self.command_prompt = command_prompt
         self.character = character or "Writing Assistant"
         self.tone = tone or "Natural"
+        self.use_simplified_chinese_output = False
         self.icon = None # Placeholder
         self.context_buffer = "" # Max 2000 chars of conversation history
         self._has_loaded_once = False  # Instance-level: tracks if we've loaded before (for verbose control)
@@ -559,7 +917,12 @@ class GrammarChecker:
 
         repo_id = self.profile.get("repo_id", GRAMMAR_REPO)
         file_name = self.profile.get("file_name", GRAMMAR_FILE)
+        profile_name = self.profile.get("name", "")
         is_reload = self._has_loaded_once  # True on wake-from-idle, False on first boot
+        log_print(
+            f"Resolved Refiner Profile: name={profile_name or 'N/A'}, repo_id={repo_id}, file_name={file_name}, "
+            f"prompt_type={self.profile.get('prompt_type', 'unknown')}"
+        )
 
         if IS_MAC:
             # --- macOS MLX Execution Path ---
@@ -621,8 +984,7 @@ class GrammarChecker:
                     model_path = hf_hub_download(
                         repo_id=repo_id, 
                         filename=file_name,
-                        local_dir=local_dir,
-                        local_dir_use_symlinks=False
+                        local_dir=local_dir
                     )
                     log_print(f"Download complete: {model_path}")
                 
@@ -650,10 +1012,13 @@ class GrammarChecker:
                 log_print("Importing llama_cpp...")
                 try:
                     import llama_cpp
-                    log_print(f"llama-cpp-python Version: {getattr(llama_cpp, '__version__', 'Unknown')}")
+                    llama_version = getattr(llama_cpp, '__version__', 'Unknown')
+                    log_print(f"llama-cpp-python Version: {llama_version}")
                     sys_info = llama_cpp.llama_print_system_info()
                     log_print(f"llama-cpp-python System Info: {sys_info}")
-                    if "CUDA = 1" in str(sys_info) or "BLAS = 1" in str(sys_info):
+                    sys_info_text = str(sys_info)
+                    llama_has_cuda = ("CUDA = 1" in sys_info_text) or ("CUDA :" in sys_info_text)
+                    if llama_has_cuda:
                         log_print("GPU Backend detected in llama-cpp-python.")
                     else:
                         log_print("WARNING: llama-cpp-python appears to be CPU-ONLY.")
@@ -664,44 +1029,84 @@ class GrammarChecker:
                 from llama_cpp import Llama
                 GrammarChecker._Llama = Llama
                 GrammarChecker._llama_imported = True
+
+                # Newer GGUF families require newer llama runtime to parse/load reliably.
+                model_sig = (repo_id + " " + file_name).lower()
+                needs_new_runtime = ("gemma-4" in model_sig) or ("qwen3.5" in model_sig)
+                if needs_new_runtime:
+                    try:
+                        v_parts = [int(p) for p in str(llama_version).split('.')[:3]]
+                        while len(v_parts) < 3:
+                            v_parts.append(0)
+                        # Windows cp312 abetlen CUDA wheels often stop at 0.3.19; 0.3.19+ is acceptable here.
+                        if tuple(v_parts) < (0, 3, 19):
+                            self.loading_error = (
+                                f"Incompatible llama-cpp-python runtime ({llama_version}) for this refiner model. "
+                                "Upgrade to >=0.3.19 (CUDA build on GPU), e.g. run model setup or install_llama_cuda.py."
+                            )
+                            log_print(self.loading_error)
+                            return False
+                    except Exception:
+                        pass
+                    if torch.cuda.is_available() and not llama_has_cuda:
+                        self.loading_error = (
+                            "llama-cpp-python is CPU-only but PyTorch sees a CUDA GPU. "
+                            "Reinstall llama-cpp-python with the CUDA 12.4 wheel (do not use the CPU wheel). "
+                            "Run: python src/download_models.py or pip install with --extra-index-url cu124."
+                        )
+                        log_print(self.loading_error)
+                        return False
             
             Llama = GrammarChecker._Llama
             use_verbose = not is_reload
+            last_init_error_text = ""
 
-            def _safe_llama_init(m_path, n_gpu_layers):
+            def _safe_llama_init(m_path, n_gpu_layers, n_ctx, n_batch):
+                nonlocal last_init_error_text
                 try:
                     return Llama(
                         model_path=m_path,
-                        n_ctx=4096,
-                        # IMPORTANT:
-                        # - Use explicit, bounded n_gpu_layers instead of -1 (full offload),
-                        #   which can easily trigger GPU OOM on larger models (e.g. Qwen 3.5 9B)
-                        # - When running on CPU, this will be 0 to avoid any GPU usage.
+                        n_ctx=n_ctx,
                         n_gpu_layers=n_gpu_layers,
+                        n_batch=n_batch,
                         verbose=use_verbose,
-                        n_threads=os.cpu_count() // 2 if os.cpu_count() else 4
+                        n_threads=os.cpu_count() // 2 if os.cpu_count() else 4,
                     )
                 except (AssertionError, RuntimeError, ValueError) as e:
-                    # ValueError: some llama-cpp builds use it for invalid/corrupt GGUF
+                    last_init_error_text = str(e)
                     log_print(f"CRITICAL: Llama initialization failed ({type(e).__name__}). File likely corrupt.")
                     if os.path.exists(m_path):
                         size_mb = os.path.getsize(m_path) / (1024 * 1024)
-                        log_print(f"Removing corrupt model file: {m_path} ({size_mb:.1f} MB)")
-                        try: os.remove(m_path)
-                        except: pass
+                        if size_mb < 256:
+                            log_print(f"Model file appears incomplete ({size_mb:.1f} MB). Removing: {m_path}")
+                            try:
+                                os.remove(m_path)
+                            except Exception:
+                                pass
                     return None
 
             is_gpu = bool(torch is not None and torch.cuda.is_available())
-            if is_gpu:
-                n_gpu_layers = 40
+            n_ctx = int(self.profile.get("n_ctx", 3072))
+            n_batch = 512
+            want_layers = int(self.profile.get("n_gpu_layers", 40 if is_gpu else 0))
+            if not is_gpu:
+                layer_plan = [0]
             else:
-                n_gpu_layers = 0
+                layer_plan = [want_layers, max(0, want_layers // 2), max(0, want_layers // 4), 0]
+                layer_plan = sorted(set(layer_plan), reverse=True)
 
-            log_print(f"Loading Llama (GPU={is_gpu}, layers={n_gpu_layers}){'  [Quick Reload]' if is_reload else ''}...")
-            self.model = _safe_llama_init(model_path, n_gpu_layers)
-            
+            log_print(
+                f"Loading Llama (GPU={is_gpu}, layer_plan={layer_plan}, n_ctx={n_ctx})"
+                f"{'  [Quick Reload]' if is_reload else ''}..."
+            )
+            self.model = None
+            for n_gl in layer_plan:
+                self.model = _safe_llama_init(model_path, n_gl, n_ctx, n_batch)
+                if self.model is not None:
+                    break
+
             if self.model is None:
-                log_print("Model file removed. Restarting load sequence to trigger redownload...")
+                log_print("Model file removed or init failed. Restarting load sequence to trigger redownload...")
                 return self.load_model(attempts=attempts + 1)
 
             self._has_loaded_once = True
@@ -736,6 +1141,48 @@ class GrammarChecker:
         if language and language != "en" and language_prob > 0.4:
             lang_name = models_config.ISO_LANGUAGE_MAP.get(language, language)
             directive = f"REFINE TRANSCRIPT: PROVIDE A CLEAN {lang_name.upper()} VERSION. DO NOT TRANSLATE TO ENGLISH."
+            directive += (
+                "\nSPOKEN NUMBERS & MATH: Follow CRITICAL RULES 6 and 10–11: "
+                "every numeric reference → Western Arabic digits (0–9) while keeping all other words in this language; "
+                "item lists → digit form; "
+                "spoken arithmetic → + − × ÷ = using that language’s cues; "
+                "large numbers → locale-appropriate grouping/unit words (e.g. 萬/億, 万/億, 만/억, lakh/crore, millions). "
+                "Never invent unstated results or round beyond what was spoken."
+            )
+        elif language == "en" and language_prob > 0.4:
+            directive += (
+                "\nENGLISH SPOKEN NUMBERS & MATH: Same global policy as all languages (CRITICAL RULE 6): "
+                "any numeric meaning → Western Arabic digits (0–9)—cardinal lists ('one, two, three, four' → '1, 2, 3, 4'), "
+                "including space-separated runs like 'one two three'. "
+                "Spoken arithmetic (plus, minus, times, multiplied by, divided by, equals) → +, −, ×, ÷, = with digits per CRITICAL RULE 10 (choose − vs - and ÷ vs / by context)."
+            )
+
+        # Chinese script: user chooses Simplified vs Traditional for all Chinese output (default: Traditional).
+        sample = (transcript or "").strip()
+        if sample:
+            _has_zh = (language == "zh" and language_prob > 0.4) or _contains_cjk_char(sample)
+            if _has_zh:
+                if self.use_simplified_chinese_output:
+                    directive += (
+                        "\nUSER PREFERENCE (MANDATORY): Output MUST be Simplified Chinese (简体中文) only. "
+                        "Convert all Traditional forms to standard Simplified characters "
+                        "(e.g. use 体/这/们/还/点/过/说/电/学/开/门/时/来/个/国/会/长/东/车; do not leave 體/這/們/還/點/過/說/電/學/開/門/時/來/個/國/會/長/東/車 when a Simplified form exists). "
+                        "Apply this regardless of whether the transcript was Traditional or Simplified."
+                    )
+                else:
+                    directive += (
+                        "\nUSER PREFERENCE (MANDATORY): Output MUST be Traditional Chinese (繁體中文) only. "
+                        "Convert all Simplified forms to standard Traditional characters "
+                        "(e.g. use 體/這/們/還/點/過/說/電/學/開/門/時/來/個/國/會/長/東/車; never 体/这/们/还/点/过/说/电/学/开/门/时/来/个/国/会/长/东/车). "
+                        "Apply this regardless of whether the transcript was Traditional or Simplified."
+                    )
+            if _looks_like_cantonese_oral(sample):
+                directive += (
+                    "\nCANTONESE ORAL (廣東話口語): The transcript reads as spoken Cantonese. "
+                    "Preserve colloquial particles and wording (e.g. 嘅、咗、唔、佢、冇、啲、喺、係、乜、點、咁、咪、喇、囉、咩). "
+                    "Do not rewrite into formal Written Chinese / Mandarin book style (書面語) unless ADDITIONAL USER INSTRUCTIONS explicitly request formal writing. "
+                    "Fix only clear dictation/ASR errors and punctuation; keep the spoken Cantonese voice."
+                )
 
         # NEW: Inject direct formatting instruction right to the core directive layer
         directive += "\nCRITICAL FORMATTING: Whenever the user dictates a list, sequence of items, or steps, you MUST format your output as a clear bulleted or numbered list. Add paragraphs where logical."
@@ -826,11 +1273,19 @@ class GrammarChecker:
     def correct(self, text, is_command=False, language=None, language_prob=0.0, user_text=None):
         clean_text = text.strip()
         if not self.model or not clean_text:
-            return text
+            return _finalize_refiner_text(text, self.use_simplified_chinese_output)
             
         if len(clean_text) < 8 and clean_text.lower() not in [d.lower() for d in self.custom_dictionary]:
-            log_print(f" [Short Input Skip] Input too short ({len(clean_text)} chars). Mirroring.")
-            return text
+            log_transcription(f" [Short Input Skip] Input too short ({len(clean_text)} chars). Mirroring.")
+            return _finalize_refiner_text(text, self.use_simplified_chinese_output)
+
+        lang_effective, prob_effective = language, language_prob
+        if (not lang_effective or prob_effective <= 0.4) and clean_text:
+            inf_lang, inf_prob = _infer_language_from_transcript(clean_text)
+            if inf_prob >= 0.72:
+                lang_effective = inf_lang
+                prob_effective = max(prob_effective, inf_prob)
+                log_transcription(f" Refiner language hint (script inference): {lang_effective} (p={prob_effective:.2f})")
 
         try:
             prompt_type = self.profile.get("prompt_type", "llama")
@@ -954,9 +1409,9 @@ class GrammarChecker:
             
             # Diagnostic Log
             if raw_response:
-                log_print(f" LLM Raw Response (len={len(raw_response)}): '{raw_response[:100]}...'")
+                log_transcription(f" LLM Raw Response (len={len(raw_response)}): '{raw_response[:100]}...'")
             else:
-                log_print(" Warning: LLM returned empty response.")
+                log_transcription(" Warning: LLM returned empty response.")
                 
             if prompt_type == "t5":
                 return raw_response
@@ -969,24 +1424,27 @@ class GrammarChecker:
             
             result = None
             if match:
-                log_print(" Regex extracted <refined> block successfully.")
+                log_transcription(" Regex extracted <refined> block successfully.")
                 result = match.group(1).strip()
             else:
-                # Fallback if the model hallucinated and forgot the tags.
-                log_print(" Warning: Model failed to use <refined> tags.")
-                
-                # Sub-fallback: If the model echoed the prompt, try to strip it
-                # (Sometimes models fail to follow 'echo=False' or the prompt structure confuses them)
-                if "[Transcript]:" in raw_response:
-                    log_print("  Detected prompt echo in raw response. Attempting to strip...")
-                    parts = re.split(r'\[Transcript\]:.*?\n', raw_response, flags=re.DOTALL | re.IGNORECASE)
+                log_transcription(" Warning: Model failed to use <refined> tags.")
+                fb = self._fallback_extract_refined_body(raw_for_extract, clean_text)
+                if fb:
+                    log_transcription(f" Fallback extraction recovered {len(fb)} chars (heuristic, no tags).")
+                    result = fb
+                elif "[Transcript]:" in raw_response:
+                    log_transcription("  Detected prompt echo in raw response. Attempting legacy strip...")
+                    parts = re.split(r"\[Transcript\]:.*?\n", raw_response, flags=re.DOTALL | re.IGNORECASE)
                     if len(parts) > 1:
                         result = parts[-1].strip()
-                        log_print(f"  Stripped echo. New candidate length: {len(result)}")
+                        log_transcription(f"  Stripped echo. New candidate length: {len(result)}")
                     else:
                         result = raw_response
+                elif self._looks_like_prompt_echo(raw_response):
+                    log_transcription(" Raw response looks like prompt echo only. Using ASR transcript (no refiner output).")
+                    result = clean_text
                 else:
-                    result = raw_response
+                    result = raw_for_extract or raw_response
 
             # Post-processing
             result = self._strip_meta_commentary(result)
@@ -995,7 +1453,7 @@ class GrammarChecker:
             return result
         except Exception as e:
             log_print(f"Grammar Check Error: {e}")
-            return text
+            return _finalize_refiner_text(text, self.use_simplified_chinese_output)
 
     # --- LLM self-commentary patterns that get embedded inside <refined> output ---
     _META_COMMENTARY_PATTERNS = [
@@ -1029,7 +1487,7 @@ class GrammarChecker:
 
         if earliest_cut < len(text):
             stripped = text[:earliest_cut].rstrip()
-            log_print(f" [Meta-Commentary Strip] Removed {len(text) - earliest_cut} chars of LLM self-commentary.")
+            log_transcription(f" [Meta-Commentary Strip] Removed {len(text) - earliest_cut} chars of LLM self-commentary.")
             return stripped
 
         return text
@@ -1059,6 +1517,8 @@ class GrammarChecker:
 
     # --- Prompt-echo fingerprints (substrings the LLM may regurgitate) ---
     _PROMPT_FINGERPRINTS = [
+        "critical rules:",
+        "conservative refinement:",
         "core directive",
         "strict identity override",
         "strict style override",
@@ -1107,6 +1567,31 @@ class GrammarChecker:
             del self.model
             self.model = None
             log_print("Grammar Model Unloaded.")
+
+
+def _ensure_packaging_for_silero():
+    """Silero hub code does `from packaging import version`; ensure a pip wheel is on sys.path."""
+    try:
+        import packaging  # noqa: F401
+        return
+    except ImportError:
+        pass
+    flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+    r = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "--no-input", "--no-cache-dir", "packaging>=23.0"],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        creationflags=flags,
+    )
+    if r.returncode != 0:
+        raise RuntimeError(
+            "The 'packaging' package is missing (required by Silero VAD) and pip install failed "
+            f"(exit {r.returncode}). stderr tail: {(r.stderr or '')[-800:]}"
+        )
+    importlib.invalidate_caches()
+    import packaging  # noqa: F401
+
 
 class VoiceInputApp:
     def __init__(self, headless=False):
@@ -1181,6 +1666,7 @@ class VoiceInputApp:
         self.active_mods = set()
         self.settings_process = None
         self.last_toggle_time = 0 # Hotkey de-bounce timer
+        self._hotkey_primary_down = False  # True while primary key held; blocks OS key-repeat (phantom stop→start)
         self.last_config_reload_time = 0 # Cooldown for config polling
         self._last_prefs_hash = None # Hash-based change detection
         self.last_mic_retry_time = 0
@@ -1198,6 +1684,58 @@ class VoiceInputApp:
 
         # Start loading threads
         threading.Thread(target=self.initial_load, daemon=True).start()
+
+    def _emit_runtime_error(self, title, message, error_detail="", include_thread_dump=False):
+        """Surface runtime errors for EXE mode where console logs are not visible."""
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        payload = f"[{stamp}] {title}\n{message}\n\n{error_detail}\n"
+        if include_thread_dump:
+            try:
+                frames = sys._current_frames()
+                payload += "\n--- Thread Stack Dump ---\n"
+                for t in threading.enumerate():
+                    payload += f"\n[Thread: {t.name} | ident={t.ident}]\n"
+                    frame = frames.get(t.ident)
+                    if frame:
+                        payload += "".join(traceback.format_stack(frame))
+                    else:
+                        payload += "No frame available.\n"
+            except Exception as dump_err:
+                payload += f"\n(Thread dump failed: {dump_err})\n"
+        candidate_paths = [
+            os.path.join(BASE_DIR, "privox_error_last.txt"),
+            os.path.join(os.getcwd(), "privox_error_last.txt"),
+            os.path.join(os.getenv("TEMP", BASE_DIR), "privox_error_last.txt"),
+        ]
+        try:
+            desktop = os.path.join(os.path.expanduser("~"), "Desktop", "privox_error_last.txt")
+            candidate_paths.append(desktop)
+        except Exception:
+            pass
+
+        seen = set()
+        for path in candidate_paths:
+            if not path or path in seen:
+                continue
+            seen.add(path)
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(payload)
+            except Exception:
+                pass
+
+        try:
+            if self.icon:
+                self.icon.notify(message, title)
+        except Exception:
+            pass
+
+        # For packaged EXE, show a visible popup because stdout/stderr are hidden.
+        if getattr(sys, "frozen", False):
+            try:
+                show_modern_error(title, message, error_detail[:600] if error_detail else "")
+            except Exception:
+                pass
 
     def initial_load(self):
         # Run model cleanup FIRST to avoid race conditions with loading
@@ -1423,6 +1961,7 @@ class VoiceInputApp:
                 speech_pad_ms=SPEECH_PAD_MS,
             )
             log_print("Done.")
+            self.models_ready = True # Allow microphone capturing immediately after VAD is ready
         except Exception as e:
             log_print(f"\nError loading VAD: {e}")
             self.loading_status = "Error Loading VAD"
@@ -1443,13 +1982,18 @@ class VoiceInputApp:
 
             def load_grammar():
                 try:
+                    self.model_load_stage = "loading_grammar"
+                    t0 = time.time()
                     success = self.grammar_checker.load_model()
+                    dt = time.time() - t0
+                    log_print(f"Grammar load time: {dt:.2f}s (success={success})")
                     if success:
                         # Track LLM usage here
                         self.track_model_usage(self.current_refiner)
                     return success
                 except Exception as e:
                     log_print(f"Parallel Load Error (Grammar): {e}")
+                    self.last_model_error = f"Grammar: {e}"
                     return False
 
             def load_asr():
@@ -1460,7 +2004,16 @@ class VoiceInputApp:
                     if ASR_BACKEND == "sensevoice":
                         sense_dir = os.path.join(BASE_DIR, "models", "SenseVoiceSmall")
                         log_print(f"ASR Diagnostic - Initializing SenseVoiceSmall on {device_str}...")
-                        from funasr import AutoModel
+                        try:
+                            from funasr import AutoModel
+                        except ImportError as e:
+                            log_print(
+                                "SenseVoice requires the `funasr` package (not bundled by default). "
+                                "Install with: pixi add --pypi funasr   or   pip install funasr"
+                            )
+                            raise RuntimeError(
+                                "ASR backend 'sensevoice' needs funasr. Add it to your env or switch ASR in Settings."
+                            ) from e
                         self.asr_model = AutoModel(
                             model=sense_dir if os.path.exists(sense_dir) else "iic/SenseVoiceSmall",
                             device=device_str,
@@ -1488,19 +2041,36 @@ class VoiceInputApp:
                                 log_print(f"MLX-Whisper warm-up skipped due to error: {warmup_error}")
                         log_print(f"MLX-Whisper initialized successfully.")
                     else:
-                        compute_type = "float16" if is_gpu else "int8"
+                        # int8_float16 cuts VRAM vs pure float16 on CUDA with small quality cost.
+                        compute_type = "int8_float16" if is_gpu else "int8"
                         from faster_whisper import WhisperModel
                         local_whisper = os.path.join(BASE_DIR, "models", f"whisper-{WHISPER_SIZE}")
                         model_path = local_whisper if os.path.exists(os.path.join(local_whisper, "model.bin")) else WHISPER_REPO
-                        log_print(f"ASR Diagnostic - Initializing WhisperModel ({WHISPER_SIZE}) on {device_str}...")
-                        self.asr_model = WhisperModel(model_path, device=device_str, compute_type=compute_type)
-                        log_print(f"WhisperModel initialized successfully.")
+                        log_print(
+                            f"ASR Diagnostic - Initializing WhisperModel ({WHISPER_SIZE}) on {device_str}, compute_type={compute_type}..."
+                        )
+                        try:
+                            self.asr_model = WhisperModel(
+                                model_path, device=device_str, compute_type=compute_type
+                            )
+                        except Exception as e1:
+                            if is_gpu and compute_type == "int8_float16":
+                                log_print(f"Whisper int8_float16 failed ({e1}); retrying float16...")
+                                self.asr_model = WhisperModel(
+                                    model_path, device=device_str, compute_type="float16"
+                                )
+                            else:
+                                raise
+                        log_print("WhisperModel initialized successfully.")
                     
                     # Track ASR model usage here instead of in load_config
                     self.track_model_usage(getattr(self, 'active_asr_name', WHISPER_SIZE))
+                    dt = time.time() - t0
+                    log_print(f"ASR load time: {dt:.2f}s (backend={ASR_BACKEND})")
                     return True
                 except Exception as e:
                     log_print(f"Parallel Load Error (ASR): {e}")
+                    self.last_model_error = f"ASR: {e}\n{traceback.format_exc()}"
                     self.loading_status = "Error Loading ASR"
                     return False
 
@@ -1516,23 +2086,28 @@ class VoiceInputApp:
                 if not self.headless:
                     self.update_tray_tooltip()
                 self.pending_wakeup = False
+                self.model_load_stage = "failed_asr"
                 return
 
             if not results[0]:
                 log_print("WARNING: Grammar model failed to load. Proceeding with ASR only.")
 
-            self.models_ready = True
             self.heavy_models_loaded = True
+            self.model_load_started_at = 0.0
+            self.model_load_stage = "ready"
             self.loading_status = "Ready" if results[0] else "ASR Only"
-            self.update_status("READY")
+            # Do not clobber RECORDING: user may have started the mic while models were still loading.
+            if self.is_listening:
+                self.update_status("RECORDING")
+            else:
+                self.update_status("READY")
             
             # Reset activity timer so we don't immediately unload
             self.last_activity_time = time.time()
             
-            # If this was a manual F8 wakeup, we immediately start listening. 
+            # If this was a manual F8 wakeup, we might already be listening.
             # Otherwise (initial load), we play the 'Ready' sound.
             if self.pending_wakeup:
-                log_print("Pending Wakeup found. Auto-starting recording...")
                 self.pending_wakeup = False
                 # Tiny delay to ensure UI updates and avoid race conditions with sound manager
                 time.sleep(0.1) 
@@ -1548,7 +2123,9 @@ class VoiceInputApp:
             
             idle_time = time.time() - self.last_activity_time
             log_print(f"Unloading Models (VRAM Saver - Idle for {idle_time:.1f}s)...")
-            self.asr_model = None
+            # When unload_asr_on_idle is false (manual .user_prefs.json), ASR stays resident for lower wake latency.
+            if getattr(self, "unload_asr_on_idle", True):
+                self.asr_model = None
             self.grammar_checker.unload_model()
             self.grammar_checker.context_buffer = "" # Clear conversation context
             
@@ -1622,7 +2199,9 @@ class VoiceInputApp:
             "Qwen2.5-7B-Instruct-Q4_K_M.gguf": models_config.DEFAULT_LLM,
             "Qwen3-1.7B-4bit-DWQ": models_config.DEFAULT_LLM,
             "Qwen3-1.7B-Instruct": models_config.DEFAULT_LLM,
-            "Llama-3.2-3B-Instruct-Q4_K_M.gguf": "Llama 3.2 3B Instruct",
+            "Llama-3.2-3B-Instruct-Q4_K_M.gguf": models_config.DEFAULT_LLM,
+            "Llama 3.2 3B Instruct": models_config.DEFAULT_LLM,
+            "Gemma 4 E2B Instruct": models_config.DEFAULT_LLM,
         }
         return legacy_aliases.get(normalized, normalized)
 
@@ -1643,32 +2222,6 @@ class VoiceInputApp:
                 with open(config_path, "r", encoding="utf-8") as f:
                     config = json.load(f)
 
-            tech_config_dirty = False
-            if config.get("asr_backend") in ("qwen_asr", "mlx_qwen_asr"):
-                config["asr_backend"] = "whisper"
-                wr = config.get("whisper_repo", "")
-                if isinstance(wr, str) and "qwen" in wr.lower():
-                    config["whisper_repo"] = "Systran/faster-distil-whisper-large-v3"
-                tech_config_dirty = True
-            rp = config.get("refiner_profiles")
-            if isinstance(rp, dict):
-                for rk in list(rp.keys()):
-                    if "qwen" in rk.lower():
-                        del rp[rk]
-                        tech_config_dirty = True
-            for gkey in ("grammar_repo", "whisper_repo"):
-                gv = config.get(gkey, "")
-                if isinstance(gv, str) and "qwen" in gv.lower():
-                    if gkey == "grammar_repo":
-                        config["grammar_repo"] = models_config.LLM_LIBRARY[0]["repo_id"]
-                        config["grammar_file"] = models_config.LLM_LIBRARY[0]["file_name"]
-                    else:
-                        config["whisper_repo"] = "Systran/faster-distil-whisper-large-v3"
-                    tech_config_dirty = True
-            if tech_config_dirty and os.path.exists(config_path):
-                with open(config_path, "w", encoding="utf-8") as f:
-                    json.dump(config, f, indent=4)
-            
             # --- 2. Load User Preferences (Hidden/Private) ---
             prefs = {}
             if os.path.exists(prefs_path):
@@ -1730,6 +2283,13 @@ class VoiceInputApp:
             if prefs_modified:
                 with open(prefs_path, "w", encoding="utf-8") as f:
                     json.dump(prefs, f, indent=4)
+
+            _gem = models_config.LLM_LIBRARY[0]
+            if config.get("grammar_file") == "Qwen3.5-4B-Q4_K_M.gguf" or config.get("grammar_repo") == "unsloth/Qwen3.5-4B-GGUF":
+                config["grammar_repo"] = _gem["repo_id"]
+                config["grammar_file"] = _gem["file_name"]
+                with open(config_path, "w", encoding="utf-8") as f:
+                    json.dump(config, f, indent=4)
             
             # Update mtime tracker immediately to avoid self-triggering polish loop
             if os.path.exists(prefs_path):
@@ -1790,11 +2350,13 @@ class VoiceInputApp:
             # Dynamic VAD Re-initialization if timeout changed
             if hasattr(self, 'VADIterator') and self.vad_model and self.silence_timeout_ms != old_silence:
                 log_print(f"Applying new Auto-Stop Timeout: {self.silence_timeout_ms}ms")
-                self.vad_iterator = self.VADIterator(self.vad_model, 
-                                                     threshold=VAD_THRESHOLD, 
-                                                     sampling_rate=SAMPLE_RATE, 
-                                                     min_silence_duration_ms=self.silence_timeout_ms, 
-                                                     speech_pad_ms=SPEECH_PAD_MS)
+                self.vad_iterator = self.VADIterator(
+                    self.vad_model,
+                    threshold=VAD_THRESHOLD,
+                    sampling_rate=SAMPLE_RATE,
+                    min_silence_duration_ms=self._vad_end_silence_ms(),
+                    speech_pad_ms=SPEECH_PAD_MS,
+                )
 
             self.custom_dictionary = prefs.get("custom_dictionary", [])
             self.vram_timeout = max(5, prefs.get("vram_timeout", 300))
@@ -1807,9 +2369,9 @@ class VoiceInputApp:
             self.asr_library = models_config.ASR_LIBRARY
             self.llm_library = models_config.LLM_LIBRARY
 
-            # Filter libraries
+            # Filter ASR library only. For LLM/refiner, keep source-of-truth entries
+            # even if network verification is temporarily unavailable.
             self.asr_library = [m for m in self.asr_library if self.verify_model(m, "asr")]
-            self.llm_library = [m for m in self.llm_library if self.verify_model(m, "llm")]
 
             available_asr_names = {
                 alias
@@ -1851,6 +2413,7 @@ class VoiceInputApp:
                 # Robust matching: check both human-readable name and internal filename
                 if p["name"] == self.current_refiner or p.get("file_name") == self.current_refiner:
                     profile = {
+                        "name": p.get("name"),
                         "repo_id": p.get("repo_id"),
                         "file_name": p.get("file_name"),
                         "prompt_type": p.get("prompt_type"),
@@ -1859,6 +2422,23 @@ class VoiceInputApp:
                     }
                     # REMOVED recursive usage tracking here
                     break
+
+            # If current_refiner is missing from library, force a stable fallback
+            # to avoid accidental fallback to stale global defaults.
+            if not profile and self.llm_library:
+                fallback = self.llm_library[0]
+                log_print(f"WARNING: Refiner '{self.current_refiner}' not found in active library. Falling back to '{fallback.get('name')}'.")
+                self.current_refiner = fallback.get("name", models_config.DEFAULT_LLM)
+                profile = {
+                    "name": fallback.get("name"),
+                    "repo_id": fallback.get("repo_id"),
+                    "file_name": fallback.get("file_name"),
+                    "prompt_type": fallback.get("prompt_type"),
+                    "description": fallback.get("description", ""),
+                    "turboquant": fallback.get("turboquant", False),
+                    "n_ctx": fallback.get("n_ctx"),
+                    "n_gpu_layers": fallback.get("n_gpu_layers"),
+                }
             
             if hasattr(self, 'grammar_checker'):
                 self.grammar_checker.profile = profile
@@ -1876,6 +2456,7 @@ class VoiceInputApp:
                 self.grammar_checker.tone = self.tone
                 self.grammar_checker.custom_prompts = self.custom_prompts
                 self.grammar_checker.custom_dictionary = self.custom_dictionary
+                self.grammar_checker.use_simplified_chinese_output = self.use_simplified_chinese_output
             
             # ASR Model resolution
             global WHISPER_SIZE, WHISPER_REPO, ASR_BACKEND
@@ -1889,6 +2470,7 @@ class VoiceInputApp:
             self.active_whisper_repo = WHISPER_REPO
 
             ASR_BACKEND = "whisper"
+            matched_asr = False
             for asr in self.asr_library:
                 if asr["name"] == active_asr or asr.get("whisper_model") == active_asr:
                     # Sync with library technical names
@@ -1922,9 +2504,18 @@ class VoiceInputApp:
             
             # REMOVED cleanup_stale_models from here to prevent recursive reload loops
 
+            # Config reload can interleave with model load; avoid stuck INITIALIZING / wrong tray state.
+            if getattr(self, "heavy_models_loaded", False) and getattr(self, "ui_state", "") == "INITIALIZING":
+                if self.is_listening:
+                    self.update_status("RECORDING")
+                else:
+                    self.update_status("READY")
+
         except Exception as e:
+            import traceback as _tb
+
             log_print(f"Error loading config: {e}")
-            traceback.print_exc()
+            _tb.print_exc()
 
     def verify_model(self, model_data, model_type):
         """Verifies if a model repository or local path exists."""
@@ -2212,6 +2803,40 @@ class VoiceInputApp:
         if self.running and self.mic_active and self.models_ready:
             self.q.put(indata.copy())
 
+    def _listener_key_token(self, key):
+        """Normalize pynput key to the same token used for self.target_key (e.g. 'f8', 'space')."""
+        try:
+            k_name = getattr(key, "name", None)
+            k_char = getattr(key, "char", None)
+            k_vk = getattr(key, "vk", None)
+
+            if k_name:
+                return k_name
+            if k_vk and 65 <= k_vk <= 90:
+                return chr(k_vk).lower()
+            if k_vk and 48 <= k_vk <= 57:
+                return chr(k_vk)
+            if k_char:
+                if 1 <= ord(k_char) <= 26:
+                    return chr(ord(k_char) + 96)
+                return k_char.lower()
+            if k_vk:
+                vk_map = {
+                    0x70: "f1", 0x71: "f2", 0x72: "f3", 0x73: "f4",
+                    0x74: "f5", 0x75: "f6", 0x76: "f7", 0x77: "f8",
+                    0x78: "f9", 0x79: "f10", 0x7A: "f11", 0x7B: "f12",
+                    0x7C: "f13", 0x7D: "f14", 0x7E: "f15", 0x7F: "f16",
+                    0x80: "f17", 0x81: "f18", 0x82: "f19", 0x83: "f20",
+                    0x84: "f21", 0x85: "f22", 0x86: "f23", 0x87: "f24",
+                    0x20: "space", 0x0D: "enter", 0x09: "tab", 0x1B: "esc",
+                    0x21: "page_up", 0x22: "page_down", 0x23: "end", 0x24: "home",
+                    0x2D: "insert", 0x2E: "delete",
+                }
+                return vk_map.get(k_vk, str(k_vk))
+        except Exception:
+            pass
+        return ""
+
     def on_press(self, key):
         """Standard keyboard listener callback."""
         # 1. Track Modifiers
@@ -2229,57 +2854,18 @@ class VoiceInputApp:
             if val != self.target_key:
                 return
 
-        # 2. Key Normalization
-        key_name = ""
-        try:
-            k_name = getattr(key, 'name', None)
-            k_char = getattr(key, 'char', None)
-            k_vk = getattr(key, 'vk', None)
-
-            if k_name:
-                key_name = k_name
-            elif k_vk and 65 <= k_vk <= 90:
-                # A-Z (VK codes 65-90). Safely bypasses unprintable ASCII generated by Ctrl+Key
-                key_name = chr(k_vk).lower()
-            elif k_vk and 48 <= k_vk <= 57:
-                # 0-9 (VK codes 48-57)
-                key_name = chr(k_vk)
-            elif k_char:
-                # Pynput unprintable char fallback (e.g. Ctrl+A = \x01)
-                if 1 <= ord(k_char) <= 26: 
-                     key_name = chr(ord(k_char) + 96)
-                else:
-                     key_name = k_char.lower()
-            elif k_vk:
-                    # Handle virtual keys (important for some mouse remappings)
-                    # VK codes: F1=0x70 ... F12=0x7B, F13=0x7C ... F24=0x87. Space=0x20, Enter=0x0D
-                    vk_map = {
-                        0x70: "f1", 0x71: "f2", 0x72: "f3", 0x73: "f4",
-                        0x74: "f5", 0x75: "f6", 0x76: "f7", 0x77: "f8",
-                        0x78: "f9", 0x79: "f10", 0x7A: "f11", 0x7B: "f12",
-                        0x7C: "f13", 0x7D: "f14", 0x7E: "f15", 0x7F: "f16",
-                        0x80: "f17", 0x81: "f18", 0x82: "f19", 0x83: "f20",
-                        0x84: "f21", 0x85: "f22", 0x86: "f23", 0x87: "f24",
-                        0x20: "space", 0x0D: "enter", 0x09: "tab", 0x1B: "esc",
-                        0x21: "page_up", 0x22: "page_down", 0x23: "end", 0x24: "home",
-                        0x2D: "insert", 0x2E: "delete"
-                    }
-                    key_name = vk_map.get(k_vk, str(k_vk))
-        except Exception:
-             pass
+        key_name = self._listener_key_token(key)
 
         # 3. Check Match
         if key_name == self.target_key:
-            # DE-BOUNCE: Prevent rapid-fire re-triggering (e.g. from key auto-repeat)
-            now = time.time()
-            if now - self.last_toggle_time < 0.4:
+            # OS key-repeat sends repeated key-down without key-up; first down toggles, repeats must not
+            # (otherwise: stop session -> repeat arrives after debounce -> starts a phantom session).
+            if self._hotkey_primary_down:
                 return
-            self.last_toggle_time = now
-            
+
             # Win32 Robustness: Check for "Stuck" modifiers using ctypes
             if sys.platform == 'win32' and self.active_mods != self.target_mods:
                 import ctypes
-                # Check physical state of tracked modifiers
                 stuck = []
                 for mod in list(self.active_mods):
                     vk = 0
@@ -2287,7 +2873,6 @@ class VoiceInputApp:
                     elif mod == 'shift': vk = 0x10
                     elif mod == 'alt': vk = 0x12
                     
-                    # GetAsyncKeyState returns MSB set if key is down
                     if vk and not (ctypes.windll.user32.GetAsyncKeyState(vk) & 0x8000):
                         stuck.append(mod)
                 
@@ -2296,11 +2881,17 @@ class VoiceInputApp:
                     for mod in stuck:
                         self.active_mods.remove(mod)
 
-            # Check if active modifiers match EXACTLY what is required
-            if self.active_mods == self.target_mods:
-                self.toggle_hotkey()
-            else:
+            if self.active_mods != self.target_mods:
                 log_print(f" [Hotkey Ignored] Key '{key_name}' pressed, but modifiers mismatch. Expected: {self.target_mods}, Actual: {self.active_mods}")
+                return
+
+            now = time.time()
+            if now - self.last_toggle_time < 0.4:
+                return
+
+            self._hotkey_primary_down = True
+            self.last_toggle_time = now
+            self.toggle_hotkey()
 
     def on_release(self, key):
         """Untrack modifiers."""
@@ -2315,11 +2906,17 @@ class VoiceInputApp:
             if val in self.active_mods:
                 self.active_mods.remove(val)
 
+        key_name = self._listener_key_token(key)
+        if key_name == self.target_key:
+            self._hotkey_primary_down = False
+
     def start_listening(self):
         self.last_activity_time = time.time()
         log_print("\n[Start Listening]", flush=True)
         self.is_listening = True
         self.is_speaking = False
+        self._heard_voice_energy = False
+        self._last_loud_chunk_time = time.time()
         self.audio_buffer = []
         if self.vad_iterator:
             self.vad_iterator.reset_states()
@@ -2352,14 +2949,30 @@ class VoiceInputApp:
         self.audio_buffer = []
         self.last_activity_time = time.time()
 
+    def _run_with_timeout(self, func, timeout_s, label):
+        """Run a blocking callable with timeout to prevent permanent PROCESSING state."""
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            fut = ex.submit(func)
+            try:
+                return fut.result(timeout=timeout_s)
+            except concurrent.futures.TimeoutError:
+                self.loading_status = "Refiner Error" if "Refiner" in label else "ASR Error"
+                self.last_model_error = f"{label} timed out after {timeout_s}s"
+                self._emit_runtime_error(
+                    "Privox Processing Timeout",
+                    f"{label} timed out.",
+                    self.last_model_error,
+                )
+                raise TimeoutError(self.last_model_error)
+
     def transcribe(self, audio_data):
         try:
             duration = len(audio_data) / SAMPLE_RATE
             max_amp = np.max(np.abs(audio_data))
             rms = np.sqrt(np.mean(audio_data**2))
             
-            log_print(f"\n--- Transcription Diagnostic ---")
-            log_print(f"Audio Stats - Duration: {duration:.2f}s, Max Amp: {max_amp:.4f}, RMS: {rms:.4f}")
+            log_transcription(f"\n--- Transcription Diagnostic ---")
+            log_transcription(f"Audio Stats - Duration: {duration:.2f}s, Max Amp: {max_amp:.4f}, RMS: {rms:.4f}")
             
             if duration < (MIN_SPEECH_DURATION_MS / 1000):
                 log_print(f" [Audio too short - Ignored]")
@@ -2400,14 +3013,18 @@ class VoiceInputApp:
             info = None
             if ASR_BACKEND == "sensevoice":
                 # SenseVoice/funasr
-                results = self.asr_model.generate(
-                    input=audio_data.flatten().astype(np.float32),
-                    cache={},
-                    language="auto", # SenseVoice handles LID well
-                    use_itn=True,
-                    batch_size_s=60,
-                    merge_vad=True,
-                    merge_length_s=15,
+                results = self._run_with_timeout(
+                    lambda: self.asr_model.generate(
+                        input=audio_data.flatten().astype(np.float32),
+                        cache={},
+                        language="auto", # SenseVoice handles LID well
+                        use_itn=True,
+                        batch_size_s=60,
+                        merge_vad=True,
+                        merge_length_s=15,
+                    ),
+                    timeout_s=120,
+                    label="ASR generate",
                 )
                 
                 # funasr output is a list of dicts: [{'text': '...', 'key': '...'}]
@@ -2433,25 +3050,30 @@ class VoiceInputApp:
                     raw_text = ""
             else:
                 # Faster-Whisper
-                segments, info = self.asr_model.transcribe(
-                    audio_data.astype(np.float32), 
-                    beam_size=5,
-                    vad_filter=True,
-                    vad_parameters=dict(min_silence_duration_ms=500)
+                segments, info = self._run_with_timeout(
+                    lambda: self.asr_model.transcribe(
+                        audio_data.astype(np.float32), 
+                        task="transcribe",
+                        beam_size=5,
+                        vad_filter=True,
+                        vad_parameters=dict(min_silence_duration_ms=500)
+                    ),
+                    timeout_s=120,
+                    label="ASR transcribe",
                 )
                 
-                log_print(f" ASR Result - Language Detected: {info.language} ({info.language_probability:.2f})")
+                log_transcription(f" ASR Result - Language Detected: {info.language} ({info.language_probability:.2f})")
                 
                 # Collect segments and log each one
                 seg_results = []
                 for segment in segments:
-                    log_print(f"  Segment: [{segment.start:.2f}s -> {segment.end:.2f}s] ({len(segment.text)} chars)")
+                    log_transcription(f"  Segment: [{segment.start:.2f}s -> {segment.end:.2f}s] ({len(segment.text)} chars)")
                     seg_results.append(segment.text)
                 
                 raw_text = " ".join(seg_results).strip()
             
             t1 = time.time()
-            log_print(f" [ASR Total Time: {t1 - t0:.3f}s] Result: {len(raw_text)} chars")
+            log_transcription(f" [ASR Total Time: {t1 - t0:.3f}s] Result: {len(raw_text)} chars")
             
             if not raw_text:
                 log_print(" [Empty Transcription Result]")
@@ -2478,12 +3100,21 @@ class VoiceInputApp:
             t2 = time.time()
             detected_lang = info.language if (info and ASR_BACKEND == 'whisper') else None
             detected_prob = info.language_probability if (info and ASR_BACKEND == 'whisper') else 0.0
-            final_text = self.grammar_checker.correct(command_text, is_command=is_command, language=detected_lang, language_prob=detected_prob)
+            final_text = self._run_with_timeout(
+                lambda: self.grammar_checker.correct(
+                    command_text,
+                    is_command=is_command,
+                    language=detected_lang,
+                    language_prob=detected_prob,
+                ),
+                timeout_s=90,
+                label="Refiner processing",
+            )
             t3 = time.time()
-            log_print(f" [Grammar Time: {t3 - t2:.3f}s]")
+            log_transcription(f" [Grammar Time: {t3 - t2:.3f}s]")
             
-            log_print(f" [Refined Output: {len(final_text)} chars]")
-            log_print(f" [Total Time: {t3 - t0:.3f}s]")
+            log_transcription(f" [Refined Output: {len(final_text)} chars]")
+            log_transcription(f" [Total Time: {t3 - t0:.3f}s]")
             
             try:
                 self.paste_text(final_text)
@@ -2633,6 +3264,12 @@ class VoiceInputApp:
                     
                 chunk = chunk.flatten()
                 self.audio_buffer.extend(chunk)
+
+                if self.is_listening and len(chunk) > 0:
+                    rms = float(np.sqrt(np.mean(chunk.astype(np.float64) ** 2)))
+                    if rms >= INITIAL_SPEECH_ENERGY_RMS:
+                        self._heard_voice_energy = True
+                        self._last_loud_chunk_time = time.time()
                 
                 # Check VAD for Manual Toggle Feedback & Auto-Stop
                 if self.vad_iterator:
@@ -2648,10 +3285,17 @@ class VoiceInputApp:
                              log_print(" [Auto-Stop Detected: Silence after speech]")
                              self.stop_listening()
                     
-                    # Safety Fallback: Absolute silence timeout (if never started speaking)
+                    # No VAD "speech start" yet: stop only if the mic never crossed the energy floor (truly idle).
                     if self.is_listening and not self.is_speaking and self.auto_stop_enabled:
-                        if (time.time() - self.last_activity_time) > (self.silence_timeout_ms / 1000):
-                            log_print(" [Auto-Stop Detected: Initial silence timeout]")
+                        if not self._heard_voice_energy:
+                            if (time.time() - self.last_activity_time) > (self.silence_timeout_ms / 1000):
+                                log_print(
+                                    " [Auto-Stop Detected: Initial silence timeout "
+                                    "(no speech detected by VAD/mic energy; raise gain or disable Auto-Stop)]"
+                                )
+                                self.stop_listening()
+                        elif (time.time() - self._last_loud_chunk_time) > (self.silence_timeout_ms / 1000):
+                            log_print(" [Auto-Stop Detected: Silence after audio (mic energy)]")
                             self.stop_listening()
                             
             except Exception as e:
@@ -2767,13 +3411,12 @@ class VoiceInputApp:
 
     def toggle_hotkey(self):
         """Toggle recording triggered by hotkey (manual listener)."""
-        # Wake up detection
+        # Wake up detection - Trigger background load if needed, but don't block!
         if not self.heavy_models_loaded:
             if not self.pending_wakeup:
-                log_print("Wake up detected. Pre-loading models...")
+                log_print("Wake up detected. Pre-loading models in background...")
                 self.pending_wakeup = True
                 threading.Thread(target=self.load_heavy_models, daemon=True).start()
-            return
 
         if not self.vad_model or self.asr_model is None:
             log_print("Ignored Hotkey: Models not fully loaded.")

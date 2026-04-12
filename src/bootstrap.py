@@ -2,10 +2,7 @@ import os
 import shutil
 import sys
 import subprocess
-import threading
 import time
-import logging
-import queue
 import ctypes
 import zipfile
 import urllib.request
@@ -67,13 +64,13 @@ if IS_WIN:
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QLineEdit, QProgressBar, QPlainTextEdit,
-    QStackedWidget, QFileDialog, QMessageBox, QFrame, QSizePolicy, QDialog
+    QStackedWidget, QFileDialog, QFrame, QDialog,
 )
 from PySide6.QtGui import QIcon, QFont, QColor, QPalette
-from PySide6.QtCore import Qt, QSize, Signal, QObject, QThread, QPropertyAnimation, QEasingCurve, QSequentialAnimationGroup, QParallelAnimationGroup, QPoint
+from PySide6.QtCore import Qt, Signal, QObject, QThread
 
 # --- Versioning ---
-APP_VERSION = "1.0"
+APP_VERSION = "1.2.0"
 
 # Disable Symlinks for Windows
 os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
@@ -86,6 +83,27 @@ if getattr(sys, 'frozen', False):
 else:
     EXE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     BUNDLE_DIR = EXE_DIR
+
+
+def _resolve_privox_runtime_root():
+    """Folder that contains a Pixi env + src/voice_input.py (full tree).
+
+    PyInstaller puts the exe in dist/Privox.exe while .pixi usually lives in the repo root.
+    Without this, --run only looks next to the exe and fails even though `pixi run` works in dev.
+    """
+    start = os.path.normpath(EXE_DIR)
+    cur = start
+    for _ in range(10):
+        pyw = os.path.join(cur, ".pixi", "envs", "default", "pythonw.exe")
+        vinp = os.path.join(cur, "src", "voice_input.py")
+        if os.path.isfile(pyw) and os.path.isfile(vinp):
+            return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
+    return start
+
 
 os.chdir(EXE_DIR)
 
@@ -171,13 +189,41 @@ class InstallWorker(QObject):
                 if not self.cancelled:
                     self.finished.emit(False)
                 return
+
+            # Silero VAD (torch.hub) imports `packaging`; Pixi conda/pypi merges can omit it from site-packages.
+            self.log_signal.emit("Ensuring packaging (Silero VAD)...")
+            pkg_ok = run_pixi_command(
+                self,
+                [
+                    pixi_exe, "run", "python", "-m", "pip", "install",
+                    "--no-input", "--no-cache-dir", "packaging>=23.0",
+                ],
+                cwd=target_dir,
+            )
+            if not pkg_ok or self.cancelled:
+                if not self.cancelled:
+                    self.log_signal.emit("Failed to install required package 'packaging' (Silero VAD).")
+                    self.finished.emit(False)
+                return
                 
             if self.cancelled: return
             self.progress_signal.emit(80)
 
             # 3. Models
             self.log_signal.emit("Checking AI Models...")
-            run_pixi_command(self, [pixi_exe, "run", "python", "src/download_models.py"], cwd=target_dir)
+            model_ok = run_pixi_command(self, [pixi_exe, "run", "python", "src/download_models.py"], cwd=target_dir)
+            if not model_ok or self.cancelled:
+                if not self.cancelled:
+                    self.log_signal.emit("Model setup failed. Installation aborted.")
+                    self.finished.emit(False)
+                return
+
+            verify_ok, verify_msg = verify_required_models(target_dir)
+            if not verify_ok:
+                self.log_signal.emit(f"Model verification failed: {verify_msg}")
+                self.finished.emit(False)
+                return
+            self.log_signal.emit("Model verification passed.")
             
             if self.cancelled: return
             self.progress_signal.emit(95)
@@ -223,24 +269,57 @@ def apply_dark_title_bar(window):
         none_backdrop = ctypes.c_int(1)
         ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 38, ctypes.byref(none_backdrop), 4)
 
-        # Force Dark Mode (DWMWA_USE_IMMERSIVE_DARK_MODE = 20)
-        dark = ctypes.c_int(1)
-        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(dark), 4)
-        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 19, ctypes.byref(dark), 4)
-        
-        # Caption color (BGR: 0x00000000 for pitch black)
-        # This prevents the blue-ish grey focus highlight on Win 11
-        black = ctypes.c_int(0x00000000)
-        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 35, ctypes.byref(black), 4)
-        
-        # Text color (White)
-        white = ctypes.c_int(0x00FFFFFF)
-        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 36, ctypes.byref(white), 4)
-        
-        # Redraw
-        ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0027) 
-    except:
-        pass
+def verify_required_models(target_dir):
+    """Ensure required ASR and refiner model files exist after setup."""
+    try:
+        cfg_path = os.path.join(target_dir, "config.json")
+        if not os.path.exists(cfg_path):
+            return False, "Missing config.json"
+
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+
+        grammar_file = cfg.get("grammar_file")
+        # Default folder id — keep in sync with models_config.DEFAULT_ASR_WHISPER_MODEL
+        whisper_model = cfg.get("whisper_model", "qwen3-asr-1.7b")
+        asr_backend = cfg.get("asr_backend", "whisper")
+        if not grammar_file:
+            return False, "Missing grammar_file in config.json"
+
+        models_dir = os.path.join(target_dir, "models")
+        grammar_path = os.path.join(models_dir, grammar_file)
+        if not os.path.exists(grammar_path):
+            return False, f"Missing refiner model file: {grammar_file}"
+        if os.path.getsize(grammar_path) < 256 * 1024 * 1024:
+            return False, f"Refiner model too small/corrupt: {grammar_file}"
+
+        whisper_dir = os.path.join(models_dir, f"whisper-{whisper_model}")
+        if not os.path.isdir(whisper_dir):
+            return False, f"Missing ASR directory: {os.path.basename(whisper_dir)}"
+
+        # Faster-Whisper / CTranslate2 layout
+        if os.path.exists(os.path.join(whisper_dir, "model.bin")):
+            required = ["model.bin", "config.json", "tokenizer.json", "preprocessor_config.json"]
+            missing = [p for p in required if not os.path.exists(os.path.join(whisper_dir, p))]
+            if missing:
+                return False, f"Missing ASR files in {os.path.basename(whisper_dir)}: {', '.join(missing)}"
+            return True, "ok"
+
+        # Hugging Face / Qwen-ASR / Transformers snapshot (download_models uses same whisper-* folder name)
+        if os.path.exists(os.path.join(whisper_dir, "config.json")):
+            return True, "ok"
+
+        if asr_backend == "qwen_asr" and os.path.isdir(models_dir):
+            for name in os.listdir(models_dir):
+                if not name.startswith("whisper-"):
+                    continue
+                sub = os.path.join(models_dir, name)
+                if os.path.isfile(os.path.join(sub, "config.json")):
+                    return True, "ok"
+
+        return False, f"ASR folder incomplete (need model.bin or Hugging Face config.json): {os.path.basename(whisper_dir)}"
+    except Exception as e:
+        return False, str(e)
 
 class ModernDialog(QDialog):
     """Simplified ModernDialog for Bootstrap bootstrap to maintain standalone nature."""
@@ -735,7 +814,13 @@ class InstallerGUI(QMainWindow):
             if hasattr(self, 'worker') and self.worker.cancelled:
                 self.close()
                 return
-            dlg = ModernDialog(self, "Error", "Setup failed.", f"{error_msg[:300]}\n\nPlease check logs for details.", buttons=["Close"])
+            dlg = ModernDialog(
+                self,
+                "Error",
+                "Setup failed.",
+                "Please review the log above and try again.\nIf the problem persists, check privox_app.log in the install folder.",
+                buttons=["Close"],
+            )
             dlg.exec()
             self.btn_next.setText("Failed")
             self.btn_next.setEnabled(False)
@@ -886,6 +971,16 @@ def install_app_files(target_dir, log_cb, is_mac=False):
                     shutil.copytree(src, dst, dirs_exist_ok=True)
                 except Exception as e:
                     log_cb(f"Warning syncing {folder}: {e}")
+
+        bundled_llama_lib = os.path.join(BUNDLE_DIR, "llama_cpp", "lib")
+        if os.path.isdir(bundled_llama_lib):
+            dst_ll = os.path.join(target_dir, "_internal", "llama_cpp", "lib")
+            try:
+                os.makedirs(os.path.dirname(dst_ll), exist_ok=True)
+                shutil.copytree(bundled_llama_lib, dst_ll, dirs_exist_ok=True)
+                log_cb("Installed bundled llama_cpp DLLs to _internal/llama_cpp/lib (matches build machine CUDA build).")
+            except Exception as e:
+                log_cb(f"Warning: could not copy bundled llama_cpp/lib: {e}")
         
         create_shortcut(target_exe, target_dir)
         
@@ -930,23 +1025,6 @@ def create_lnk(target_exe, target_dir, icon_path, lnk_path):
         with open(vbs_file, "w") as f: f.write(vbs_script)
         subprocess.call(["cscript", "//nologo", vbs_file], creationflags=subprocess.CREATE_NO_WINDOW)
         if os.path.exists(vbs_file): os.remove(vbs_file)
-    except: pass
-
-def apply_mica_or_acrylic(window, acrylic=True):
-    if sys.platform != 'win32': return
-    try:
-        hwnd = window.effectiveWinId().value()
-        # DWMWA_SYSTEMBACKDROP_TYPE: 1=None, 2=Mica, 3=Acrylic (Tabbed), 4=MicaAlt
-        backdrop_type = ctypes.c_int(3 if acrylic else 2)
-        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 38, ctypes.byref(backdrop_type), 4)
-        
-        # Dark Mode Force
-        dark = ctypes.c_int(1)
-        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(dark), 4)
-        
-        # Caption color to black/transparent
-        black = ctypes.c_int(0x00000000)
-        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 35, ctypes.byref(black), 4)
     except: pass
 
 def register_uninstaller(install_dir, exe_path):
@@ -1022,7 +1100,10 @@ def run_app(target_dir=None):
             else:
                 subprocess.Popen([pixi_exe, "run", "start-windowless"], cwd=target_dir, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         else:
-            print("Error: Pixi environment not found. Please reinstall.")
+            print(
+                "Error: Pixi environment not found. The exe must sit in (or under) a folder that "
+                "contains .pixi and src/ after `pixi install`, or run the installer to copy the full tree."
+            )
             sys.exit(1)
 
 if __name__ == "__main__":

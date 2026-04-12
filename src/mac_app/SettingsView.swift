@@ -5,8 +5,8 @@ import Foundation
 struct UserPrefs: Codable {
     var character: String = "Writing Assistant"
     var tone: String = "Natural"
-    var whisper_model: String = "Distil-Whisper Large v3 (English)"
-    var current_refiner: String = "Gemma 4 E2B Instruct"
+    var whisper_model: String = "Qwen-ASR v3 1.7B"
+    var current_refiner: String = "Gemma 4 E2B (TurboQuant)"
     var custom_dictionary: [String] = []
     
     // Additional settings
@@ -34,7 +34,7 @@ func normalizeASRPreference(_ value: String) -> String {
         return "Distil-Whisper Large v3 (English)"
     case "small":
         return "OpenAI Whisper Small"
-    case "Qwen2-Audio-7B", "qwen2-audio-7b", "Qwen-ASR v3 0.6B", "Qwen-ASR v3 1.7B":
+    case "Qwen2-Audio-7B", "qwen2-audio-7b":
         return "Whisper Large v3 Turbo (Multilingual)"
     default:
         return value
@@ -43,16 +43,16 @@ func normalizeASRPreference(_ value: String) -> String {
 
 func normalizeLLMPreference(_ value: String) -> String {
     switch value.trimmingCharacters(in: .whitespacesAndNewlines) {
-    case "Standard (Llama 3.2)":
-        return "Gemma 4 E2B Instruct"
+    case "Standard (Llama 3.2)", "Gemma 4 E2B Instruct":
+        return "Gemma 4 E2B (TurboQuant)"
     case "Multilingual (Qwen 3.5 9B)", "Qwen3.5-9B-Q4_K_M.gguf", "Qwen3-8B-Q4_K_M.gguf",
          "Multilingual (Qwen 3.5 4B)", "Qwen3.5-4B-Q4_K_M.gguf", "Qwen3-4B-Q4_K_M.gguf",
          "Multilingual (Qwen 3 8B)", "Multilingual (Qwen 3 4B)", "Fast Multilingual (Qwen 3 1.7B)",
          "Multilingual (Qwen 2.5 7B)", "Qwen3-1.7B-4bit-DWQ", "Qwen3-1.7B-Instruct",
          "Qwen2.5-7B-Instruct-Q4_K_M.gguf":
-        return "Gemma 4 E2B Instruct"
-    case "Llama-3.2-3B-Instruct-Q4_K_M.gguf":
-        return "Llama 3.2 3B Instruct"
+        return "Gemma 4 E2B (TurboQuant)"
+    case "Llama-3.2-3B-Instruct-Q4_K_M.gguf", "Llama 3.2 3B Instruct":
+        return "Gemma 4 E2B (TurboQuant)"
     default:
         return value
     }
@@ -396,20 +396,16 @@ struct ModelsView: View {
     private let modelPickerWidth: CGFloat = 280
     
     let asrOptions: [AIModelOption] = [
-        AIModelOption(name: "Distil-Whisper Large v3 (English)", description: "Fast & High Quality. Best accuracy with distilled architecture."),
+        AIModelOption(name: "Distil-Whisper Large v3 (English)", description: "Fast & high quality. On Apple Silicon uses MLX weights (mlx-community)."),
         AIModelOption(name: "OpenAI Whisper Small", description: "Quick processing for low-resource environments."),
-        AIModelOption(name: "Whisper Large v3 Turbo (Cantonese)", description: "High-speed Cantonese transcription. Reduced hallucination."),
-        AIModelOption(name: "Whisper Large v3 Turbo (Korean)", description: "High-performance Korean transcription. Optimized for speed and accuracy."),
-        AIModelOption(name: "Whisper Large v3 Turbo (German)", description: "Precision German recognition. Handles technical and colloquial speech."),
-        AIModelOption(name: "Whisper Large v3 Turbo (French)", description: "State-of-the-art French transcription with anti-overfitting optimization."),
-        AIModelOption(name: "Whisper Large v3 Turbo (Japanese)", description: "Superior Japanese performance with CTranslate2 optimization."),
-        AIModelOption(name: "Whisper Large v2 (Hindi)", description: "Fine-tuned for Hindi. Optimized for mixed-code (Hinglish)."),
-        AIModelOption(name: "Whisper Large v3 Turbo (Multilingual)", description: "State-of-the-art multilingual model. Excellent for Singlish, Arabic, and diverse accents.")
+        AIModelOption(name: "Qwen-ASR v3 0.6B", description: "Lightweight Qwen3 ASR. On macOS use MLX weights via mlx-audio (mlx_qwen_asr)."),
+        AIModelOption(name: "Qwen-ASR v3 1.7B", description: "Higher-quality Qwen3 ASR. Recommended MLX: mlx-community/Qwen3-ASR-1.7B-5bit."),
+        AIModelOption(name: "Whisper Large v3 Turbo (Multilingual)", description: "Multilingual CTranslate2 on Windows; MLX turbo on Apple Silicon.")
     ]
     
     let llmOptions: [AIModelOption] = [
-        AIModelOption(name: "Gemma 4 E2B Instruct", description: "Default reasoning refiner: Google Gemma 4 E2B (Unsloth MLX on Apple Silicon; GGUF on Windows)."),
-        AIModelOption(name: "Llama 3.2 3B Instruct", description: "General purpose balanced refiner for all languages.")
+        AIModelOption(name: "Gemma 4 E2B (TurboQuant)", description: "Default refiner: Gemma 4 E2B — MLX on Apple Silicon, GGUF + llama.cpp on Windows."),
+        AIModelOption(name: "Gemma 4 E4B (TurboQuant)", description: "Larger Gemma 4 E4B variant with TurboQuant defaults (check Unsloth MLX repo availability).")
     ]
     
     var body: some View {

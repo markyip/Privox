@@ -51,7 +51,6 @@ models/
 **/*.onnx
 **/*.json
 !config.json
-!.user_prefs.json
 
 # IDEs
 .vscode/

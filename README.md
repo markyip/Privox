@@ -1,6 +1,7 @@
 # Privox 🎙️
 
-[![Python Version](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
+![App version](https://img.shields.io/badge/app-v1.2.0-blue)
+[![Python Version](https://img.shields.io/badge/python-3.10--3.12-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-Noncommercial-green.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20(Apple%20Silicon)-lightgrey?logo=apple)
 ![Downloads](https://img.shields.io/github/downloads/markyip/Privox/total)
@@ -60,7 +61,7 @@ On first run, Privox may take a few minutes to set up its local models—then yo
 
 You don't need to be a computer expert to customize Privox. On **Windows**, right-click the **Privox** system tray icon; on **macOS**, use the **menu bar** icon:
 
-- **Settings**: Change your hotkey, your writing style, or which language you want to use.
+- **Settings**: Change your hotkey, **General** options (sounds, startup, **Chinese output script**, VRAM saver, auto-stop), **AI Models** (ASR + refiner, persona, custom instructions), and **Dictionary**.
 - **Run at Startup**: Have Privox ready for you as soon as you turn on your computer.
 
 ## 🖥️ What You Need
@@ -83,14 +84,18 @@ You don't need to be a computer expert to customize Privox. On **Windows**, righ
 
 ## 📋 Good to Know
 
-- **VRAM usage (~4 GB when active)**: While running, Privox loads two AI models (voice-to-text and refiner) that consume approximately 4 GB of GPU VRAM. To free up VRAM for other applications, Privox includes a **VRAM Saver** feature that automatically unloads the models after a period of inactivity. The models will reload automatically the next time you press your hotkey.
+- **VRAM usage is model-dependent**: Privox loads two local AI models (ASR + Refiner). Typical active VRAM is around 4 GB with default settings, and can vary by selected ASR backend (e.g. Qwen-ASR vs faster-whisper) and refiner model.
+- **TurboQuant refiner profiles**: Current refiner options use tuned load settings (`n_ctx`, `n_gpu_layers`, `n_batch`) to reduce VRAM pressure while preserving quality.
+- **VRAM Saver**: Privox can automatically unload heavy models after inactivity and reload on next hotkey press.
 - **Very short sentences may not be refined**: To prevent hallucination, Privox will skip AI grammar correction if your spoken input is very short (roughly a few words). The original transcription will be typed out as-is. This is a deliberate safety measure to ensure quality output.
+- **Chinese output script (繁體 / 简体)**: In **Settings → General**, **Simplified Chinese output (简体中文)** is **off by default**. When it is off, any Chinese in the **final pasted text** is normalized to **Traditional Chinese** (refiner instructions plus **zhconv** when the package is installed). Turn the option **on** to normalize everything to **Simplified** instead. This applies regardless of whether the speech recognition returned Traditional or Simplified characters. Colloquial Cantonese particles are still encouraged when the transcript looks like spoken Cantonese.
+- **Logs and privacy (packaged app)**: When you run the **built executable**, lines that could reveal what you said (transcription diagnostics, ASR text, refiner previews, timings tied to those steps) are **not** written to `privox_app.log`. Startup, model loading, and errors may still be logged. To debug transcript issues in an exe build, set environment variable **`PRIVOX_LOG_TRANSCRIPTION=1`** (or `true` / `yes` / `on`) and restart.
 
 ## ⚠️ Known Limitations
 
-- **Non-English ASR models are not fully tested**: Privox includes several language-specific voice-to-text models (Cantonese, Korean, Japanese, French, German, Hindi, and Multilingual). While they should work well, I have not been able to personally test every language. If you encounter issues with a specific language model, please [open an Issue](https://github.com/markyip/Privox/issues)—your feedback helps improve support for everyone.
+- **Multilingual accuracy varies**: Voice-to-text is provided by **faster-whisper** (English-focused Distil/Small, plus one **Multilingual Large v3 Turbo** checkpoint) and **Qwen-ASR** on Hugging Face (shipped default: **Qwen-ASR v3 1.7B**). Non-English and code-mixed speech are best-effort; if quality is weak for your language, try **Whisper Large v3 Turbo (Multilingual)** or another **Qwen-ASR** size in Settings. Please [open an Issue](https://github.com/markyip/Privox/issues) with the model name and a short example if something looks wrong.
 - **Accent variations may affect transcription accuracy**: The voice-to-text engine can be sensitive to strong or regional accents, which is an inherent limitation of the underlying ASR technology. If transcription quality seems off, try switching to a different ASR model in **Settings** (e.g., the Multilingual model may handle diverse accents better).
-- **Occasional LLM hallucination**: Although multiple safeguards are in place, the refiner model may occasionally add, rephrase, or embellish words beyond the original transcript. We are continuously working on tighter controls to limit the model from slipping into an "assistant" role. If you notice output that doesn't match what you said, please report it.
+- **Occasional LLM hallucination**: Although multiple safeguards are in place, the refiner model may occasionally add, rephrase, or embellish words beyond the original transcript. The refiner is asked to return text inside `<refined>` tags; if a model ignores that format, Privox falls back to heuristics and may return the raw transcription when the reply looks like a prompt echo. If you notice output that doesn't match what you said, please report it.
 - **Mixed-language sentences are not supported**: Privox works best when you speak in a single language per recording. Mixing two languages within the same sentence (e.g., switching between English and Cantonese mid-sentence) may produce unexpected results.
 
 ## 🗺️ What's Coming
@@ -116,11 +121,15 @@ Every piece of feedback helps shape Privox into a better tool. Thank you for you
 
 For power users who want to go beyond the Settings UI, Privox can be customized by editing the configuration files directly.
 
+The **packaged app version** string is `APP_VERSION` in `src/bootstrap.py` (currently **1.2.0**); it should match `version_info.txt` and `assets/privox.manifest` when you cut a release build.
+
 ### Adding Your Own AI Models
 
 You can add custom ASR (voice-to-text) or LLM (refiner) models by editing `src/models_config.py`.
 
-**To add a new voice-to-text model**, append an entry to `ASR_LIBRARY`:
+**To add a new voice-to-text model**, append an entry to `ASR_LIBRARY`.
+
+*faster-whisper (CTranslate2 checkpoints on Hugging Face):*
 
 ```python
 {
@@ -142,13 +151,19 @@ You can add custom ASR (voice-to-text) or LLM (refiner) models by editing `src/m
     "name": "My Custom LLM",
     "repo_id": "username/my-custom-llm-GGUF",
     "file_name": "my-custom-llm-Q4_K_M.gguf",
-    "prompt_type": "llama",  # Use "llama" for chat models or "t5" for seq2seq
+    "prompt_type": "chatml",  # Supported: "chatml", "gemma", "llama", "t5"
+    "turboquant": true,
+    "n_ctx": 3072,
+    "n_gpu_layers": 24,
     "description": "A short description of this model."
 }
 ```
 
 > [!NOTE]
 > LLM models must be in GGUF format and hosted on [Hugging Face](https://huggingface.co). Privox will download them automatically on first use.
+
+> [!TIP]
+> If a model repository uses Xet storage, installing `hf_xet` improves download performance.
 
 After saving your changes, restart Privox. Your new models will appear in the **Settings** dropdowns.
 

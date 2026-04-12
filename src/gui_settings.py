@@ -23,20 +23,56 @@ if IS_WIN:
     if os.path.exists(bin_path):
         os.add_dll_directory(bin_path)
 
+import copy
 import json
 import models_config
-from PySide6.QtGui import QColor, QPainter, QFont, QIcon, QAction, QLinearGradient, QBrush, QPen
-from PySide6.QtCore import Qt, QSize, QPropertyAnimation, QEasingCurve, QPoint, Signal, QRect, QParallelAnimationGroup, Property, QTimer
+from PySide6.QtGui import QColor, QFont, QIcon
+from PySide6.QtCore import Qt, QObject, QThread, Signal, Slot, QTimer
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-    QPushButton, QLabel, QFrame, QStackedWidget, QLineEdit, 
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QPushButton, QLabel, QFrame, QStackedWidget, QLineEdit,
     QScrollArea, QGraphicsDropShadowEffect, QSizePolicy, QPlainTextEdit,
-    QGridLayout, QDialog, QComboBox, QCheckBox, QLayout, QSpacerItem,
-    QMessageBox, QProgressBar, QSpinBox
+    QDialog, QComboBox, QCheckBox, QProgressBar, QSpinBox,
 )
 import ctypes
-import sounddevice as sd
 import subprocess
+import tempfile
+import sounddevice as sd
+
+
+def _win_vbs_escape_path(p: str) -> str:
+    return os.path.normpath(p).replace("\\", "\\\\")
+
+
+def _win_create_shortcut(lnk_path: str, target_exe: str, arguments_vbs_fragment: str, work_dir: str, icon_path: str) -> None:
+    """Write a .lnk via cscript + VBScript (matches bootstrap installer). arguments_vbs_fragment sets oLink.Arguments."""
+    lf, tp, wd, ic = map(_win_vbs_escape_path, (lnk_path, target_exe, work_dir, icon_path))
+    vbs_script = (
+        'Set oWS = WScript.CreateObject("WScript.Shell")\n'
+        f'sLinkFile = "{lf}"\n'
+        "Set oLink = oWS.CreateShortcut(sLinkFile)\n"
+        f'oLink.TargetPath = "{tp}"\n'
+        f"{arguments_vbs_fragment}"
+        f'oLink.WorkingDirectory = "{wd}"\n'
+        f'oLink.IconLocation = "{ic},0"\n'
+        "oLink.WindowStyle = 7\n"
+        "oLink.Save\n"
+    )
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".vbs", delete=False, encoding="utf-8") as tmp:
+        tmp.write(vbs_script)
+        vbs_file = tmp.name
+    try:
+        subprocess.run(
+            ["cscript", "//nologo", vbs_file],
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            timeout=30,
+        )
+    finally:
+        try:
+            os.remove(vbs_file)
+        except Exception:
+            pass
+
 
 # --- DWM Helpers for Glassmorphism ---
 def apply_mica_or_acrylic(window, acrylic=True):
@@ -60,7 +96,6 @@ def apply_mica_or_acrylic(window, acrylic=True):
 
 # SVG Icons for the dropdown arrow
 import re
-from PySide6.QtCore import QObject, QThread, Signal, Slot
 
 # --- Model Update Worker & Signals ---
 class ModelUpdateSignals(QObject):
@@ -100,18 +135,10 @@ class ModelUpdateWorker(QObject):
 
     @Slot()
     def run(self):
-        # Ensure we can import download_models
-        if "download_models" not in sys.modules:
-            try:
-                import download_models
-            except ImportError:
-                # Add current script's directory to path to find sibling modules
-                script_dir = os.path.dirname(os.path.abspath(__file__))
-                if script_dir not in sys.path:
-                    sys.path.append(script_dir)
-                import download_models
-        else:
-            import download_models
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        if script_dir not in sys.path:
+            sys.path.insert(0, script_dir)
+        import download_models
 
         def ui_log(msg):
             self.signals.status.emit(msg)
@@ -200,7 +227,7 @@ class NavigablePlainTextEdit(QPlainTextEdit):
 
 class ModernDialog(QDialog):
     """Refined generic dialog for alerts and confirmations with a premium feel."""
-    def __init__(self, parent=None, title="PRIVOX", message="", subtext="", buttons=["OK"]):
+    def __init__(self, parent=None, title="PRIVOX", message="", subtext="", buttons=["OK"], detail_lines=None):
         super().__init__(parent)
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -245,6 +272,40 @@ class ModernDialog(QDialog):
             sub_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.5); font-size: 13px; border: none;")
             sub_lbl.setWordWrap(True)
             container_layout.addWidget(sub_lbl)
+
+        if detail_lines:
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.Shape.NoFrame)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            scroll.setStyleSheet("""
+                QScrollArea { background: transparent; border: none; }
+                QScrollBar:vertical {
+                    border: none; background: transparent; width: 8px; margin: 0;
+                }
+                QScrollBar::handle:vertical {
+                    background: rgba(255, 255, 255, 0.12);
+                    min-height: 24px;
+                    border-radius: 4px;
+                }
+            """)
+            inner = QWidget()
+            inner.setStyleSheet("background: transparent;")
+            inner_l = QVBoxLayout(inner)
+            inner_l.setContentsMargins(4, 4, 12, 4)
+            inner_l.setSpacing(8)
+            for line in detail_lines:
+                row = QLabel(f"•\u00a0{line}")
+                row.setWordWrap(True)
+                row.setStyleSheet(
+                    "color: rgba(255, 255, 255, 0.78); font-size: 13px; border: none; line-height: 140%;"
+                )
+                inner_l.addWidget(row)
+            inner_l.addStretch()
+            scroll.setWidget(inner)
+            h = min(220, max(96, 28 * len(detail_lines) + 36))
+            scroll.setFixedHeight(h)
+            container_layout.addWidget(scroll)
         
         # Buttons
         btn_layout = QHBoxLayout()
@@ -457,7 +518,8 @@ class SettingsGUI(QMainWindow):
         self.setFont(QFont("Inter", 10))
         self.config_path = config_path
         self.is_dirty = False
-        
+        self._saved_settings_snapshot = None
+
         self.load_config()
         self.init_ui()
         self.load_initial_state()
@@ -498,7 +560,16 @@ class SettingsGUI(QMainWindow):
         if os.path.exists(self.config_path):
             with open(self.config_path, "r", encoding="utf-8") as f:
                 self.tech_config = json.load(f)
-        
+
+        _gem = models_config.LLM_LIBRARY[0]
+        if self.tech_config.get("grammar_file") == "Qwen3.5-4B-Q4_K_M.gguf" or self.tech_config.get(
+            "grammar_repo"
+        ) == "unsloth/Qwen3.5-4B-GGUF":
+            self.tech_config["grammar_repo"] = _gem["repo_id"]
+            self.tech_config["grammar_file"] = _gem["file_name"]
+            with open(self.config_path, "w", encoding="utf-8") as f:
+                json.dump(self.tech_config, f, indent=4)
+
         # Load User Prefs
         self.prefs = {}
         if os.path.exists(self.prefs_path):
@@ -516,6 +587,11 @@ class SettingsGUI(QMainWindow):
         self.asr_library = self.tech_config.get("asr_library", models_config.ASR_LIBRARY)
         
         self.llm_library = self.tech_config.get("llm_library", models_config.LLM_LIBRARY)
+        if isinstance(self.llm_library, list):
+            _drop = {"Multilingual (Qwen 3.5 4B)"}
+            self.llm_library = [m for m in self.llm_library if m.get("name") not in _drop]
+            if not self.llm_library:
+                self.llm_library = list(models_config.LLM_LIBRARY)
 
         self.custom_prompts = self.prefs.get("custom_prompts", self.tech_config.get("custom_prompts", models_config.DEFAULT_PROMPTS))
         
@@ -556,11 +632,37 @@ class SettingsGUI(QMainWindow):
             self.tech_config["whisper_model"] = "Whisper Large v3 Turbo (Multilingual)"
         if self.tech_config.get("current_refiner") in _legacy_qwen_llm:
             self.tech_config["current_refiner"] = models_config.DEFAULT_LLM
+
+        # --- Migration: removed ASR options (library + old id stored in tech_config) ---
+        removed_asr_labels = frozenset({"Qwen2-Audio-7B", "qwen2-audio-7b"})
+        if self.prefs.get("whisper_model") in removed_asr_labels:
+            self.prefs["whisper_model"] = models_config.DEFAULT_ASR
+        if self.tech_config.get("whisper_model") in removed_asr_labels:
+            self.tech_config["whisper_model"] = models_config.DEFAULT_ASR_WHISPER_MODEL
             
-        # --- Migration: Force default transition to Llama 3.2 if on old CoEdit default (ONE-TIME) ---
-        if self.prefs.get("current_refiner") == "CoEdit Large (T5)" and not self.prefs.get("_migrate_llama_3_2"):
+        # --- Migration: redirect removed refiner names to current default ---
+        removed_refiners = {
+            "CoEdit Large (T5)",
+            "Llama 3.2 3B Instruct",
+            "Multilingual (Qwen 3.5 9B)",
+            "Multilingual (Qwen 2.5 7B)",
+            "Multilingual (Qwen 3.5 4B)",
+        }
+        if self.prefs.get("current_refiner") in removed_refiners:
             self.prefs["current_refiner"] = models_config.DEFAULT_LLM
-            self.prefs["_migrate_llama_3_2"] = True
+        if self.tech_config.get("current_refiner") in removed_refiners:
+            self.tech_config["current_refiner"] = models_config.DEFAULT_LLM
+
+        self.config = {**self.tech_config, **self.prefs}
+
+    def _resolve_asr_display_name(self, value):
+        """config.json may use whisper_model id; ASR combo uses ASR_LIBRARY display names."""
+        if not value:
+            return models_config.DEFAULT_ASR
+        for m in self.asr_library:
+            if m["name"] == value or m.get("whisper_model") == value:
+                return m["name"]
+        return models_config.DEFAULT_ASR
 
     CRITICAL_RULES = models_config.CRITICAL_RULES
     DEFAULT_PROMPTS = models_config.DEFAULT_PROMPTS
@@ -577,7 +679,15 @@ class SettingsGUI(QMainWindow):
 
     def closeEvent(self, event):
         if self.is_dirty:
-            dialog = ModernDialog(self, "EXIT SETTINGS", "Save changes before exiting?", "Unsaved changes will be lost.", buttons=["Cancel", "Discard", "Save"])
+            detail = self._unsaved_change_descriptions()
+            dialog = ModernDialog(
+                self,
+                "EXIT SETTINGS",
+                "Save changes before exiting?",
+                "You have unsaved edits in the following areas. What would you like to do?",
+                buttons=["Cancel", "Discard", "Save"],
+                detail_lines=detail,
+            )
             result = dialog.exec()
             if result == 3: # Save (based on button index + 1, Save is last)
                 self.save_config()
@@ -840,7 +950,7 @@ class SettingsGUI(QMainWindow):
         self.btn_save_all.clicked.connect(self.save_config)
         sidebar_layout.addWidget(self.btn_save_all)
         
-        footer_label = QLabel("v1.0")
+        footer_label = QLabel("v1.2.0")
         footer_label.setStyleSheet("color: #444444; padding-left: 20px;")
         sidebar_layout.addWidget(footer_label)
 
@@ -876,7 +986,93 @@ class SettingsGUI(QMainWindow):
 
     def mark_dirty(self):
         self.is_dirty = True
-        
+
+    def _hotkey_display_label(self):
+        tip = (self.hk_val.toolTip() or "").strip()
+        if tip:
+            return tip
+        return (self.hk_val.text() or self.prefs.get("hotkey", "f8")).strip()
+
+    def _capture_settings_snapshot(self):
+        return {
+            "character": self.char_combo.currentText(),
+            "tone": self.tone_combo.currentText(),
+            "asr": self.asr_combo.currentText(),
+            "llm": self.llm_combo.currentText(),
+            "sound_enabled": self.check_sound.isChecked(),
+            "startup_enabled": self.check_startup.isChecked(),
+            "use_simplified_chinese_output": self.check_simplified_chinese.isChecked(),
+            "vram_timeout_s": self.vram_spin.value(),
+            "auto_stop_s": self.stop_spin.value(),
+            "hotkey_pref": (self.prefs.get("hotkey", "f8") or "f8").lower(),
+            "hotkey_display": self._hotkey_display_label(),
+            "prompt_editor_text": self.prompt_editor.toPlainText(),
+            "custom_prompts": copy.deepcopy(self.custom_prompts),
+            "dictionary": tuple(sorted(self.prefs.get("custom_dictionary", []))),
+        }
+
+    def _refresh_saved_snapshot(self):
+        self._saved_settings_snapshot = self._capture_settings_snapshot()
+
+    def _unsaved_change_descriptions(self):
+        snap = self._saved_settings_snapshot
+        if snap is None:
+            return ["Settings were modified."]
+        cur = self._capture_settings_snapshot()
+        lines = []
+
+        if cur["character"] != snap["character"]:
+            lines.append(f"Persona: {snap['character']} → {cur['character']}")
+        if cur["tone"] != snap["tone"]:
+            lines.append(f"Tone: {snap['tone']} → {cur['tone']}")
+        if cur["asr"] != snap["asr"]:
+            lines.append(f"Voice-to-text model: {snap['asr']} → {cur['asr']}")
+        if cur["llm"] != snap["llm"]:
+            lines.append(f"Refiner (LLM): {snap['llm']} → {cur['llm']}")
+        if cur["sound_enabled"] != snap["sound_enabled"]:
+            lines.append(
+                "Sound effects: "
+                f"{'on' if cur['sound_enabled'] else 'off'} "
+                f"(was {'on' if snap['sound_enabled'] else 'off'})"
+            )
+        if cur["startup_enabled"] != snap["startup_enabled"]:
+            lines.append(
+                "Launch at startup: "
+                f"{'on' if cur['startup_enabled'] else 'off'} "
+                f"(was {'on' if snap['startup_enabled'] else 'off'})"
+            )
+        if cur["use_simplified_chinese_output"] != snap["use_simplified_chinese_output"]:
+            lines.append(
+                "Simplified Chinese output: "
+                f"{'on' if cur['use_simplified_chinese_output'] else 'off'} "
+                f"(was {'on' if snap['use_simplified_chinese_output'] else 'off'})"
+            )
+        if cur["vram_timeout_s"] != snap["vram_timeout_s"]:
+            lines.append(f"VRAM saver: {snap['vram_timeout_s']}s → {cur['vram_timeout_s']}s")
+        if cur["auto_stop_s"] != snap["auto_stop_s"]:
+            lines.append(f"Auto-stop silence: {snap['auto_stop_s']}s → {cur['auto_stop_s']}s")
+        if cur["hotkey_pref"] != snap["hotkey_pref"]:
+            lines.append(f"Recording hotkey: {snap['hotkey_display']} → {cur['hotkey_display']}")
+
+        prompts_changed = cur["custom_prompts"] != snap["custom_prompts"]
+        editor_changed = (cur["prompt_editor_text"] or "").strip() != (snap["prompt_editor_text"] or "").strip()
+        if prompts_changed or editor_changed:
+            lines.append("Custom instructions: edited (current or other persona/tone presets)")
+
+        if cur["dictionary"] != snap["dictionary"]:
+            s_set, c_set = set(snap["dictionary"]), set(cur["dictionary"])
+            n_add = len(c_set - s_set)
+            n_rem = len(s_set - c_set)
+            if n_add and n_rem:
+                lines.append(f"Custom dictionary: {n_add} added, {n_rem} removed")
+            elif n_add:
+                lines.append(f"Custom dictionary: {n_add} term(s) added")
+            elif n_rem:
+                lines.append(f"Custom dictionary: {n_rem} term(s) removed")
+            else:
+                lines.append("Custom dictionary: modified")
+
+        return lines if lines else ["Settings were modified."]
 
     def load_initial_state(self):
         # Load initial values from unified config (honors global defaults if no user prefs)
@@ -894,10 +1090,10 @@ class SettingsGUI(QMainWindow):
                         combo.setCurrentIndex(i)
                         return
                 
-                # Special fallback for Refiner: Prefer Llama over CoEdit if default fails
+                # Special fallback for Refiner: prefer Gemma E2B if saved name missing
                 if combo == self.llm_combo:
                     for i in range(combo.count()):
-                        if "llama" in combo.itemText(i).lower():
+                        if "gemma 4 e2b" in combo.itemText(i).lower():
                             combo.setCurrentIndex(i)
                             return
 
@@ -912,7 +1108,9 @@ class SettingsGUI(QMainWindow):
         
         set_combo_safe(self.char_combo, self.config.get("character", "Writing Assistant"))
         set_combo_safe(self.tone_combo, self.config.get("tone", "Natural"))
-        set_combo_safe(self.asr_combo, self.config.get("whisper_model", models_config.DEFAULT_ASR))
+        _asr_cfg = self.config.get("whisper_model")
+        _asr_combo_val = models_config.DEFAULT_ASR if _asr_cfg is None else self._resolve_asr_display_name(_asr_cfg)
+        set_combo_safe(self.asr_combo, _asr_combo_val)
         set_combo_safe(self.llm_combo, self.config.get("current_refiner", models_config.DEFAULT_LLM))
 
         # Initialize descriptions
@@ -932,6 +1130,7 @@ class SettingsGUI(QMainWindow):
         self.llm_combo.currentIndexChanged.connect(self.mark_dirty)
         self.check_sound.toggled.connect(self.mark_dirty)
         self.check_startup.toggled.connect(self.mark_dirty)
+        self.check_simplified_chinese.toggled.connect(self.mark_dirty)
         self.vram_spin.valueChanged.connect(self.mark_dirty)
         self.stop_spin.valueChanged.connect(self.mark_dirty)
         self.prompt_editor.textChanged.connect(self.mark_dirty)
@@ -960,7 +1159,7 @@ class SettingsGUI(QMainWindow):
         # Initial ASR Config
         current_asr = self.prefs.get("whisper_model", self.config.get("whisper_model"))
         if current_asr:
-            idx = self.asr_combo.findText(current_asr)
+            idx = self.asr_combo.findText(self._resolve_asr_display_name(current_asr))
             if idx >= 0:
                 self.asr_combo.setCurrentIndex(idx)
 
@@ -1064,32 +1263,6 @@ class SettingsGUI(QMainWindow):
         
         layout.addStretch()
 
-    def create_group(self, title, fields):
-        group = QFrame()
-        group.setStyleSheet("""
-            QFrame {
-                background-color: transparent;
-                border: 1px solid rgba(255, 255, 255, 0.08);
-                border-radius: 12px;
-            }
-        """)
-        vbox = QVBoxLayout(group)
-        vbox.setContentsMargins(22, 22, 22, 22)
-        vbox.setSpacing(14)
-        
-        header = QLabel(title)
-        header.setStyleSheet("font-weight: 800; color: rgba(255, 255, 255, 0.6); border: none; font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase;")
-        vbox.addWidget(header)
-        
-        for label_text, widget in fields:
-            if label_text:
-                lbl = QLabel(label_text)
-                lbl.setStyleSheet("color: #888888; border: none; font-size: 11px;")
-                vbox.addWidget(lbl)
-            vbox.addWidget(widget)
-            
-        return group
-
     def create_field(self, label, widget):
         container = QWidget()
         vbox = QVBoxLayout(container)
@@ -1116,13 +1289,6 @@ class SettingsGUI(QMainWindow):
             self.llm_combo.setItemData(i, m["name"], Qt.ToolTipRole) # Tooltip
         self.llm_combo.currentTextChanged.connect(self.update_llm_desc)
         return self.llm_combo
-
-    def create_info_label(self, attr_name):
-        lbl = QLabel("")
-        lbl.setStyleSheet("color: #666666; font-style: italic; border: none;")
-        lbl.setWordWrap(True)
-        setattr(self, attr_name, lbl)
-        return lbl
 
     def update_asr_desc(self, text):
         desc = ""
@@ -1203,7 +1369,13 @@ class SettingsGUI(QMainWindow):
         self.check_sound = QCheckBox("Play Sound Effects (Beeps)")
         self.check_startup = QCheckBox("Launch Privox at Startup")
         
-        for chk in [self.check_sound, self.check_startup]:
+        self.check_simplified_chinese = QCheckBox("Simplified Chinese output (简体中文)")
+        self.check_simplified_chinese.setToolTip(
+            "Off (default): all Chinese in the final output is normalized to Traditional (繁體中文).\n"
+            "On: all Chinese is normalized to Simplified (简体中文).\n"
+            "Applies regardless of whether dictation was Traditional or Simplified; uses zhconv when available."
+        )
+        for chk in [self.check_sound, self.check_startup, self.check_simplified_chinese]:
             chk.setStyleSheet("QCheckBox::indicator { width: 40px; height: 20px; } padding: 4px;")
             layout.addWidget(chk)
             
@@ -1248,8 +1420,6 @@ class SettingsGUI(QMainWindow):
         try:
             device_info = sd.query_devices(kind='input')
             device_name = device_info.get('name', 'Unknown Device')
-            # Determine connection type/channels
-            api = device_info.get('hostapi', 0)
             channels = device_info.get('max_input_channels', 0)
             status_text = f"{device_name} ({channels} Ch)"
             status_color = "#4CAF50" # Green
@@ -1384,16 +1554,17 @@ class SettingsGUI(QMainWindow):
             # Re-query
             device_info = sd.query_devices(kind='input')
             device_name = device_info.get('name', 'Unknown Device')
-            api = device_info.get('hostapi', 0)
             channels = device_info.get('max_input_channels', 0)
             status_text = f"{device_name} ({channels} Ch)"
             status_color = "#4CAF50" # Green
-            
-            # Animation effect
-            anim = QPropertyAnimation(self.input_val, b"styleSheet")
-            anim.setDuration(300)
-            self.input_val.setStyleSheet(f"font-size: 14px; font-weight: 600; color: #ffffff; border: none;")
-            QTimer.singleShot(200, lambda: self.input_val.setStyleSheet(f"font-size: 14px; font-weight: 600; color: {status_color}; border: none;"))
+
+            self.input_val.setStyleSheet("font-size: 14px; font-weight: 600; color: #ffffff; border: none;")
+            QTimer.singleShot(
+                200,
+                lambda c=status_color: self.input_val.setStyleSheet(
+                    f"font-size: 14px; font-weight: 600; color: {c}; border: none;"
+                ),
+            )
             
         except Exception:
             status_text = "No Input Device Found"
@@ -1522,6 +1693,7 @@ class SettingsGUI(QMainWindow):
         self.prefs["whisper_model"] = self.asr_combo.currentText()
         self.prefs["current_refiner"] = self.llm_combo.currentText()
         self.prefs["sound_enabled"] = self.check_sound.isChecked()
+        self.prefs["use_simplified_chinese_output"] = self.check_simplified_chinese.isChecked()
         self.prefs["auto_stop_enabled"] = True 
         
         # Capture current prompt edits before saving
@@ -1569,7 +1741,8 @@ class SettingsGUI(QMainWindow):
             json.dump(self.tech_config, f, indent=4)
             
         self.is_dirty = False
-        
+        self._refresh_saved_snapshot()
+
         # 5. Check for changes
         new_asr = self.prefs.get("whisper_model", "")
         new_llm = self.prefs.get("current_refiner", "")
@@ -1595,6 +1768,7 @@ class SettingsGUI(QMainWindow):
                 with open(self.prefs_path, "w", encoding="utf-8") as f:
                     json.dump(self.prefs, f, indent=4)
                 self.is_dirty = False
+                self._refresh_saved_snapshot()
         else:
             self.show_toast("Settings saved successfully!")
 
@@ -2002,22 +2176,12 @@ class SettingsGUI(QMainWindow):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = SettingsGUI()
-    # Apply modern font
     font = QFont("Inter", 10)
     if font.exactMatch():
         app.setFont(font)
     else:
         app.setFont(QFont("Segoe UI", 10))
-    
-    # Load initial values now happens inside init_ui -> load_initial_state
-    # window.load_initial_state() # Called internally
-    
-    # window.show() has all values ready from __init__
-    
-    # Initial prompt load
-    window.on_prompt_change()
-    window.refresh_dict_list()
-    
+
     window.show()
     if IS_MAC:
         window.raise_()

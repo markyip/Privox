@@ -1,5 +1,5 @@
-import PyInstaller.__main__
 import os
+import site
 import shutil
 import sys
 from glob import glob

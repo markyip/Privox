@@ -1,7 +1,102 @@
 import os
 import sys
 import shutil
+import subprocess
+import threading
+import time
+import urllib.request
 import models_config
+
+
+def _win_short_path(path: str) -> str:
+    """8.3 path so CMAKE_ARGS is not split on spaces (Program Files, etc.)."""
+    if sys.platform != "win32" or not path or not os.path.exists(path):
+        return path
+    try:
+        import ctypes
+        buf = ctypes.create_unicode_buffer(32768)
+        n = ctypes.windll.kernel32.GetShortPathNameW(os.path.normpath(path), buf, len(buf))
+        return buf.value if n else path
+    except Exception:
+        return path
+
+
+def _find_nvcc_windows() -> str | None:
+    """Return path to nvcc.exe from CUDA_PATH or default NVIDIA install roots."""
+    for key in ("CUDA_PATH", "CUDA_HOME", "CUDA_ROOT"):
+        root = os.environ.get(key)
+        if root:
+            cand = os.path.join(root, "bin", "nvcc.exe")
+            if os.path.isfile(cand):
+                return cand
+    pf = os.environ.get("ProgramFiles", r"C:\Program Files")
+    cuda = os.path.join(pf, "NVIDIA GPU Computing Toolkit", "CUDA")
+    best_path = None
+    best_ver: tuple[int, ...] = ()
+    if not os.path.isdir(cuda):
+        return None
+    for name in os.listdir(cuda):
+        if not name.startswith("v"):
+            continue
+        cand = os.path.join(cuda, name, "bin", "nvcc.exe")
+        if not os.path.isfile(cand):
+            continue
+        parts = []
+        for p in name.lstrip("v").split("."):
+            if p.isdigit():
+                parts.append(int(p))
+            else:
+                break
+        tup = tuple(parts) if parts else (0,)
+        if tup > best_ver:
+            best_ver = tup
+            best_path = cand
+    return best_path
+
+
+def _local_llama_cpp_wheel_paths(wheels_dir: str) -> list[str]:
+    """Paths to bundled llama_cpp_python-*.whl matching this Python, highest version first."""
+    if not wheels_dir or not os.path.isdir(wheels_dir):
+        return []
+    from packaging.version import Version
+
+    import platform as plat
+
+    py_tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
+
+    def _parse_ver(basename: str) -> Version:
+        if not basename.startswith("llama_cpp_python-") or not basename.endswith(".whl"):
+            return Version("0")
+        core = basename[len("llama_cpp_python-") : -4]
+        sep = f"-{py_tag}-"
+        idx = core.find(sep)
+        ver_s = core[:idx] if idx > 0 else core.split("-")[0]
+        try:
+            return Version(ver_s)
+        except Exception:
+            return Version("0")
+
+    ranked: list[tuple[Version, str]] = []
+    for name in os.listdir(wheels_dir):
+        if not name.endswith(".whl") or not name.startswith("llama_cpp_python-"):
+            continue
+        nlow = name.lower()
+        # cp312-cp312-win_amd64, or py3-none-win_amd64 from `pip wheel` (any Python 3 on that platform).
+        py_match = py_tag in name
+        if not py_match and sys.version_info.major == 3 and "py3-none" in nlow:
+            py_match = True
+        if not py_match:
+            continue
+        if sys.platform == "win32" and plat.machine().lower() in ("amd64", "x86_64"):
+            if "win_amd64" not in nlow:
+                continue
+        full = os.path.join(wheels_dir, name)
+        if os.path.isfile(full):
+            ranked.append((_parse_ver(name), full))
+
+    ranked.sort(key=lambda x: x[0], reverse=True)
+    return [p for _v, p in ranked]
+
 
 def log(msg):
     print(f"[ModelSetup] {msg}", flush=True)
@@ -65,6 +160,11 @@ def main(log_callback=None):
             asr_backend = "whisper"
 
     log_local("[Stage 1/4] Environment verification & configuration loading...")
+
+    # For installer stability, force plain HTTP backend for HF downloads.
+    # Some Xet paths can appear "stuck" at 0.0MB in restricted networks.
+    os.environ["HF_HUB_DISABLE_XET"] = "1"
+    log_local("Using HTTP download backend for Hugging Face (HF_HUB_DISABLE_XET=1).")
     
     models_dir = os.path.join(app_data_dir, "models")
 
@@ -168,7 +268,7 @@ def main(log_callback=None):
 
             
     try:
-        from huggingface_hub import hf_hub_download, snapshot_download
+        from huggingface_hub import hf_hub_download, snapshot_download, hf_hub_url
     except ImportError:
         log_local("Error: huggingface_hub not installed in environment.")
         sys.exit(1)
@@ -225,8 +325,11 @@ def main(log_callback=None):
         else:
             log_local(f"Grammar Model {grammar_file} present.")
 
-    # 2. Whisper Model (Faster-Whisper Format)
-    log_local("[Stage 4/4] Verifying Transcription Model files (Whisper)...")
+    # 2. ASR weights on disk (faster-whisper layout under models/whisper-<id>, or Qwen snapshot in same path)
+    if asr_backend == "qwen_asr":
+        log_local("[Stage 4/4] Verifying speech recognition model files (Qwen-ASR)...")
+    else:
+        log_local("[Stage 4/4] Verifying transcription model files (faster-whisper / Whisper)...")
     whisper_target = os.path.join(models_dir, "whisper-" + whisper_model_name)
     
     # Check for repo-specific tag to force redownload if we switched repos
@@ -279,12 +382,12 @@ def main(log_callback=None):
             local_dir=whisper_target
         )
         # Save the repo tag so we don't redownload again if successful
-        log_local("Finalizing Whisper model setup...")
+        log_local("Finalizing ASR model setup...")
         try:
             with open(repo_tag_file, "w") as f:
                 f.write(whisper_repo)
         except: pass
-        log_local("Whisper Model setup complete.")
+        log_local("ASR model setup complete.")
         
     log_local("All AI models are verified and ready.")
 

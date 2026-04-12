@@ -950,7 +950,7 @@ class SettingsGUI(QMainWindow):
         self.btn_save_all.clicked.connect(self.save_config)
         sidebar_layout.addWidget(self.btn_save_all)
         
-        footer_label = QLabel("v1.2.0")
+        footer_label = QLabel("v1.2.1")
         footer_label.setStyleSheet("color: #444444; padding-left: 20px;")
         sidebar_layout.addWidget(footer_label)
 

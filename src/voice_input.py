@@ -273,6 +273,27 @@ def log_transcription(msg, **kwargs):
         log_print(msg, **kwargs)
 
 
+def _safe_json_load(path: str, label: str) -> dict:
+    """Load JSON with BOM tolerance; on failure log path + preview and return {}."""
+    raw = ""
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            raw = f.read()
+        if not raw.strip():
+            return {}
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        preview = (raw[:400] if raw else "").replace("\r", "\\r").replace("\n", "\\n")
+        log_print(
+            f"Invalid JSON in {label} ({path}): {e}. "
+            f"Fix the file (valid UTF-8, double-quoted keys, no trailing commas). Preview: {preview!r}"
+        )
+        return {}
+    except OSError as e:
+        log_print(f"Could not read {label} ({path}): {e}")
+        return {}
+
+
 def _contains_cjk_char(s: str) -> bool:
     return any("\u4e00" <= c <= "\u9fff" for c in (s or ""))
 
@@ -1129,15 +1150,25 @@ class GrammarChecker:
                  show_modern_error("Privox Model Error", f"Error loading Grammar Model (Llama): {e}", f"Traceback:\n{err_trace[:500]}")
             return False
 
-    def get_effective_prompt(self, language=None, language_prob=0.0, user_text=None):
+    def get_effective_prompt(self, language=None, language_prob=0.0, transcript=None):
         """Constructs a composite prompt with hidden overrides.
         Layer 1: Core Safety/Format (Hidden)
         Layer 2: User Instructions (Visible in GUI)
         Layer 3: Late-Binding Overrides (Hidden, conditional)
         """
-        directive = "REFINE TRANSCRIPT: Provide a clean, accurate version of the ASR input in its ORIGINAL LANGUAGE."
-        
+        key = f"{self.character}|{self.tone}"
+        user_text = self.custom_prompts.get(key, "").strip()
+
+        # Layer 1: Core System Directives (Global Critical Rules)
+        directive = (
+            "REFINE TRANSCRIPT: Provide a clean, accurate version of the ASR input in its ORIGINAL LANGUAGE. "
+            "Do NOT translate into English or any other language. "
+            "Whenever the utterance refers to a numeric value (counts, amounts, dates, math, lists, etc.), "
+            "write it with Western Arabic digits (0–9); this applies in every supported language (CRITICAL RULE 6)."
+        )
+
         # Language Hinting (Robust Multilingual Support)
+        # Only inject specific language directive if confidence is high (> 0.4)
         if language and language != "en" and language_prob > 0.4:
             lang_name = models_config.ISO_LANGUAGE_MAP.get(language, language)
             directive = f"REFINE TRANSCRIPT: PROVIDE A CLEAN {lang_name.upper()} VERSION. DO NOT TRANSLATE TO ENGLISH."
@@ -1187,33 +1218,33 @@ class GrammarChecker:
         # NEW: Inject direct formatting instruction right to the core directive layer
         directive += "\nCRITICAL FORMATTING: Whenever the user dictates a list, sequence of items, or steps, you MUST format your output as a clear bulleted or numbered list. Add paragraphs where logical."
 
-        prompt_directive = f"{directive}\n\n{models_config.CRITICAL_RULES}"
-        
-        # Layer 2: User-Edited Instructions
-        if user_text:
-            prompt_directive += f"\n### ADDITIONAL USER INSTRUCTIONS ###\n{user_text}\n"
+        prompt = f"{directive}\n\n{models_config.CRITICAL_RULES}"
 
-        # Jargon Injection
         dict_str = ", ".join(self.custom_dictionary)
         if dict_str:
-            prompt_directive += f"\n### JARGON/HINTS (PRIORITY) ###\nSpecific Jargon/Hints to recognize: {dict_str}\n"
+            prompt += f"Specific Jargon/Hints: {dict_str}\n"
+
+        # Layer 2: User-Edited Instructions
+        if user_text:
+            prompt += f"\n### ADDITIONAL USER INSTRUCTIONS ###\n{user_text}\n"
 
         # Layer 3: Late-Binding Overrides (Ensures Dropdown Priority)
+        # We append these LAST so they win any conflicts in the LLM's attention.
         overrides = ""
         if self.character != "Custom":
             lens = models_config.CHARACTER_LENSES.get(self.character, "")
             if lens:
                 overrides += f"\n[STRICT IDENTITY OVERRIDE]: {lens}"
-        
+
         if self.tone != "Custom":
             overlay = models_config.TONE_OVERLAYS.get(self.tone, "")
             if overlay:
                 overrides += f"\n[STRICT STYLE OVERRIDE]: {overlay}"
-        
-        if overrides:
-            prompt_directive += f"\n### SYSTEM OVERRIDES (HIGHEST PRIORITY) ###{overrides}\n"
 
-        return prompt_directive
+        if overrides:
+            prompt += f"\n### SYSTEM OVERRIDES (HIGHEST PRIORITY) ###{overrides}\n"
+
+        return prompt
 
     def _looks_like_structured_dictation(self, text):
         if not text:
@@ -1270,11 +1301,11 @@ class GrammarChecker:
             normalized += "."
         return normalized
 
-    def correct(self, text, is_command=False, language=None, language_prob=0.0, user_text=None):
+    def correct(self, text, is_command=False, language=None, language_prob=0.0):
         clean_text = text.strip()
         if not self.model or not clean_text:
             return _finalize_refiner_text(text, self.use_simplified_chinese_output)
-            
+
         if len(clean_text) < 8 and clean_text.lower() not in [d.lower() for d in self.custom_dictionary]:
             log_transcription(f" [Short Input Skip] Input too short ({len(clean_text)} chars). Mirroring.")
             return _finalize_refiner_text(text, self.use_simplified_chinese_output)
@@ -1289,7 +1320,6 @@ class GrammarChecker:
 
         try:
             prompt_type = self.profile.get("prompt_type", "llama")
-            use_compact_formatter = False
 
             if is_command:
                 system_prompt = self.command_prompt or (
@@ -1298,23 +1328,30 @@ class GrammarChecker:
                 )
                 user_content = text
             else:
-                # Resolve Custom Instruction if not explicitly provided
-                if not user_text and hasattr(self, 'custom_prompts'):
-                    prompt_key = f"{self.character}|{self.tone}"
-                    user_text = self.custom_prompts.get(prompt_key, "")
-
-                if self._should_fast_path_refine(clean_text, user_text):
+                resolved_user = ""
+                if hasattr(self, "custom_prompts"):
+                    resolved_user = self.custom_prompts.get(f"{self.character}|{self.tone}", "")
+                if self._should_fast_path_refine(clean_text, resolved_user):
                     log_print(f" [Fast Refine Path] Skipping LLM for simple short dictation ({len(clean_text)} chars).")
-                    return self._fast_path_cleanup(text)
+                    return _finalize_refiner_text(
+                        self._fast_path_cleanup(text), self.use_simplified_chinese_output
+                    )
 
-                core_directive = self.get_effective_prompt(language=language, language_prob=language_prob, user_text=user_text)
-                use_compact_formatter = self._should_use_compact_formatter(clean_text, user_text)
-                system_prompt = models_config.get_system_formatter(
-                    language=language,
-                    prompt_type=prompt_type,
-                    compact=use_compact_formatter
+                core_directive = self.get_effective_prompt(
+                    language=lang_effective,
+                    language_prob=prob_effective,
+                    transcript=clean_text,
                 )
-                user_content = f"[Core Directive]: {core_directive}\n[Transcript]: {text}\nOutput: "
+                system_prompt = models_config.get_system_formatter_for_transcript(
+                    language=lang_effective, transcript_char_len=len(clean_text)
+                )
+                user_content = (
+                    f"[Core Directive]: {core_directive}\n"
+                    f"[Transcript]: {text}\n"
+                    "Do not repeat the Core Directive, rules, or examples. "
+                    "Write only the opening tag <refined>, the cleaned transcript, and </refined>.\n"
+                    "Output: "
+                )
 
             # Format based on model type
             if prompt_type == "t5":
@@ -1366,19 +1403,16 @@ class GrammarChecker:
                     "<|start_header_id|>assistant<|end_header_id|>\n\n"
                 )
                 stop_tokens = ["<|eot_id|>"]
-            
-            # 2. Proportional max_tokens cap to prevent runaway generation
-            input_tokens_est = max(len(clean_text) // 3, len(clean_text.split()))
-            if IS_MAC:
-                if prompt_type == "chatml":
-                    max_tokens = min(96 if use_compact_formatter else 128, max(24, input_tokens_est))
-                else:
-                    max_tokens = min(96 if use_compact_formatter else 144, max(32, int(input_tokens_est * 1.5)))
-            else:
-                max_tokens = min(2048, max(128, input_tokens_est * 4))
 
+            # 2. Proportional max_tokens: CJK-heavy text needs ~1 token/char of headroom; cap runaway at 4096.
+            char_n = len(clean_text)
+            word_n = len(clean_text.split())
+            input_tokens_est = max(char_n // 2, word_n * 3, char_n // 4 + 200)
+            max_tokens = min(4096, max(256, int(char_n * 1.3) + 512, input_tokens_est * 3))
+
+            ref_mode = "long_ctx" if len(clean_text) > 300 else "standard"
             log_print(
-                f" Refiner prompt mode: {'compact' if use_compact_formatter else 'full'} "
+                f" Refiner prompt mode: {ref_mode} "
                 f"(prompt_type={prompt_type}, prompt_chars={len(system_prompt) + len(user_content)}, max_tokens={max_tokens})"
             )
 
@@ -1414,14 +1448,19 @@ class GrammarChecker:
                 log_transcription(" Warning: LLM returned empty response.")
                 
             if prompt_type == "t5":
-                return raw_response
+                return _finalize_refiner_text(raw_response, self.use_simplified_chinese_output)
 
             raw_response = self._strip_thinking_blocks(raw_response)
+            raw_for_extract = self._strip_critical_rules_echo(raw_response)
 
-            # Extract text purely from inside the <refined> tags 
-            import re
-            match = re.search(r'<refined>(.*?)</refined>', raw_response, flags=re.DOTALL | re.IGNORECASE)
-            
+            match = re.search(r"<refined>(.*?)</refined>", raw_for_extract, flags=re.DOTALL | re.IGNORECASE)
+            if not match:
+                match = re.search(
+                    r"<\s*refined\s*>(.*?)(?:<\s*/\s*refined\s*>|$)",
+                    raw_for_extract,
+                    flags=re.DOTALL | re.IGNORECASE,
+                )
+
             result = None
             if match:
                 log_transcription(" Regex extracted <refined> block successfully.")
@@ -1446,11 +1485,10 @@ class GrammarChecker:
                 else:
                     result = raw_for_extract or raw_response
 
-            # Post-processing
             result = self._strip_meta_commentary(result)
             result = self._validate_output(clean_text, result)
 
-            return result
+            return _finalize_refiner_text(result, self.use_simplified_chinese_output)
         except Exception as e:
             log_print(f"Grammar Check Error: {e}")
             return _finalize_refiner_text(text, self.use_simplified_chinese_output)
@@ -1514,6 +1552,152 @@ class GrammarChecker:
             return ""
 
         return text
+
+    def _strip_critical_rules_echo(self, s: str) -> str:
+        """Remove regurgitated prompt chunks (Core Directive line, CRITICAL RULES, numbered rules)."""
+        s = (s or "").strip()
+        if not s:
+            return s
+        lines = s.split("\n")
+        out: list[str] = []
+        i, n = 0, len(lines)
+        rule_num = re.compile(r"^\s*\d+\.\s+[A-Z][A-Z0-9,\s/'&\-]{2,}.*:.*$")
+        while i < n:
+            low = lines[i].strip().lower()
+            if low.startswith("[core directive]"):
+                i += 1
+                continue
+            if low.startswith("### system overrides") or low.startswith("### additional user instructions"):
+                i += 1
+                continue
+            if low.startswith("critical rules"):
+                i += 1
+                while i < n:
+                    ln = lines[i].strip()
+                    if not ln:
+                        i += 1
+                        continue
+                    if rule_num.match(lines[i]):
+                        i += 1
+                        continue
+                    break
+                continue
+            out.append(lines[i])
+            i += 1
+        s = "\n".join(out).strip()
+
+        cr = (models_config.CRITICAL_RULES or "").strip()
+        if not cr:
+            return s
+        cr_lines = [x.strip() for x in cr.splitlines() if x.strip()]
+        s_lines = s.splitlines()
+        ri = 0
+        while ri < len(s_lines) and not s_lines[ri].strip():
+            ri += 1
+        if ri < len(s_lines) and s_lines[ri].strip().lower() == cr_lines[0].lower():
+            ci = 0
+            while ci < len(cr_lines) and ri < len(s_lines):
+                if not s_lines[ri].strip():
+                    ri += 1
+                    continue
+                if s_lines[ri].strip().lower() != cr_lines[ci].lower():
+                    break
+                ci += 1
+                ri += 1
+            if ci == len(cr_lines) or ci >= max(4, (len(cr_lines) * 2 + 2) // 3):
+                return "\n".join(s_lines[ri:]).strip()
+        return s
+
+    def _looks_like_prompt_echo(self, s: str) -> bool:
+        if not s:
+            return True
+        sl = s.lower()
+        markers = (
+            "[core directive]",
+            "[transcript]",
+            "must wrap your final",
+            "do not output anything outside",
+            "<example_",
+            "### system overrides",
+            "### additional user instructions",
+            "you are a precise text-processing api",
+            "output only the processed text",
+            "critical rules:",
+            "conservative refinement:",
+        )
+        return any(m in sl for m in markers)
+
+    def _fallback_extract_refined_body(self, raw: str, transcript: str) -> str | None:
+        """Recover refined text when tags are missing (Gemma often echoes instructions)."""
+        s = self._strip_critical_rules_echo((raw or "").strip())
+        t = (transcript or "").strip()
+        if not s:
+            return None
+
+        m = re.search(r"<\s*refined\s*>(.*?)(?:<\s*/\s*refined\s*>|$)", s, flags=re.DOTALL | re.IGNORECASE)
+        if m:
+            body = m.group(1).strip()
+            if body and not self._looks_like_prompt_echo(body):
+                return body
+
+        if re.search(r"\boutput:\s*", s, flags=re.IGNORECASE):
+            tail = re.split(r"(?i)\boutput:\s*", s)[-1].strip()
+            if tail and len(tail) < len(s):
+                s = tail
+
+        line_starts = (
+            "[core directive]",
+            "[transcript]",
+            "### additional",
+            "### system overrides",
+            "[strict identity",
+            "[strict style",
+        )
+        lines = s.split("\n")
+        out_lines: list[str] = []
+        for line in lines:
+            low = line.strip().lower()
+            if not out_lines and not low:
+                continue
+            if not out_lines:
+                if any(low.startswith(p) for p in line_starts):
+                    continue
+                if low.startswith("refine transcript:") or low.startswith("critical formatting"):
+                    continue
+                if low.startswith("critical rules"):
+                    continue
+            out_lines.append(line)
+        candidate = "\n".join(out_lines).strip()
+
+        if t:
+            parts = candidate.split("\n", 1)
+            first = parts[0].strip()
+            if first.lower() == t.lower():
+                candidate = parts[1].strip() if len(parts) > 1 else ""
+            elif len(first) >= 12 and len(t) >= 12 and t.lower().startswith(first.lower()[:12]):
+                candidate = parts[1].strip() if len(parts) > 1 else ""
+
+        paras = [p.strip() for p in re.split(r"\n\s*\n+", candidate) if p.strip()]
+        scored: list[tuple[int, str]] = []
+        for p in paras:
+            if self._looks_like_prompt_echo(p):
+                continue
+            pl = len(p)
+            if pl < max(4, len(t) // 8 if t else 4):
+                continue
+            if t and pl > max(500, len(t) * 10):
+                continue
+            scored.append((abs(pl - len(t)), p))
+        if scored:
+            scored.sort(key=lambda x: x[0])
+            return scored[0][1]
+
+        if candidate and not self._looks_like_prompt_echo(candidate):
+            cap = max(200, len(t) * 10) if t else 200
+            if len(candidate) <= cap:
+                return candidate
+
+        return None
 
     # --- Prompt-echo fingerprints (substrings the LLM may regurgitate) ---
     _PROMPT_FINGERPRINTS = [
@@ -2217,16 +2401,10 @@ class VoiceInputApp:
             self.model_reload_requested = False
             
             # --- 1. Load Technical Config (Static/Public) ---
-            config = {}
-            if os.path.exists(config_path):
-                with open(config_path, "r", encoding="utf-8") as f:
-                    config = json.load(f)
+            config = _safe_json_load(config_path, "config.json") if os.path.exists(config_path) else {}
 
             # --- 2. Load User Preferences (Hidden/Private) ---
-            prefs = {}
-            if os.path.exists(prefs_path):
-                with open(prefs_path, "r", encoding="utf-8") as f:
-                    prefs = json.load(f)
+            prefs = _safe_json_load(prefs_path, ".user_prefs.json") if os.path.exists(prefs_path) else {}
 
             # --- 3. Migration Logic (Move settings from config -> prefs) ---
             pref_keys = [

@@ -318,9 +318,91 @@ def main(log_callback=None):
         if not os.path.exists(os.path.join(models_dir, grammar_file)):
             log_local(f"Downloading Grammar Model ({grammar_file})...")
             log_local(f"Source Repo: {grammar_repo}")
-            # If this fails (e.g., 401 Unauthorized or 404 Not Found),
-            # it will now raise an exception, crash the script, and alert the GUI.
-            hf_hub_download(repo_id=grammar_repo, filename=grammar_file, local_dir=models_dir)
+            log_local("Large GGUF download can take several minutes depending on network speed.")
+
+            target_path = os.path.join(models_dir, grammar_file)
+
+            def _download_http_stream(repo_id, filename, out_path):
+                # Direct streaming download to avoid silent cache-only phases.
+                url = hf_hub_url(repo_id=repo_id, filename=filename)
+                tmp_path = out_path + ".part"
+                req = urllib.request.Request(url, headers={"User-Agent": "Privox-Installer/1.2.1"})
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    total = int(resp.headers.get("Content-Length", "0") or "0")
+                    downloaded = 0
+                    last_log = time.time()
+                    with open(tmp_path, "wb") as f:
+                        while True:
+                            chunk = resp.read(8 * 1024 * 1024)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            now = time.time()
+                            if now - last_log >= 5:
+                                mb = downloaded / (1024 * 1024)
+                                if total > 0:
+                                    pct = (downloaded / total) * 100
+                                    log_local(f"Direct download... {mb:.1f} MB ({pct:.1f}%)")
+                                else:
+                                    log_local(f"Direct download... {mb:.1f} MB")
+                                last_log = now
+                os.replace(tmp_path, out_path)
+
+            try:
+                _download_http_stream(grammar_repo, grammar_file, target_path)
+            except Exception as first_error:
+                log_local(f"Direct HTTP attempt failed: {first_error}. Falling back to huggingface_hub...")
+                stop_event = threading.Event()
+
+                def progress_heartbeat():
+                    last_bytes = -1
+                    stall_count = 0
+                    while not stop_event.wait(5):
+                        size_bytes = 0
+                        if os.path.exists(target_path):
+                            try:
+                                size_bytes = os.path.getsize(target_path)
+                            except Exception:
+                                size_bytes = 0
+
+                        if size_bytes == last_bytes:
+                            stall_count += 1
+                        else:
+                            stall_count = 0
+                        last_bytes = size_bytes
+
+                        mb = size_bytes / (1024 * 1024)
+                        if stall_count >= 6:
+                            log_local(
+                                f"Fallback download in progress... {mb:.1f} MB "
+                                "(no size change yet, still waiting for network chunks)"
+                            )
+                        else:
+                            log_local(f"Fallback download in progress... {mb:.1f} MB")
+
+                progress_thread = threading.Thread(target=progress_heartbeat, daemon=True)
+                progress_thread.start()
+                try:
+                    hf_hub_download(
+                        repo_id=grammar_repo,
+                        filename=grammar_file,
+                        local_dir=models_dir,
+                        etag_timeout=30,
+                    )
+                except Exception as second_error:
+                    log_local(f"Fallback attempt failed: {second_error}. Retrying once...")
+                    hf_hub_download(
+                        repo_id=grammar_repo,
+                        filename=grammar_file,
+                        local_dir=models_dir,
+                        force_download=False,
+                        etag_timeout=30,
+                    )
+                finally:
+                    stop_event.set()
+                    progress_thread.join(timeout=1)
+
             log_local("Grammar Model download complete.")
         else:
             log_local(f"Grammar Model {grammar_file} present.")

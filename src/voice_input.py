@@ -1344,9 +1344,15 @@ class GrammarChecker:
 
             raw_for_extract = self._strip_critical_rules_echo(raw_response)
 
-            # Diagnostic Log
+            # Diagnostic: full LLM string often starts with an ASR echo or filler BEFORE <refined>;
+            # the pasted text comes from inside <refined> only — do not read this prefix as final output.
             if raw_response:
-                log_transcription(f" LLM Raw Response (len={len(raw_response)}): '{raw_response[:100]}...'")
+                prev_n = min(140, len(raw_response))
+                tail = "..." if len(raw_response) > prev_n else ""
+                log_transcription(
+                    f" LLM response length={len(raw_response)}; start of string (may differ from pasted text): "
+                    f"'{raw_response[:prev_n]}{tail}'"
+                )
             else:
                 log_transcription(" Warning: LLM returned empty response.")
                 
@@ -1368,6 +1374,13 @@ class GrammarChecker:
             if match:
                 log_transcription(" Regex extracted <refined> block successfully.")
                 result = match.group(1).strip()
+                if result:
+                    pv_n = min(320, len(result))
+                    pv_tail = "..." if len(result) > pv_n else ""
+                    log_transcription(
+                        f" <refined> inner preview ({len(result)} chars; paste also runs digit/zh finalize): "
+                        f"'{result[:pv_n]}{pv_tail}'"
+                    )
             else:
                 log_transcription(" Warning: Model failed to use <refined> tags.")
                 fb = self._fallback_extract_refined_body(raw_for_extract, clean_text)
@@ -3099,6 +3112,12 @@ class VoiceInputApp:
             if final_text is None or not str(final_text).strip():
                 log_transcription(" [Skip paste: empty refined output]")
             else:
+                ft = str(final_text)
+                cap = 500
+                log_transcription(
+                    f" [Pasted text preview] ({len(ft)} chars): "
+                    f"'{ft[:cap]}{'...' if len(ft) > cap else ''}'"
+                )
                 try:
                     self.paste_text(final_text)
                 except Exception as e:

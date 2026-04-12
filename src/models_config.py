@@ -20,7 +20,7 @@ LLM_LIBRARY = [
         "file_name": "gemma-4-E2B-it-Q4_K_M.gguf",
         "prompt_type": "gemma",
         "turboquant": True,
-        "n_ctx": 3072,
+        "n_ctx": 6144,
         "n_gpu_layers": 20,
         "description": "Gemma 4 E2B tuned for low VRAM with TurboQuant defaults."
     },
@@ -30,7 +30,7 @@ LLM_LIBRARY = [
         "file_name": "gemma-4-E4B-it-Q4_K_M.gguf",
         "prompt_type": "gemma",
         "turboquant": True,
-        "n_ctx": 3072,
+        "n_ctx": 6144,
         "n_gpu_layers": 24,
         "description": "Gemma 4 E4B with TurboQuant defaults for lower VRAM usage."
     },
@@ -318,6 +318,19 @@ Output: <refined>{ex['output']}</refined>
 Output: <refined>{struct_ex['output']}</refined>
 </example_2>{numbers_ex}"""
     return formatter
+
+
+def get_system_formatter_for_transcript(language=None, transcript_char_len=0):
+    """Shorter system prompt for long transcripts so prompt+text fits n_ctx; forbids summarization."""
+    if transcript_char_len <= 300:
+        return get_system_formatter(language=language)
+    return f"""
+You are a precise text-processing API. Refine the user's transcript per the Core Directive.
+You MUST put the COMPLETE refined transcript inside one pair of <refined> and </refined> tags.
+Do NOT summarize, shorten, skip paragraphs, or omit sentences — keep the same substance and coverage as the input.
+
+{CRITICAL_RULES}
+"""
 
 # --- ISO Language Map (For Prompt Highlighting) ---
 ISO_LANGUAGE_MAP = {

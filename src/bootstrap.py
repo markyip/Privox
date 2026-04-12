@@ -2,16 +2,12 @@ import os
 import shutil
 import sys
 import subprocess
-import threading
 import time
-import logging
-import queue
 import ctypes
 import zipfile
 import urllib.request
 import json
 import winreg
-from ctypes import wintypes
 
 # --- 0. Hard Environment Isolation (MUST BE FIRST) ---
 os.environ["PYTHONNOUSERSITE"] = "1"
@@ -28,10 +24,10 @@ if sys.platform == 'win32':
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QLineEdit, QProgressBar, QPlainTextEdit,
-    QStackedWidget, QFileDialog, QMessageBox, QFrame, QSizePolicy, QDialog
+    QStackedWidget, QFileDialog, QFrame, QDialog,
 )
 from PySide6.QtGui import QIcon, QFont, QColor, QPalette
-from PySide6.QtCore import Qt, QSize, Signal, QObject, QThread, QPropertyAnimation, QEasingCurve, QSequentialAnimationGroup, QParallelAnimationGroup, QPoint
+from PySide6.QtCore import Qt, Signal, QObject, QThread
 
 # --- Versioning ---
 APP_VERSION = "1.2.0"
@@ -238,36 +234,6 @@ def verify_required_models(target_dir):
         return False, f"ASR folder incomplete (need model.bin or Hugging Face config.json): {os.path.basename(whisper_dir)}"
     except Exception as e:
         return False, str(e)
-
-def apply_dark_title_bar(window):
-    """ Enforces a pitch-black title bar on Windows 10/11 using DWM API. """
-    if sys.platform != 'win32':
-        return
-    try:
-        hwnd = window.effectiveWinId().value()
-        
-        # Disable Mica/Acrylic (DWMWA_SYSTEMBACKDROP_TYPE = 38, None = 1)
-        none_backdrop = ctypes.c_int(1)
-        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 38, ctypes.byref(none_backdrop), 4)
-
-        # Force Dark Mode (DWMWA_USE_IMMERSIVE_DARK_MODE = 20)
-        dark = ctypes.c_int(1)
-        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(dark), 4)
-        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 19, ctypes.byref(dark), 4)
-        
-        # Caption color (BGR: 0x00000000 for pitch black)
-        # This prevents the blue-ish grey focus highlight on Win 11
-        black = ctypes.c_int(0x00000000)
-        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 35, ctypes.byref(black), 4)
-        
-        # Text color (White)
-        white = ctypes.c_int(0x00FFFFFF)
-        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 36, ctypes.byref(white), 4)
-        
-        # Redraw
-        ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0027) 
-    except:
-        pass
 
 class ModernDialog(QDialog):
     """Simplified ModernDialog for Bootstrap bootstrap to maintain standalone nature."""
@@ -889,23 +855,6 @@ def create_lnk(target_exe, target_dir, icon_path, lnk_path):
         if os.path.exists(vbs_file): os.remove(vbs_file)
     except: pass
 
-def apply_mica_or_acrylic(window, acrylic=True):
-    if sys.platform != 'win32': return
-    try:
-        hwnd = window.effectiveWinId().value()
-        # DWMWA_SYSTEMBACKDROP_TYPE: 1=None, 2=Mica, 3=Acrylic (Tabbed), 4=MicaAlt
-        backdrop_type = ctypes.c_int(3 if acrylic else 2)
-        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 38, ctypes.byref(backdrop_type), 4)
-        
-        # Dark Mode Force
-        dark = ctypes.c_int(1)
-        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(dark), 4)
-        
-        # Caption color to black/transparent
-        black = ctypes.c_int(0x00000000)
-        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 35, ctypes.byref(black), 4)
-    except: pass
-
 def register_uninstaller(install_dir, exe_path):
     if sys.platform != 'win32': return
     try:
@@ -954,11 +903,25 @@ def run_app():
     """ Launches the main application using Pixi environment directly to avoid terminal flash. """
     root = _resolve_privox_runtime_root()
     env_pythonw = os.path.join(root, ".pixi", "envs", "default", "pythonw.exe")
+    # Logon / Registry Run often inherit a minimal PATH; child pythonw needs Pixi Library\\bin (CUDA/cudnn, etc.).
+    env = os.environ.copy()
+    if sys.platform == "win32":
+        for _p in (
+            os.path.join(root, ".pixi", "envs", "default", "Library", "bin"),
+            os.path.join(root, ".pixi", "envs", "default", "bin"),
+        ):
+            if os.path.isdir(_p):
+                env["PATH"] = _p + os.pathsep + env.get("PATH", "")
 
     if os.path.exists(env_pythonw):
         # Run pythonw directly to ensure no console flashes from 'pixi run' invoking a shell
         script_path = os.path.join(root, "src", "voice_input.py")
-        subprocess.Popen([env_pythonw, script_path], cwd=root, creationflags=subprocess.CREATE_NO_WINDOW)
+        subprocess.Popen(
+            [env_pythonw, script_path],
+            cwd=root,
+            env=env,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
     else:
         # Fallback to pixi run if environment isn't standard
         internal_dir = os.path.join(root, "_internal")
@@ -966,7 +929,12 @@ def run_app():
 
         if os.path.exists(pixi_exe):
             # We use 'pixi run start-windowless' here, but it may flash a terminal briefly
-            subprocess.Popen([pixi_exe, "run", "start-windowless"], cwd=root, creationflags=subprocess.CREATE_NO_WINDOW)
+            subprocess.Popen(
+                [pixi_exe, "run", "start-windowless"],
+                cwd=root,
+                env=env,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
         else:
             print(
                 "Error: Pixi environment not found. The exe must sit in (or under) a folder that "

@@ -20,7 +20,36 @@ def _sanitize_user_site_paths():
     sys.path[:] = sanitized
     return removed
 
+
 _removed_user_site_paths = _sanitize_user_site_paths()
+
+
+def _privox_install_root() -> str:
+    """Directory containing config.json / .pixi / models (same rule as BASE_DIR below)."""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.normpath(sys.executable))
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+# Windows: register Pixi DLL dirs and prepend PATH *before* importing torch/CUDA (logon/Run has a thin PATH).
+if sys.platform == "win32":
+    import ctypes
+
+    _root = _privox_install_root()
+    for _dll_dir in (
+        os.path.join(_root, "_internal", "llama_cpp", "lib"),
+        os.path.join(_root, ".pixi", "envs", "default", "bin"),
+        os.path.join(_root, ".pixi", "envs", "default", "Library", "bin"),
+    ):
+        if os.path.isdir(_dll_dir):
+            try:
+                os.add_dll_directory(_dll_dir)
+            except Exception:
+                pass
+            try:
+                os.environ["PATH"] = _dll_dir + os.pathsep + os.environ.get("PATH", "")
+            except Exception:
+                pass
 
 import logging
 import threading
@@ -405,36 +434,9 @@ try:
 except Exception as e:
     print(f"Boot Error: {e}")
 
-# Base Directory for models/libs
-if getattr(sys, 'frozen', False):
-    # For custom install paths, we use the EXE directory
-    BASE_DIR = os.path.dirname(os.path.normpath(sys.executable))
-else:
-    BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-# Simplified Path Logic: Trust Pixi environment but handle DLLs if needed
-if sys.platform == 'win32':
-    # Prefer installer-bundled llama.cpp CUDA/CPU DLLs (from PyInstaller build env), then Pixi env.
-    _bundled_llama_lib = os.path.join(BASE_DIR, "_internal", "llama_cpp", "lib")
-    if os.path.isdir(_bundled_llama_lib):
-        try:
-            os.add_dll_directory(_bundled_llama_lib)
-            logging.info(f"Added bundled llama_cpp/lib to DLL directory: {_bundled_llama_lib}")
-        except Exception as e:
-            logging.warning(f"Failed to add bundled llama_cpp/lib: {e}")
-    pixi_bin = os.path.join(BASE_DIR, ".pixi", "envs", "default", "bin")
-    pixi_library_bin = os.path.join(BASE_DIR, ".pixi", "envs", "default", "Library", "bin")
-    if os.path.exists(pixi_bin):
-        try:
-            os.add_dll_directory(pixi_bin)
-            logging.info(f"Added Pixi bin to DLL directory: {pixi_bin}")
-        except Exception as e:
-            logging.warning(f"Failed to add Pixi bin to DLL directory: {e}")
-    if os.path.isdir(pixi_library_bin):
-        try:
-            os.add_dll_directory(pixi_library_bin)
-        except Exception:
-            pass
+BASE_DIR = _privox_install_root()
+if sys.platform == "win32":
+    logging.info("Privox install root (BASE_DIR): %s", BASE_DIR)
 
 def show_modern_error(title, message, subtext=""):
     """Shows a premium styled error dialog, falling back to ctypes if PySide6 fails."""
@@ -858,7 +860,7 @@ class GrammarChecker:
                         n_ctx=n_ctx,
                         # IMPORTANT:
                         # - Use explicit, bounded n_gpu_layers instead of -1 (full offload),
-                        #   which can easily trigger GPU OOM on larger models (e.g. Qwen 3.5 9B)
+                        #   which can easily trigger GPU OOM on larger models
                         # - When running on CPU, this will be 0 to avoid any GPU usage.
                         n_gpu_layers=n_gpu_layers,
                         n_batch=n_batch,
@@ -1615,9 +1617,11 @@ class VoiceInputApp:
         self.active_mods = set()
         self.settings_process = None
         self.last_toggle_time = 0 # Hotkey de-bounce timer
+        self._hotkey_primary_down = False  # True while primary key held; blocks OS key-repeat (phantom stop→start)
         self.last_config_reload_time = 0 # Cooldown for config polling
         self._last_prefs_hash = None # Hash-based change detection
-        
+        self._hf_repo_verify_cache = {}  # repo_id -> (monotonic_ts, ok: bool); avoids HF spam on reload
+
         # Load Config (FINAL STEP of init to prevent overwriting by defaults)
         self.load_config()
         
@@ -1841,37 +1845,71 @@ class VoiceInputApp:
                     elif ASR_BACKEND == "qwen_asr":
                         log_print(f"ASR Diagnostic - Initializing Qwen3ASRModel ({WHISPER_REPO}) on {device_str}...")
                         from qwen_asr import Qwen3ASRModel
-                        
-                        # Apply memory constraint when on GPU to prevent accelerate from grabbing all VRAM 
-                        # and fighting with llama.cpp already in memory.
+
                         if is_gpu:
-                            # 12GB is typical. Let's cap transformers to a safe conservative limit like 6GB 
-                            # (Qwen3-ASR 1.7B takes ~3.5GB in float16)
-                            max_mem = {0: "6GiB", "cpu": "8GiB"}
+                            cap_env = (os.environ.get("PRIVOX_ASR_MAX_GPU_GIB") or "").strip()
+                            cap_gib = None
+                            if cap_env:
+                                try:
+                                    cap_gib = float(cap_env)
+                                except ValueError:
+                                    cap_gib = None
+                            if cap_gib is None:
+                                try:
+                                    total_gib = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+                                except Exception:
+                                    total_gib = 12.0
+                                if total_gib <= 8.5:
+                                    cap_gib = max(2.25, total_gib * 0.38)
+                                elif total_gib <= 13.0:
+                                    cap_gib = max(3.0, total_gib * 0.42)
+                                else:
+                                    cap_gib = min(5.5, max(3.5, total_gib * 0.28))
+                            max_mem = {0: f"{cap_gib:.2f}GiB", "cpu": "12GiB"}
                             dtype = torch.float16
+                            try:
+                                if torch.cuda.is_bf16_supported():
+                                    dtype = torch.bfloat16
+                            except Exception:
+                                pass
+                            log_print(
+                                f"Qwen-ASR VRAM cap ~{cap_gib:.2f} GiB on GPU (set PRIVOX_ASR_MAX_GPU_GIB to override); dtype={dtype}"
+                            )
                         else:
                             max_mem = None
                             dtype = torch.float32
 
-                        # Load in 16-bit based on CUDA availability with max_memory constraints
                         self.asr_model = Qwen3ASRModel.from_pretrained(
                             WHISPER_REPO,
                             device_map="auto" if is_gpu else "cpu",
                             max_memory=max_mem,
                             dtype=dtype,
                             low_cpu_mem_usage=True,
-                            local_files_only=True
-                            # We deliberately OMIT forced_aligner for speed and lower VRAM
+                            local_files_only=True,
                         )
-                        log_print(f"Qwen3ASRModel initialized successfully.")
+                        log_print("Qwen3ASRModel initialized successfully.")
                     else:
-                        compute_type = "float16" if is_gpu else "int8"
+                        # int8_float16 cuts VRAM vs pure float16 on CUDA with small quality cost.
+                        compute_type = "int8_float16" if is_gpu else "int8"
                         from faster_whisper import WhisperModel
                         local_whisper = os.path.join(BASE_DIR, "models", f"whisper-{WHISPER_SIZE}")
                         model_path = local_whisper if os.path.exists(os.path.join(local_whisper, "model.bin")) else WHISPER_REPO
-                        log_print(f"ASR Diagnostic - Initializing WhisperModel ({WHISPER_SIZE}) on {device_str}...")
-                        self.asr_model = WhisperModel(model_path, device=device_str, compute_type=compute_type)
-                        log_print(f"WhisperModel initialized successfully.")
+                        log_print(
+                            f"ASR Diagnostic - Initializing WhisperModel ({WHISPER_SIZE}) on {device_str}, compute_type={compute_type}..."
+                        )
+                        try:
+                            self.asr_model = WhisperModel(
+                                model_path, device=device_str, compute_type=compute_type
+                            )
+                        except Exception as e1:
+                            if is_gpu and compute_type == "int8_float16":
+                                log_print(f"Whisper int8_float16 failed ({e1}); retrying float16...")
+                                self.asr_model = WhisperModel(
+                                    model_path, device=device_str, compute_type="float16"
+                                )
+                            else:
+                                raise
+                        log_print("WhisperModel initialized successfully.")
                     
                     # Track ASR model usage here instead of in load_config
                     self.track_model_usage(getattr(self, 'active_asr_name', WHISPER_SIZE))
@@ -2068,11 +2106,19 @@ class VoiceInputApp:
                 "Standard (Llama 3.2)",
                 "Multilingual (Qwen 3.5 9B)",
                 "Multilingual (Qwen 2.5 7B)",
+                "Multilingual (Qwen 3.5 4B)",
             }
             if prefs.get("current_refiner") in removed_refiners:
                 prefs["current_refiner"] = models_config.DEFAULT_LLM
                 with open(prefs_path, "w", encoding="utf-8") as f:
                     json.dump(prefs, f, indent=4)
+
+            _gem = models_config.LLM_LIBRARY[0]
+            if config.get("grammar_file") == "Qwen3.5-4B-Q4_K_M.gguf" or config.get("grammar_repo") == "unsloth/Qwen3.5-4B-GGUF":
+                config["grammar_repo"] = _gem["repo_id"]
+                config["grammar_file"] = _gem["file_name"]
+                with open(config_path, "w", encoding="utf-8") as f:
+                    json.dump(config, f, indent=4)
             
             # Update mtime tracker immediately to avoid self-triggering polish loop
             if os.path.exists(prefs_path):
@@ -2099,16 +2145,13 @@ class VoiceInputApp:
             
             # Update Tray ToolTip context
             self.update_tray_tooltip()
-            
+
             self.last_config_reload_time = time.time()
             # Update hash tracker and mtime after all potential logic is done
             if os.path.exists(prefs_path):
                  with open(prefs_path, "rb") as f:
                      self._last_prefs_hash = hashlib.md5(f.read()).hexdigest()
                  self._last_prefs_mtime = os.path.getmtime(prefs_path)
-                
-            # Update Tray ToolTip context
-            self.update_tray_tooltip()
 
             self.sound_enabled = prefs.get("sound_enabled", True)
             self.auto_stop_enabled = prefs.get("auto_stop_enabled", True)
@@ -2282,16 +2325,20 @@ class VoiceInputApp:
 
         # 3. Check HuggingFace Repo (Fast head request) - Fallback for un-downloaded models
         if repo:
+            ttl = 120.0
+            now = time.monotonic()
+            hit = self._hf_repo_verify_cache.get(repo)
+            if hit is not None and (now - hit[0]) < ttl:
+                return hit[1]
             try:
-                # We use a cached check if possible to avoid hitting HF on every startup
-                # For now, a simple check is fine. In production we might skip this unless config changed.
-                api = HfApi()
-                api.repo_info(repo_id=repo)
+                HfApi().repo_info(repo_id=repo)
+                self._hf_repo_verify_cache[repo] = (now, True)
                 return True
-            except:
+            except Exception:
                 log_print(f"Verification Failed for model (and not found locally): {repo}")
+                self._hf_repo_verify_cache[repo] = (now, False)
                 return False
-        
+
         return False
 
     def cleanup_stale_models(self, days):
@@ -2546,6 +2593,40 @@ class VoiceInputApp:
         if self.running and self.mic_active and self.models_ready:
             self.q.put(indata.copy())
 
+    def _listener_key_token(self, key):
+        """Normalize pynput key to the same token used for self.target_key (e.g. 'f8', 'space')."""
+        try:
+            k_name = getattr(key, "name", None)
+            k_char = getattr(key, "char", None)
+            k_vk = getattr(key, "vk", None)
+
+            if k_name:
+                return k_name
+            if k_vk and 65 <= k_vk <= 90:
+                return chr(k_vk).lower()
+            if k_vk and 48 <= k_vk <= 57:
+                return chr(k_vk)
+            if k_char:
+                if 1 <= ord(k_char) <= 26:
+                    return chr(ord(k_char) + 96)
+                return k_char.lower()
+            if k_vk:
+                vk_map = {
+                    0x70: "f1", 0x71: "f2", 0x72: "f3", 0x73: "f4",
+                    0x74: "f5", 0x75: "f6", 0x76: "f7", 0x77: "f8",
+                    0x78: "f9", 0x79: "f10", 0x7A: "f11", 0x7B: "f12",
+                    0x7C: "f13", 0x7D: "f14", 0x7E: "f15", 0x7F: "f16",
+                    0x80: "f17", 0x81: "f18", 0x82: "f19", 0x83: "f20",
+                    0x84: "f21", 0x85: "f22", 0x86: "f23", 0x87: "f24",
+                    0x20: "space", 0x0D: "enter", 0x09: "tab", 0x1B: "esc",
+                    0x21: "page_up", 0x22: "page_down", 0x23: "end", 0x24: "home",
+                    0x2D: "insert", 0x2E: "delete",
+                }
+                return vk_map.get(k_vk, str(k_vk))
+        except Exception:
+            pass
+        return ""
+
     def on_press(self, key):
         """Standard keyboard listener callback."""
         # 1. Track Modifiers
@@ -2562,57 +2643,18 @@ class VoiceInputApp:
             if val != self.target_key:
                 return
 
-        # 2. Key Normalization
-        key_name = ""
-        try:
-            k_name = getattr(key, 'name', None)
-            k_char = getattr(key, 'char', None)
-            k_vk = getattr(key, 'vk', None)
-
-            if k_name:
-                key_name = k_name
-            elif k_vk and 65 <= k_vk <= 90:
-                # A-Z (VK codes 65-90). Safely bypasses unprintable ASCII generated by Ctrl+Key
-                key_name = chr(k_vk).lower()
-            elif k_vk and 48 <= k_vk <= 57:
-                # 0-9 (VK codes 48-57)
-                key_name = chr(k_vk)
-            elif k_char:
-                # Pynput unprintable char fallback (e.g. Ctrl+A = \x01)
-                if 1 <= ord(k_char) <= 26: 
-                     key_name = chr(ord(k_char) + 96)
-                else:
-                     key_name = k_char.lower()
-            elif k_vk:
-                    # Handle virtual keys (important for some mouse remappings)
-                    # VK codes: F1=0x70 ... F12=0x7B, F13=0x7C ... F24=0x87. Space=0x20, Enter=0x0D
-                    vk_map = {
-                        0x70: "f1", 0x71: "f2", 0x72: "f3", 0x73: "f4",
-                        0x74: "f5", 0x75: "f6", 0x76: "f7", 0x77: "f8",
-                        0x78: "f9", 0x79: "f10", 0x7A: "f11", 0x7B: "f12",
-                        0x7C: "f13", 0x7D: "f14", 0x7E: "f15", 0x7F: "f16",
-                        0x80: "f17", 0x81: "f18", 0x82: "f19", 0x83: "f20",
-                        0x84: "f21", 0x85: "f22", 0x86: "f23", 0x87: "f24",
-                        0x20: "space", 0x0D: "enter", 0x09: "tab", 0x1B: "esc",
-                        0x21: "page_up", 0x22: "page_down", 0x23: "end", 0x24: "home",
-                        0x2D: "insert", 0x2E: "delete"
-                    }
-                    key_name = vk_map.get(k_vk, str(k_vk))
-        except Exception:
-             pass
+        key_name = self._listener_key_token(key)
 
         # 3. Check Match
         if key_name == self.target_key:
-            # DE-BOUNCE: Prevent rapid-fire re-triggering (e.g. from key auto-repeat)
-            now = time.time()
-            if now - self.last_toggle_time < 0.4:
+            # OS key-repeat sends repeated key-down without key-up; first down toggles, repeats must not
+            # (otherwise: stop session -> repeat arrives after debounce -> starts a phantom session).
+            if self._hotkey_primary_down:
                 return
-            self.last_toggle_time = now
-            
+
             # Win32 Robustness: Check for "Stuck" modifiers using ctypes
             if sys.platform == 'win32' and self.active_mods != self.target_mods:
                 import ctypes
-                # Check physical state of tracked modifiers
                 stuck = []
                 for mod in list(self.active_mods):
                     vk = 0
@@ -2620,7 +2662,6 @@ class VoiceInputApp:
                     elif mod == 'shift': vk = 0x10
                     elif mod == 'alt': vk = 0x12
                     
-                    # GetAsyncKeyState returns MSB set if key is down
                     if vk and not (ctypes.windll.user32.GetAsyncKeyState(vk) & 0x8000):
                         stuck.append(mod)
                 
@@ -2629,11 +2670,17 @@ class VoiceInputApp:
                     for mod in stuck:
                         self.active_mods.remove(mod)
 
-            # Check if active modifiers match EXACTLY what is required
-            if self.active_mods == self.target_mods:
-                self.toggle_hotkey()
-            else:
+            if self.active_mods != self.target_mods:
                 log_print(f" [Hotkey Ignored] Key '{key_name}' pressed, but modifiers mismatch. Expected: {self.target_mods}, Actual: {self.active_mods}")
+                return
+
+            now = time.time()
+            if now - self.last_toggle_time < 0.4:
+                return
+
+            self._hotkey_primary_down = True
+            self.last_toggle_time = now
+            self.toggle_hotkey()
 
     def on_release(self, key):
         """Untrack modifiers."""
@@ -2646,6 +2693,10 @@ class VoiceInputApp:
             val = mod_map[key]
             if val in self.active_mods:
                 self.active_mods.remove(val)
+
+        key_name = self._listener_key_token(key)
+        if key_name == self.target_key:
+            self._hotkey_primary_down = False
 
     def start_listening(self):
         self.last_activity_time = time.time()

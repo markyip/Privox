@@ -34,16 +34,6 @@ LLM_LIBRARY = [
         "n_gpu_layers": 24,
         "description": "Gemma 4 E4B with TurboQuant defaults for lower VRAM usage."
     },
-    {
-        "name": "Multilingual (Qwen 3.5 4B)",
-        "repo_id": "unsloth/Qwen3.5-4B-GGUF",
-        "file_name": "Qwen3.5-4B-Q4_K_M.gguf",
-        "prompt_type": "chatml",
-        "turboquant": True,
-        "n_ctx": 3072,
-        "n_gpu_layers": 16,
-        "description": "Balanced multilingual refiner with conservative TurboQuant defaults for 12GB-class GPUs."
-    }
 ]
 
 # --- Defaults ---
@@ -328,9 +318,6 @@ Output: <refined>{ex['output']}</refined>
 Output: <refined>{struct_ex['output']}</refined>
 </example_2>{numbers_ex}"""
     return formatter
-
-# Keep the static one for legacy or T5 models if needed
-SYSTEM_FORMATTER = get_system_formatter("en")
 
 # --- ISO Language Map (For Prompt Highlighting) ---
 ISO_LANGUAGE_MAP = {

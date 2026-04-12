@@ -1626,8 +1626,6 @@ class VoiceInputApp:
         self._paste_clipboard_lock = threading.Lock()
         self.vram_timeout = 60 # Seconds before unloading
         # Idle unload policy: unload ASR with refiner after VRAM Saver timeout (wake-up reload is fast enough).
-        # Optional: set unload_asr_on_idle=false in .user_prefs.json to keep ASR resident (lower latency, more VRAM).
-        self.unload_asr_on_idle = True
         self.use_simplified_chinese_output = False
         self.pending_wakeup = False # Auto-start recording after loading?
         # If True, user stopped recording (toggle or auto-stop) while ASR/LLM were still loading —
@@ -1845,11 +1843,6 @@ class VoiceInputApp:
                 def load_asr():
                     try:
                         self.model_load_stage = "loading_asr"
-                        # If ASR is already resident (e.g., we only unloaded the LLM), skip reload.
-                        if self.asr_model is not None:
-                            log_print("ASR already loaded. Skipping ASR reload.")
-                            return True
-
                         t0 = time.time()
                         is_gpu = torch.cuda.is_available()
                         device_str = "cuda" if is_gpu else "cpu"
@@ -2101,9 +2094,13 @@ class VoiceInputApp:
             
             idle_time = time.time() - self.last_activity_time
             log_print(f"Unloading Models (VRAM Saver - Idle for {idle_time:.1f}s)...")
-            # When unload_asr_on_idle is false (manual .user_prefs.json), ASR stays resident for lower wake latency.
-            if getattr(self, "unload_asr_on_idle", True):
+            if self.asr_model is not None:
+                try:
+                    del self.asr_model
+                except Exception:
+                    pass
                 self.asr_model = None
+                log_print("ASR model unloaded.")
             self.grammar_checker.unload_model()
             self.grammar_checker.context_buffer = "" # Clear conversation context
             
@@ -2165,7 +2162,6 @@ class VoiceInputApp:
                 "custom_prompts", "auto_stop_enabled", "silence_timeout_ms", 
                 "custom_dictionary", "current_refiner", "whisper_model",
                 "asr_library", "llm_library",
-                "unload_asr_on_idle"
             ]
             
             migrated = False
@@ -2258,7 +2254,6 @@ class VoiceInputApp:
 
             self.custom_dictionary = prefs.get("custom_dictionary", [])
             self.vram_timeout = max(5, prefs.get("vram_timeout", 60))
-            self.unload_asr_on_idle = bool(prefs.get("unload_asr_on_idle", True))
             self.use_simplified_chinese_output = bool(prefs.get("use_simplified_chinese_output", False))
             self.character = prefs.get("character", "Writing Assistant")
             self.tone = prefs.get("tone", "Natural")

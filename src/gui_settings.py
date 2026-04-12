@@ -1653,15 +1653,38 @@ class SettingsGUI(QMainWindow):
         new_asr = self.prefs.get("whisper_model", "")
         new_llm = self.prefs.get("current_refiner", "")
         
-        models_changed = (old_asr != new_asr) or (old_llm != new_llm)
-        
+        asr_changed = old_asr != new_asr
+        llm_changed = old_llm != new_llm
+        models_changed = asr_changed or llm_changed
+
         if models_changed:
+            change_lines = []
+            if asr_changed:
+                change_lines.append(f"Speech (ASR): {old_asr} → {new_asr}")
+            if llm_changed:
+                change_lines.append(f"Refiner (LLM): {old_llm} → {new_llm}")
+            body = "\n".join(change_lines)
+            if asr_changed and llm_changed:
+                hint = (
+                    "Setup will verify local files and download any missing model data "
+                    "(this may be several gigabytes total)."
+                )
+            elif asr_changed:
+                hint = (
+                    "Setup will verify the new speech model; a large download runs only if "
+                    "those files are not already on disk. The refiner is unchanged."
+                )
+            else:
+                hint = (
+                    "Setup will verify the new refiner; a large download runs only if "
+                    "those files are not already on disk. Speech recognition is unchanged."
+                )
             dialog = ModernDialog(
-                self, 
-                "DOWNLOAD REQUIRED", 
-                "New models require downloading.",
-                f"ASR: {new_asr}\nLLM: {new_llm}\n\nThis will trigger a multi-GB download. Proceed?",
-                buttons=["Cancel", "OK"]
+                self,
+                "MODEL SETUP",
+                "Your selection changed.",
+                f"{body}\n\n{hint}\n\nProceed?",
+                buttons=["Cancel", "OK"],
             )
             if dialog.exec() == 1: # OK
                 self.handle_model_change_and_restart(old_asr, old_llm)

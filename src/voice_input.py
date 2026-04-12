@@ -1633,6 +1633,7 @@ class VoiceInputApp:
         # If True, user stopped recording (toggle or auto-stop) while ASR/LLM were still loading —
         # do not auto-start again when load finishes (avoids phantom sessions after VRAM saver wake).
         self._wakeup_autostart_cancelled = False
+        self._heavy_model_load_in_progress = False  # suppress prefs hot-reload during ASR/LLM init
         self.last_model_error = ""
         self.model_load_started_at = 0.0
         self.model_load_timed_out = False
@@ -1789,260 +1790,303 @@ class VoiceInputApp:
             if self.heavy_models_loaded:
                 return
 
-            log_print("Loading Heavy Models (Wake up)...")
-            self.loading_status = "Loading Models..."
-            self.update_tray_tooltip()
-            self.model_load_started_at = time.time()
-            self.model_load_timed_out = False
-            self.model_load_stage = "starting"
+            self._heavy_model_load_in_progress = True
+            try:
+                log_print("Loading Heavy Models (Wake up)...")
+                self.loading_status = "Loading Models..."
+                self.update_tray_tooltip()
+                self.model_load_started_at = time.time()
+                self.model_load_timed_out = False
+                self.model_load_stage = "starting"
 
-            def load_watchdog():
-                # If model loading hangs (no exception), surface a visible timeout error.
-                timeout_s = 240
-                while True:
-                    time.sleep(2)
-                    if self.heavy_models_loaded or self.loading_status in ["ASR Load Error", "Error Loading ASR", "Error Loading VAD"]:
-                        return
-                    if self.model_load_started_at and (time.time() - self.model_load_started_at) > timeout_s:
-                        self.model_load_timed_out = True
-                        self.last_model_error = (
-                            f"Model loading exceeded {timeout_s}s. "
-                            f"Current stage: {self.model_load_stage}. "
-                            "Likely a backend init hang."
-                        )
-                        self.loading_status = "Model Load Timeout"
-                        self.update_tray_tooltip()
-                        self.update_status("ERROR")
-                        self._emit_runtime_error(
-                            "Privox Model Timeout",
-                            "Model loading timed out.",
-                            self.last_model_error,
-                            include_thread_dump=True,
-                        )
-                        return
-
-            threading.Thread(target=load_watchdog, daemon=True).start()
-
-            def load_grammar():
-                try:
-                    self.model_load_stage = "loading_grammar"
-                    t0 = time.time()
-                    success = self.grammar_checker.load_model()
-                    dt = time.time() - t0
-                    log_print(f"Grammar load time: {dt:.2f}s (success={success})")
-                    if success:
-                        # Track LLM usage here
-                        self.track_model_usage(self.current_refiner)
-                    return success
-                except Exception as e:
-                    log_print(f"Parallel Load Error (Grammar): {e}")
-                    self.last_model_error = f"Grammar: {e}"
-                    return False
-
-            def load_asr():
-                try:
-                    self.model_load_stage = "loading_asr"
-                    # If ASR is already resident (e.g., we only unloaded the LLM), skip reload.
-                    if self.asr_model is not None:
-                        log_print("ASR already loaded. Skipping ASR reload.")
-                        return True
-
-                    t0 = time.time()
-                    is_gpu = torch.cuda.is_available()
-                    device_str = "cuda" if is_gpu else "cpu"
-                    
-                    if ASR_BACKEND == "sensevoice":
-                        sense_dir = os.path.join(BASE_DIR, "models", "SenseVoiceSmall")
-                        log_print(f"ASR Diagnostic - Initializing SenseVoiceSmall on {device_str}...")
-                        try:
-                            from funasr import AutoModel
-                        except ImportError as e:
-                            log_print(
-                                "SenseVoice requires the `funasr` package (not bundled by default). "
-                                "Install with: pixi add --pypi funasr   or   pip install funasr"
+                def load_watchdog():
+                    # If model loading hangs (no exception), surface a visible timeout error.
+                    timeout_s = 240
+                    while True:
+                        time.sleep(2)
+                        if self.heavy_models_loaded or self.loading_status in ["ASR Load Error", "Error Loading ASR", "Error Loading VAD"]:
+                            return
+                        if self.model_load_started_at and (time.time() - self.model_load_started_at) > timeout_s:
+                            self.model_load_timed_out = True
+                            self.last_model_error = (
+                                f"Model loading exceeded {timeout_s}s. "
+                                f"Current stage: {self.model_load_stage}. "
+                                "Likely a backend init hang."
                             )
-                            raise RuntimeError(
-                                "ASR backend 'sensevoice' needs funasr. Add it to your env or switch ASR in Settings."
-                            ) from e
-                        self.asr_model = AutoModel(
-                            model=sense_dir if os.path.exists(sense_dir) else "iic/SenseVoiceSmall",
-                            device=device_str,
-                            disable_update=True
-                        )
-                        log_print(f"SenseVoice initialized successfully.")
-                    elif ASR_BACKEND == "qwen_asr":
-                        log_print(f"ASR Diagnostic - Initializing Qwen3ASRModel ({WHISPER_REPO}) on {device_str}...")
-                        from qwen_asr import Qwen3ASRModel
+                            self.loading_status = "Model Load Timeout"
+                            self.update_tray_tooltip()
+                            self.update_status("ERROR")
+                            self._emit_runtime_error(
+                                "Privox Model Timeout",
+                                "Model loading timed out.",
+                                self.last_model_error,
+                                include_thread_dump=True,
+                            )
+                            return
 
-                        if is_gpu:
-                            cap_env = (os.environ.get("PRIVOX_ASR_MAX_GPU_GIB") or "").strip()
-                            cap_gib = None
-                            if cap_env:
-                                try:
-                                    cap_gib = float(cap_env)
-                                except ValueError:
-                                    cap_gib = None
-                            if cap_gib is None:
-                                try:
-                                    total_gib = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
-                                except Exception:
-                                    total_gib = 12.0
-                                if total_gib <= 8.5:
-                                    cap_gib = max(2.25, total_gib * 0.38)
-                                elif total_gib <= 13.0:
-                                    cap_gib = max(3.0, total_gib * 0.42)
-                                else:
-                                    cap_gib = min(5.5, max(3.5, total_gib * 0.28))
-                            max_mem = {0: f"{cap_gib:.2f}GiB", "cpu": "12GiB"}
-                            dtype = torch.float16
+                threading.Thread(target=load_watchdog, daemon=True).start()
+
+                def load_grammar():
+                    try:
+                        self.model_load_stage = "loading_grammar"
+                        t0 = time.time()
+                        success = self.grammar_checker.load_model()
+                        dt = time.time() - t0
+                        log_print(f"Grammar load time: {dt:.2f}s (success={success})")
+                        if success:
+                            # Track LLM usage here
+                            self.track_model_usage(self.current_refiner)
+                        return success
+                    except Exception as e:
+                        log_print(f"Parallel Load Error (Grammar): {e}")
+                        self.last_model_error = f"Grammar: {e}"
+                        return False
+
+                def load_asr():
+                    try:
+                        self.model_load_stage = "loading_asr"
+                        # If ASR is already resident (e.g., we only unloaded the LLM), skip reload.
+                        if self.asr_model is not None:
+                            log_print("ASR already loaded. Skipping ASR reload.")
+                            return True
+
+                        t0 = time.time()
+                        is_gpu = torch.cuda.is_available()
+                        device_str = "cuda" if is_gpu else "cpu"
+
+                        if ASR_BACKEND == "sensevoice":
+                            sense_dir = os.path.join(BASE_DIR, "models", "SenseVoiceSmall")
+                            log_print(f"ASR Diagnostic - Initializing SenseVoiceSmall on {device_str}...")
                             try:
-                                if torch.cuda.is_bf16_supported():
-                                    dtype = torch.bfloat16
-                            except Exception:
-                                pass
-                            log_print(
-                                f"Qwen-ASR VRAM cap ~{cap_gib:.2f} GiB on GPU (set PRIVOX_ASR_MAX_GPU_GIB to override); dtype={dtype}"
+                                from funasr import AutoModel
+                            except ImportError as e:
+                                log_print(
+                                    "SenseVoice requires the `funasr` package (not bundled by default). "
+                                    "Install with: pixi add --pypi funasr   or   pip install funasr"
+                                )
+                                raise RuntimeError(
+                                    "ASR backend 'sensevoice' needs funasr. Add it to your env or switch ASR in Settings."
+                                ) from e
+                            self.asr_model = AutoModel(
+                                model=sense_dir if os.path.exists(sense_dir) else "iic/SenseVoiceSmall",
+                                device=device_str,
+                                disable_update=True
                             )
-                        else:
-                            max_mem = None
-                            dtype = torch.float32
+                            log_print(f"SenseVoice initialized successfully.")
+                        elif ASR_BACKEND == "qwen_asr":
+                            log_print(f"ASR Diagnostic - Initializing Qwen3ASRModel ({WHISPER_REPO}) on {device_str}...")
+                            from qwen_asr import Qwen3ASRModel
 
-                        self.asr_model = Qwen3ASRModel.from_pretrained(
-                            WHISPER_REPO,
-                            device_map="auto" if is_gpu else "cpu",
-                            max_memory=max_mem,
-                            dtype=dtype,
-                            low_cpu_mem_usage=True,
-                            local_files_only=True,
-                        )
-                        log_print("Qwen3ASRModel initialized successfully.")
-                    else:
-                        # int8_float16 cuts VRAM vs pure float16 on CUDA with small quality cost.
-                        compute_type = "int8_float16" if is_gpu else "int8"
-                        from faster_whisper import WhisperModel
-                        local_whisper = os.path.join(BASE_DIR, "models", f"whisper-{WHISPER_SIZE}")
-                        model_path = local_whisper if os.path.exists(os.path.join(local_whisper, "model.bin")) else WHISPER_REPO
-                        log_print(
-                            f"ASR Diagnostic - Initializing WhisperModel ({WHISPER_SIZE}) on {device_str}, compute_type={compute_type}..."
-                        )
-                        try:
-                            self.asr_model = WhisperModel(
-                                model_path, device=device_str, compute_type=compute_type
-                            )
-                        except Exception as e1:
-                            if is_gpu and compute_type == "int8_float16":
-                                log_print(f"Whisper int8_float16 failed ({e1}); retrying float16...")
-                                self.asr_model = WhisperModel(
-                                    model_path, device=device_str, compute_type="float16"
+                            if is_gpu:
+                                cap_env = (os.environ.get("PRIVOX_ASR_MAX_GPU_GIB") or "").strip()
+                                cap_gib = None
+                                if cap_env:
+                                    try:
+                                        cap_gib = float(cap_env)
+                                    except ValueError:
+                                        cap_gib = None
+                                if cap_gib is None:
+                                    try:
+                                        total_gib = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+                                    except Exception:
+                                        total_gib = 12.0
+                                    if total_gib <= 8.5:
+                                        cap_gib = max(2.25, total_gib * 0.38)
+                                    elif total_gib <= 13.0:
+                                        cap_gib = max(3.0, total_gib * 0.42)
+                                    else:
+                                        cap_gib = min(5.5, max(3.5, total_gib * 0.28))
+                                max_mem = {0: f"{cap_gib:.2f}GiB", "cpu": "12GiB"}
+                                dtype = torch.float16
+                                try:
+                                    if torch.cuda.is_bf16_supported():
+                                        dtype = torch.bfloat16
+                                except Exception:
+                                    pass
+                                log_print(
+                                    f"Qwen-ASR VRAM cap ~{cap_gib:.2f} GiB on GPU (set PRIVOX_ASR_MAX_GPU_GIB to override); dtype={dtype}"
                                 )
                             else:
-                                raise
-                        log_print("WhisperModel initialized successfully.")
-                    
-                    # Track ASR model usage here instead of in load_config
-                    self.track_model_usage(getattr(self, 'active_asr_name', WHISPER_SIZE))
-                    dt = time.time() - t0
-                    log_print(f"ASR load time: {dt:.2f}s (backend={ASR_BACKEND})")
-                    return True
-                except Exception as e:
-                    log_print(f"Parallel Load Error (ASR): {e}")
-                    self.last_model_error = f"ASR: {e}\n{traceback.format_exc()}"
-                    self.loading_status = "Error Loading ASR"
-                    return False
+                                max_mem = None
+                                dtype = torch.float32
 
-            # Sequential vs Parallel loading strategy
-            if ASR_BACKEND == "qwen_asr":
-                # Safety Mode: Qwen-ASR uses a different transformer backend. 
-                # Sequential load prevents CUDA race conditions.
-                log_print("Using Sequential Load Strategy (Safety Mode)...")
-                res_grammar = load_grammar()
-                res_asr = load_asr()
-                results = [res_grammar, res_asr]
-            else:
-                # Performance Mode: Load Whisper + LLM in parallel
-                log_print("Using Parallel Load Strategy (Performance Mode)...")
-                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                    grammar_future = executor.submit(load_grammar)
-                    asr_future = executor.submit(load_asr)
-                    done, not_done = concurrent.futures.wait(
-                        {grammar_future, asr_future},
-                        timeout=180,
-                        return_when=concurrent.futures.ALL_COMPLETED
+                            self.asr_model = Qwen3ASRModel.from_pretrained(
+                                WHISPER_REPO,
+                                device_map="auto" if is_gpu else "cpu",
+                                max_memory=max_mem,
+                                dtype=dtype,
+                                low_cpu_mem_usage=True,
+                                local_files_only=True,
+                            )
+                            log_print("Qwen3ASRModel initialized successfully.")
+                        else:
+                            # int8_float16 cuts VRAM vs pure float16 on CUDA with small quality cost.
+                            compute_type = "int8_float16" if is_gpu else "int8"
+                            from faster_whisper import WhisperModel
+                            local_whisper = os.path.join(BASE_DIR, "models", f"whisper-{WHISPER_SIZE}")
+                            model_path = local_whisper if os.path.exists(os.path.join(local_whisper, "model.bin")) else WHISPER_REPO
+                            log_print(
+                                f"ASR Diagnostic - Initializing WhisperModel ({WHISPER_SIZE}) on {device_str}, compute_type={compute_type}..."
+                            )
+                            try:
+                                self.asr_model = WhisperModel(
+                                    model_path, device=device_str, compute_type=compute_type
+                                )
+                            except Exception as e1:
+                                if is_gpu and compute_type == "int8_float16":
+                                    log_print(f"Whisper int8_float16 failed ({e1}); retrying float16...")
+                                    self.asr_model = WhisperModel(
+                                        model_path, device=device_str, compute_type="float16"
+                                    )
+                                else:
+                                    raise
+                            log_print("WhisperModel initialized successfully.")
+
+                        # Track ASR model usage here instead of in load_config
+                        self.track_model_usage(getattr(self, 'active_asr_name', WHISPER_SIZE))
+                        dt = time.time() - t0
+                        log_print(f"ASR load time: {dt:.2f}s (backend={ASR_BACKEND})")
+                        return True
+                    except Exception as e:
+                        log_print(f"Parallel Load Error (ASR): {e}")
+                        self.last_model_error = f"ASR: {e}\n{traceback.format_exc()}"
+                        self.loading_status = "Error Loading ASR"
+                        return False
+
+                def _env_sequential_qwen() -> bool:
+                    v = (os.environ.get("PRIVOX_SEQUENTIAL_QWEN_LOAD") or "").strip().lower()
+                    return v in ("1", "true", "yes", "on")
+
+                # Sequential vs Parallel loading strategy
+                if ASR_BACKEND == "qwen_asr" and _env_sequential_qwen():
+                    log_print(
+                        "Using Sequential Load Strategy (PRIVOX_SEQUENTIAL_QWEN_LOAD is set; "
+                        "omit or unset for parallel Grammar+Qwen load)..."
                     )
-
-                    if grammar_future in done:
-                        res_grammar = grammar_future.result()
-                    else:
-                        res_grammar = False
-                        self.last_model_error = "Grammar init timed out (>180s)"
-
-                    if asr_future in done:
-                        res_asr = asr_future.result()
-                    else:
-                        res_asr = False
-                        extra = "ASR init timed out (>180s)"
-                        self.last_model_error = f"{self.last_model_error} | {extra}" if self.last_model_error else extra
-
-                    if not_done:
-                        log_print("WARNING: One or more model init tasks timed out.")
-
+                    res_grammar = load_grammar()
+                    res_asr = load_asr()
                     results = [res_grammar, res_asr]
-
-            if not results[1]: # Whisper is mandatory
-                log_print("CRITICAL: ASR model failed to load.")
-                self.loading_status = "ASR Load Error"
-                self.update_tray_tooltip()
-                self.update_status("ERROR")
-                if self.icon and self.last_model_error:
-                    try:
-                        self.icon.notify(f"Privox model load failed: {self.last_model_error}", "Privox Error")
-                    except Exception:
-                        pass
-                self._emit_runtime_error(
-                    "Privox Model Load Error",
-                    "Failed to load speech model (ASR).",
-                    self.last_model_error,
-                )
-                self.pending_wakeup = False
-                self.model_load_stage = "failed_asr"
-                return
-
-            if not results[0]:
-                log_print("WARNING: Grammar model failed to load. Proceeding with ASR only.")
-
-            self.heavy_models_loaded = True
-            self.model_load_started_at = 0.0
-            self.model_load_stage = "ready"
-            self.loading_status = "Ready" if results[0] else "ASR Only"
-            # Do not clobber RECORDING: user may have started the mic while models were still loading.
-            if self.is_listening:
-                self.update_status("RECORDING")
-            else:
-                self.update_status("READY")
-            
-            # Reset activity timer so we don't immediately unload
-            self.last_activity_time = time.time()
-            
-            # If this was a manual F8 wakeup, we might already be listening.
-            # Otherwise (initial load), we play the 'Ready' sound.
-            if self.pending_wakeup:
-                self.pending_wakeup = False
-                if not self.is_listening:
-                    if self._wakeup_autostart_cancelled:
-                        log_print(
-                            "Pending Wakeup: recording stopped during model load; skipping auto-start "
-                            "(press hotkey again to record)."
+                elif ASR_BACKEND == "qwen_asr":
+                    log_print(
+                        "Using Parallel Load Strategy (Qwen-ASR + Grammar; "
+                        "set PRIVOX_SEQUENTIAL_QWEN_LOAD=1 if you see CUDA OOM or instability)..."
+                    )
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                        grammar_future = executor.submit(load_grammar)
+                        asr_future = executor.submit(load_asr)
+                        done, not_done = concurrent.futures.wait(
+                            {grammar_future, asr_future},
+                            timeout=180,
+                            return_when=concurrent.futures.ALL_COMPLETED,
                         )
-                    else:
-                        log_print("Pending Wakeup found. Auto-starting recording...")
-                        # Tiny delay to ensure UI updates and avoid race conditions with sound manager
-                        time.sleep(0.1)
-                        self.start_listening()
+
+                        if grammar_future in done:
+                            res_grammar = grammar_future.result()
+                        else:
+                            res_grammar = False
+                            self.last_model_error = "Grammar init timed out (>180s)"
+
+                        if asr_future in done:
+                            res_asr = asr_future.result()
+                        else:
+                            res_asr = False
+                            extra = "ASR init timed out (>180s)"
+                            self.last_model_error = (
+                                f"{self.last_model_error} | {extra}" if self.last_model_error else extra
+                            )
+
+                        if not_done:
+                            log_print("WARNING: One or more model init tasks timed out.")
+
+                        results = [res_grammar, res_asr]
                 else:
-                    log_print("Pending Wakeup found, but already listening. Skipping auto-start.")
-            else:
-                self.sound_manager.play_start()
-  
+                    # Performance Mode: Load Whisper + LLM in parallel
+                    log_print("Using Parallel Load Strategy (Performance Mode)...")
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                        grammar_future = executor.submit(load_grammar)
+                        asr_future = executor.submit(load_asr)
+                        done, not_done = concurrent.futures.wait(
+                            {grammar_future, asr_future},
+                            timeout=180,
+                            return_when=concurrent.futures.ALL_COMPLETED,
+                        )
+
+                        if grammar_future in done:
+                            res_grammar = grammar_future.result()
+                        else:
+                            res_grammar = False
+                            self.last_model_error = "Grammar init timed out (>180s)"
+
+                        if asr_future in done:
+                            res_asr = asr_future.result()
+                        else:
+                            res_asr = False
+                            extra = "ASR init timed out (>180s)"
+                            self.last_model_error = (
+                                f"{self.last_model_error} | {extra}" if self.last_model_error else extra
+                            )
+
+                        if not_done:
+                            log_print("WARNING: One or more model init tasks timed out.")
+
+                        results = [res_grammar, res_asr]
+
+                if not results[1]:  # ASR is mandatory
+                    log_print("CRITICAL: ASR model failed to load.")
+                    self.loading_status = "ASR Load Error"
+                    self.update_tray_tooltip()
+                    self.update_status("ERROR")
+                    if self.icon and self.last_model_error:
+                        try:
+                            self.icon.notify(f"Privox model load failed: {self.last_model_error}", "Privox Error")
+                        except Exception:
+                            pass
+                    self._emit_runtime_error(
+                        "Privox Model Load Error",
+                        "Failed to load speech model (ASR).",
+                        self.last_model_error,
+                    )
+                    self.pending_wakeup = False
+                    self.model_load_stage = "failed_asr"
+                    return
+
+                if not results[0]:
+                    log_print("WARNING: Grammar model failed to load. Proceeding with ASR only.")
+
+                self.heavy_models_loaded = True
+                self.model_load_started_at = 0.0
+                self.model_load_stage = "ready"
+                self.loading_status = "Ready" if results[0] else "ASR Only"
+                # Do not clobber RECORDING: user may have started the mic while models were still loading.
+                if self.is_listening:
+                    self.update_status("RECORDING")
+                else:
+                    self.update_status("READY")
+
+                # Reset activity timer so we don't immediately unload
+                self.last_activity_time = time.time()
+
+                # If this was a manual F8 wakeup, we might already be listening.
+                # Otherwise (initial load), we play the 'Ready' sound.
+                if self.pending_wakeup:
+                    self.pending_wakeup = False
+                    if not self.is_listening:
+                        if self._wakeup_autostart_cancelled:
+                            log_print(
+                                "Pending Wakeup: recording stopped during model load; skipping auto-start "
+                                "(press hotkey again to record)."
+                            )
+                        else:
+                            log_print("Pending Wakeup found. Auto-starting recording...")
+                            # Tiny delay to ensure UI updates and avoid race conditions with sound manager
+                            time.sleep(0.1)
+                            self.start_listening()
+                    else:
+                        log_print("Pending Wakeup found, but already listening. Skipping auto-start.")
+                else:
+                    self.sound_manager.play_start()
+            finally:
+                self._heavy_model_load_in_progress = False
 
     def unload_heavy_models(self):
         with self.model_lock:
@@ -3032,28 +3076,29 @@ class VoiceInputApp:
                 if (time.time() - self.last_activity_time) > self.vram_timeout:
                     self.unload_heavy_models()
 
-            # Config Polling (Hot-reload)
+            # Config Polling (Hot-reload) — skip while heavy ASR/LLM load runs to avoid extra disk/CPU during init
             try:
-                prefs_path = os.path.join(BASE_DIR, ".user_prefs.json")
-                if os.path.exists(prefs_path):
-                    mtime = os.path.getmtime(prefs_path)
-                    if not hasattr(self, '_last_prefs_mtime'):
-                        self._last_prefs_mtime = mtime
-                    elif mtime > self._last_prefs_mtime:
-                        # Use HASH based comparison to avoid metadata "touches" causing loops
-                        with open(prefs_path, "rb") as f:
-                            current_hash = hashlib.md5(f.read()).hexdigest()
-                        
-                        if current_hash != self._last_prefs_hash:
-                            log_print(f"Configuration content change detected. Reloading...")
-                            self._last_prefs_hash = current_hash
+                if not getattr(self, "_heavy_model_load_in_progress", False):
+                    prefs_path = os.path.join(BASE_DIR, ".user_prefs.json")
+                    if os.path.exists(prefs_path):
+                        mtime = os.path.getmtime(prefs_path)
+                        if not hasattr(self, '_last_prefs_mtime'):
                             self._last_prefs_mtime = mtime
-                            time.sleep(0.1)
-                            self.load_config()
-                            log_print(f"Reload complete. Hotkey: {self.hotkey_str}")
-                        else:
-                            # Content is same, just metadata was touched. Update mtime to stop polling.
-                            self._last_prefs_mtime = mtime
+                        elif mtime > self._last_prefs_mtime:
+                            # Use HASH based comparison to avoid metadata "touches" causing loops
+                            with open(prefs_path, "rb") as f:
+                                current_hash = hashlib.md5(f.read()).hexdigest()
+
+                            if current_hash != self._last_prefs_hash:
+                                log_print(f"Configuration content change detected. Reloading...")
+                                self._last_prefs_hash = current_hash
+                                self._last_prefs_mtime = mtime
+                                time.sleep(0.1)
+                                self.load_config()
+                                log_print(f"Reload complete. Hotkey: {self.hotkey_str}")
+                            else:
+                                # Content is same, just metadata was touched. Update mtime to stop polling.
+                                self._last_prefs_mtime = mtime
             except: pass
 
             try:

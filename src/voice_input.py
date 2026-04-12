@@ -1630,6 +1630,9 @@ class VoiceInputApp:
         self.unload_asr_on_idle = True
         self.use_simplified_chinese_output = False
         self.pending_wakeup = False # Auto-start recording after loading?
+        # If True, user stopped recording (toggle or auto-stop) while ASR/LLM were still loading —
+        # do not auto-start again when load finishes (avoids phantom sessions after VRAM saver wake).
+        self._wakeup_autostart_cancelled = False
         self.last_model_error = ""
         self.model_load_started_at = 0.0
         self.model_load_timed_out = False
@@ -2025,10 +2028,16 @@ class VoiceInputApp:
             if self.pending_wakeup:
                 self.pending_wakeup = False
                 if not self.is_listening:
-                    log_print("Pending Wakeup found. Auto-starting recording...")
-                    # Tiny delay to ensure UI updates and avoid race conditions with sound manager
-                    time.sleep(0.1) 
-                    self.start_listening()
+                    if self._wakeup_autostart_cancelled:
+                        log_print(
+                            "Pending Wakeup: recording stopped during model load; skipping auto-start "
+                            "(press hotkey again to record)."
+                        )
+                    else:
+                        log_print("Pending Wakeup found. Auto-starting recording...")
+                        # Tiny delay to ensure UI updates and avoid race conditions with sound manager
+                        time.sleep(0.1)
+                        self.start_listening()
                 else:
                     log_print("Pending Wakeup found, but already listening. Skipping auto-start.")
             else:
@@ -2734,6 +2743,10 @@ class VoiceInputApp:
     def stop_listening(self):
         log_print(" [Stopped]", flush=True)
         self.sound_manager.play_stop()
+        # Any stop during a VRAM-saver wake load means "do not auto-start when load finishes"
+        # (covers auto-stop and toggle-off; avoids race vs setting heavy_models_loaded before this runs).
+        if self.pending_wakeup:
+            self._wakeup_autostart_cancelled = True
         self.is_listening = False
         self.update_status("PROCESSING")
         self.update_tray_tooltip()
@@ -3204,6 +3217,7 @@ class VoiceInputApp:
             if not self.pending_wakeup:
                 log_print("Wake up detected. Pre-loading models in background...")
                 self.pending_wakeup = True
+                self._wakeup_autostart_cancelled = False
                 threading.Thread(target=self.load_heavy_models, daemon=True).start()
 
         # Guard: We only strictly need VAD and Mic to start/stop a recording.

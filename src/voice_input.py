@@ -876,7 +876,7 @@ class GrammarChecker:
             def _safe_llama_init(m_path, n_gpu_layers, n_ctx, n_batch):
                 nonlocal last_init_error_text
                 try:
-                    return Llama(
+                    _llama_kw: dict = dict(
                         model_path=m_path,
                         n_ctx=n_ctx,
                         # IMPORTANT:
@@ -886,8 +886,13 @@ class GrammarChecker:
                         n_gpu_layers=n_gpu_layers,
                         n_batch=n_batch,
                         verbose=use_verbose,
-                        n_threads=os.cpu_count() // 2 if os.cpu_count() else 4
+                        n_threads=os.cpu_count() // 2 if os.cpu_count() else 4,
                     )
+                    # Gemma: llama.cpp chat path tokenizes with BOS (see llama_chat_format); raw
+                    # self.model(prompt) does not — causes <unused*> degeneracy on Gemma 4 GGUF.
+                    if (self.profile.get("prompt_type") or "").lower() == "gemma":
+                        _llama_kw["chat_format"] = "gemma"
+                    return Llama(**_llama_kw)
                 except (AssertionError, RuntimeError, ValueError) as e:
                     last_init_error_text = str(e)
                     err_msg = str(e).lower()
@@ -1129,13 +1134,84 @@ class GrammarChecker:
             return True
         return len(head) >= 300 and (n * 11) > len(head) * 0.25
 
+    def _run_gemma_chat_completion(self, user_content: str, max_tokens: int) -> tuple[str, bool]:
+        """
+        Gemma refiner via create_chat_completion so llama_cpp applies the same BOS/special
+        tokenization as format_gemma (raw self.model(str) skips that and can emit <unused*> spam).
+        """
+        extra_stop = ["</refined>", "<end_of_turn>", "<end_of_turn>\n"]
+        parts: list[str] = []
+        try:
+            stream = self.model.create_chat_completion(
+                messages=[{"role": "user", "content": user_content}],
+                max_tokens=max_tokens,
+                temperature=0.3,
+                top_p=0.9,
+                repeat_penalty=1.22,
+                seed=42,
+                stop=extra_stop,
+                stream=True,
+            )
+        except Exception as e:
+            log_print(f"Gemma create_chat_completion failed: {e}")
+            return "", True
+
+        for chunk in stream:
+            ch0 = chunk["choices"][0]
+            delta = ch0.get("delta") or {}
+            piece = delta.get("content") or ""
+            if piece:
+                parts.append(piece)
+            acc = "".join(parts)
+            if "</refined>" in acc:
+                break
+            if self._is_gemma_unused_degeneracy(acc):
+                log_transcription(" Gemma refiner: early-abort on <unused*> degeneracy.")
+                return "", True
+        text = "".join(parts).strip()
+        if text and self._is_gemma_unused_degeneracy(text):
+            return "", True
+        return text, False
+
+    def _run_gemma_raw_prompt_stream(
+        self, prompt: str, max_tokens: int, stop_tokens
+    ) -> tuple[str, bool]:
+        """Last-resort raw prompt + stream (e.g. two-turn system/user); still may lack BOS."""
+        stop_list = list(stop_tokens) if isinstance(stop_tokens, (list, tuple)) else (
+            [stop_tokens] if stop_tokens else []
+        )
+        for s in ("</refined>", "<end_of_turn>", "<end_of_turn>\n"):
+            if s not in stop_list:
+                stop_list.append(s)
+        gen_kw: dict = dict(
+            max_tokens=max_tokens,
+            stop=stop_list,
+            echo=False,
+            temperature=0.35,
+            top_p=0.92,
+            repeat_penalty=1.28,
+            seed=43,
+            stream=True,
+        )
+        parts: list[str] = []
+        for out in self.model(prompt, stream=True, **gen_kw):
+            chunk = out["choices"][0]["text"]
+            parts.append(chunk)
+            acc = "".join(parts)
+            if "</refined>" in acc:
+                break
+            if self._is_gemma_unused_degeneracy(acc):
+                log_transcription(" Gemma raw fallback: early-abort on <unused*> degeneracy.")
+                return "", True
+        text = "".join(parts).strip()
+        if text and self._is_gemma_unused_degeneracy(text):
+            return "", True
+        return text, False
+
     def _run_refiner_completion(
         self, prompt: str, prompt_type: str, max_tokens: int, stop_tokens
     ) -> tuple[str, bool]:
-        """
-        Run llama.cpp completion. Returns (raw_text, degenerate_gemma_spam).
-        Gemma uses streaming + early abort on <unused*> loops to avoid 30s+ wasted generation.
-        """
+        """Non-Gemma chat templates only (Llama/Qwen/…). Returns (raw_text, always False)."""
         stop_list = list(stop_tokens) if isinstance(stop_tokens, (list, tuple)) else (
             [stop_tokens] if stop_tokens else []
         )
@@ -1148,25 +1224,9 @@ class GrammarChecker:
             echo=False,
             temperature=0.3,
             top_p=0.9,
-            repeat_penalty=1.18 if prompt_type == "gemma" else 1.1,
+            repeat_penalty=1.1,
             seed=42,
         )
-
-        if prompt_type == "gemma":
-            parts: list[str] = []
-            for out in self.model(prompt, stream=True, **gen_kw):
-                chunk = out["choices"][0]["text"]
-                parts.append(chunk)
-                acc = "".join(parts)
-                if "</refined>" in acc:
-                    break
-                if self._is_gemma_unused_degeneracy(acc):
-                    log_transcription(" Gemma refiner: early-abort on <unused*> degeneracy.")
-                    return "", True
-            text = "".join(parts).strip()
-            if text and self._is_gemma_unused_degeneracy(text):
-                return "", True
-            return text, False
 
         output = self.model(prompt, stream=False, **gen_kw)
         text = (output["choices"][0]["text"] or "").strip()
@@ -1235,15 +1295,10 @@ class GrammarChecker:
                 )
                 stop_tokens = ["<|im_end|>"]
             elif prompt_type == "gemma":
-                # Gemma IT / Gemma 4: do not use a separate system turn unless the GGUF is explicitly
-                # trained for it — Google recommends folding system into the first user turn. A lone
-                # <start_of_turn>system block can push E2B/TurboQuant checkpoints into <unused*> loops.
+                # Fold system into one user message for create_chat_completion(chat_format=gemma).
                 combined_user = f"{system_prompt}\n\n{user_content}"
-                prompt = (
-                    f"<start_of_turn>user\n{combined_user}<end_of_turn>\n"
-                    "<start_of_turn>model\n"
-                )
-                stop_tokens = ["<end_of_turn>"]
+                prompt = ""
+                stop_tokens = []
             else:
                 # Llama 3 / Mistral style format
                 prompt = (
@@ -1259,9 +1314,28 @@ class GrammarChecker:
             input_tokens_est = max(char_n // 2, word_n * 3, char_n // 4 + 200)
             max_tokens = min(4096, max(256, int(char_n * 1.3) + 512, input_tokens_est * 3))
 
-            raw_response, gemma_degenerate = self._run_refiner_completion(
-                prompt, prompt_type, max_tokens, stop_tokens
-            )
+            raw_response = ""
+            gemma_degenerate = False
+            if prompt_type == "gemma":
+                raw_response, gemma_degenerate = self._run_gemma_chat_completion(
+                    combined_user, max_tokens
+                )
+                if gemma_degenerate:
+                    log_transcription(
+                        " Gemma: chat path degenerate; retrying two-turn system/user template..."
+                    )
+                    prompt_fb = (
+                        f"<start_of_turn>system\n{system_prompt}<end_of_turn>\n"
+                        f"<start_of_turn>user\n{user_content}<end_of_turn>\n"
+                        "<start_of_turn>model\n"
+                    )
+                    raw_response, gemma_degenerate = self._run_gemma_raw_prompt_stream(
+                        prompt_fb, max_tokens, ["<end_of_turn>"]
+                    )
+            else:
+                raw_response, gemma_degenerate = self._run_refiner_completion(
+                    prompt, prompt_type, max_tokens, stop_tokens
+                )
             if gemma_degenerate:
                 log_transcription(
                     " Gemma refiner degeneracy (<unused*> / bad distribution). Using ASR transcript."

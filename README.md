@@ -1,6 +1,6 @@
 # Privox 🎙️
 
-![App version](https://img.shields.io/badge/app-v1.2.1-blue)
+![App version](https://img.shields.io/badge/app-v1.2.2-blue)
 [![Python Version](https://img.shields.io/badge/python-3.10--3.12-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-Noncommercial-green.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Windows-blue?logo=windows)
@@ -28,7 +28,7 @@ A powerful, private, and fully local voice input assistant for Windows. Privox c
 
 ### 1. Installation
 
-1. Download **Privox.exe** from our [Releases](https://github.com/markyip/Privox/releases) page. This repo’s current app version is **v1.2.1**; see [RELEASE_NOTES.md](RELEASE_NOTES.md) for changes.
+1. Download **Privox.exe** from our [Releases](https://github.com/markyip/Privox/releases) page. This repo’s current app version is **v1.2.2**; see [RELEASE_NOTES.md](RELEASE_NOTES.md) for changes.
 2. Run the program and follow the simple on-screen instructions.
 3. On your first run, Privox will take a few minutes to set up its "AI Brains"—then you're ready to go!
 
@@ -67,7 +67,7 @@ You don't need to be a computer expert to customize Privox. Just right-click the
 - **Faster wake with Qwen-ASR**: After that unload, Grammar (llama.cpp) and Qwen-ASR load **in parallel** by default (wall time closer to the slower of the two, not the sum). If you hit **CUDA OOM** or instability on wake, set environment variable **`PRIVOX_SEQUENTIAL_QWEN_LOAD=1`** to restore one-after-the-other loading.
 - **Very short sentences may not be refined**: To prevent hallucination, Privox will skip AI grammar correction if your spoken input is very short (roughly a few words). The original transcription will be typed out as-is. This is a deliberate safety measure to ensure quality output.
 - **Chinese output script (繁體 / 简体)**: In **Settings → General**, **Simplified Chinese output (简体中文)** is **off by default**. When it is off, any Chinese in the **final pasted text** is normalized to **Traditional Chinese** (refiner instructions plus **zhconv** when the package is installed). Turn the option **on** to normalize everything to **Simplified** instead. This applies regardless of whether the speech recognition returned Traditional or Simplified characters. Colloquial Cantonese particles are still encouraged when the transcript looks like spoken Cantonese.
-- **Logs and privacy (packaged app)**: When you run the **built executable**, lines that could reveal what you said (transcription diagnostics, ASR text, refiner previews, timings tied to those steps) are **not** written to `privox_app.log`. Startup, model loading, and errors may still be logged. To debug transcript issues in an exe build, set environment variable **`PRIVOX_LOG_TRANSCRIPTION=1`** (or `true` / `yes` / `on`) and restart.
+- **Logs and privacy (packaged app)**: When you run the **built executable**, lines that could reveal what you said (transcription diagnostics, ASR text, refiner previews, timings tied to those steps) are **not** written to `privox_app.log`. Startup, model loading, and errors may still be logged. To debug transcript issues in an exe build, set environment variable **`PRIVOX_LOG_TRANSCRIPTION=1`** (or `true` / `yes` / `on`) and restart. When transcription logging is on, diagnostics distinguish **raw ASR**, the **start of the LLM string** (which may echo ASR before `<refined>`), the **`<refined>` inner preview**, and the **pasted-text preview** so logs match what you see on screen.
 
 ## ⚠️ Known Limitations
 
@@ -100,7 +100,7 @@ Every piece of feedback helps shape Privox into a better tool. Thank you for you
 
 For power users who want to go beyond the Settings UI, Privox can be customized by editing the configuration files directly.
 
-The **packaged app version** string is `APP_VERSION` in `src/bootstrap.py` (currently **1.2.1**); it should match `version_info.txt` and `assets/privox.manifest` when you cut a release build.
+The **packaged app version** string is `APP_VERSION` in `src/bootstrap.py` (currently **1.2.2**); it should match `version_info.txt` and `assets/privox.manifest` when you cut a release build.
 
 ### Adding Your Own AI Models
 

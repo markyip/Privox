@@ -1,5 +1,26 @@
 # Privox Release Notes
 
+## v1.2.2
+
+### Versioning
+- Application metadata at **1.2.2**: `APP_VERSION` in `src/bootstrap.py`, Settings footer, Windows `version_info.txt` / `assets/privox.manifest`, and model-setup download `User-Agent`.
+
+### Long transcripts and `<refined>` (follow-up to v1.2.1)
+- **v1.2.1** raised Gemma **`n_ctx` to 6144**, compact system prompts for long inputs, and scaled **`max_tokens`** — this release hardens **Gemma 4 E2B/E4B** in production: **chat-native inference** via `create_chat_completion` with **`chat_format="gemma"`** so tokenization matches official templates (adds BOS correctly) and avoids **`<unused*>` degeneracy** from raw completion.
+- **Fallbacks**: folded **system + user** in one turn; streaming **early-abort** on `<unused*>` spam; optional **two-turn system/user** raw prompt retry with stronger `repeat_penalty`.
+- **Transcription logs** (when `PRIVOX_LOG_TRANSCRIPTION=1` or non-frozen dev): clarify that the **LLM string prefix** may still look like ASR; log **`<refined>` inner preview** and **pasted-text preview** so diagnostics align with final output.
+
+### VRAM saver and wake performance
+- **Idle unload** always releases **both ASR and refiner** (removed `unload_asr_on_idle`); ASR is cleared with **`del`** plus existing GC/CUDA cache flush.
+- After VRAM-saver wake, **Grammar and Qwen-ASR load in parallel** by default (wall time ≈ max of the two). Set **`PRIVOX_SEQUENTIAL_QWEN_LOAD=1`** if you need strict sequential load (e.g. CUDA OOM).
+- **Prefs hot-reload** is paused while heavy models initialize; after load, **prefs poll baseline** is synced so **`track_model_usage`** does not trigger a spurious **`load_config`**.
+
+### Hotkey / VRAM-saver race
+- If recording stops (toggle or auto-stop) while models are still loading after wake, **pending auto-start is cancelled** so Privox does not start a second phantom session when loading finishes.
+
+### Settings (model setup)
+- Saving **only ASR** or **only refiner** shows a **model-setup** dialog that lists **just the changed model**, not both.
+
 ## v1.2.1
 
 ### Versioning

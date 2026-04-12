@@ -1,6 +1,6 @@
 # Privox 🎙️
 
-![App version](https://img.shields.io/badge/app-v1.2.0-blue)
+![App version](https://img.shields.io/badge/app-v1.2.1-blue)
 [![Python Version](https://img.shields.io/badge/python-3.10--3.12-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-Noncommercial-green.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Windows-blue?logo=windows)
@@ -28,7 +28,7 @@ A powerful, private, and fully local voice input assistant for Windows. Privox c
 
 ### 1. Installation
 
-1. Download **Privox.exe** from our [Releases](https://github.com/markyip/Privox/releases) page. This repo’s current app version is **v1.2.0**; see [RELEASE_NOTES.md](RELEASE_NOTES.md) for changes.
+1. Download **Privox.exe** from our [Releases](https://github.com/markyip/Privox/releases) page. This repo’s current app version is **v1.2.1**; see [RELEASE_NOTES.md](RELEASE_NOTES.md) for changes.
 2. Run the program and follow the simple on-screen instructions.
 3. On your first run, Privox will take a few minutes to set up its "AI Brains"—then you're ready to go!
 
@@ -61,7 +61,8 @@ You don't need to be a computer expert to customize Privox. Just right-click the
 ## 📋 Good to Know
 
 - **VRAM usage is model-dependent**: Privox loads two local AI models (ASR + Refiner). Typical active VRAM is around 4 GB with default settings, and can vary by selected ASR backend (e.g. Qwen-ASR vs faster-whisper) and refiner model.
-- **TurboQuant refiner profiles**: Current refiner options use tuned load settings (`n_ctx`, `n_gpu_layers`, `n_batch`) to reduce VRAM pressure while preserving quality.
+- **TurboQuant refiner profiles**: Default Gemma refiners use tuned load settings (`n_ctx`, `n_gpu_layers`, `n_batch`) for a good balance on typical GPUs (e.g. **8–12 GB** VRAM gets conservative batch sizes and layer caps). **`n_ctx` is 6144** so longer dictation is less likely to be truncated during refinement; very long transcripts use a **compact system prompt** that still enforces the same critical rules but skips heavy few-shot blocks to fit context.
+- **Config file safety**: If `config.json` or `.user_prefs.json` is temporarily invalid JSON while you save in an editor, Privox logs a clear error (including path and a short preview) instead of failing the reload silently; fix the file and save again to apply settings.
 - **VRAM Saver**: Privox can automatically unload heavy models after inactivity and reload on next hotkey press.
 - **Very short sentences may not be refined**: To prevent hallucination, Privox will skip AI grammar correction if your spoken input is very short (roughly a few words). The original transcription will be typed out as-is. This is a deliberate safety measure to ensure quality output.
 - **Chinese output script (繁體 / 简体)**: In **Settings → General**, **Simplified Chinese output (简体中文)** is **off by default**. When it is off, any Chinese in the **final pasted text** is normalized to **Traditional Chinese** (refiner instructions plus **zhconv** when the package is installed). Turn the option **on** to normalize everything to **Simplified** instead. This applies regardless of whether the speech recognition returned Traditional or Simplified characters. Colloquial Cantonese particles are still encouraged when the transcript looks like spoken Cantonese.
@@ -98,7 +99,7 @@ Every piece of feedback helps shape Privox into a better tool. Thank you for you
 
 For power users who want to go beyond the Settings UI, Privox can be customized by editing the configuration files directly.
 
-The **packaged app version** string is `APP_VERSION` in `src/bootstrap.py` (currently **1.2.0**); it should match `version_info.txt` and `assets/privox.manifest` when you cut a release build.
+The **packaged app version** string is `APP_VERSION` in `src/bootstrap.py` (currently **1.2.1**); it should match `version_info.txt` and `assets/privox.manifest` when you cut a release build.
 
 ### Adding Your Own AI Models
 
@@ -143,7 +144,7 @@ You can add custom ASR (voice-to-text) or LLM (refiner) models by editing `src/m
     "file_name": "my-custom-llm-Q4_K_M.gguf",
     "prompt_type": "chatml",  # Supported: "chatml", "gemma", "llama", "t5"
     "turboquant": true,
-    "n_ctx": 3072,
+    "n_ctx": 6144,
     "n_gpu_layers": 24,
     "description": "A short description of this model."
 }

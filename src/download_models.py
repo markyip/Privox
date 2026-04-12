@@ -507,7 +507,7 @@ def main(log_callback=None):
             # Direct streaming download to avoid silent cache-only phases.
             url = hf_hub_url(repo_id=repo_id, filename=filename)
             tmp_path = out_path + ".part"
-            req = urllib.request.Request(url, headers={"User-Agent": "Privox-Installer/1.2.0"})
+            req = urllib.request.Request(url, headers={"User-Agent": "Privox-Installer/1.2.1"})
             with urllib.request.urlopen(req, timeout=60) as resp:
                 total = int(resp.headers.get("Content-Length", "0") or "0")
                 downloaded = 0

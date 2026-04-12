@@ -1,5 +1,21 @@
 # Privox Release Notes
 
+## v1.2.1
+
+### Versioning
+- Application metadata at **1.2.1**: `APP_VERSION` in `src/bootstrap.py`, Settings footer, Windows `version_info.txt` / `assets/privox.manifest`, and installer download `User-Agent`.
+
+### Refiner: long transcripts and context
+- **Gemma 4 E2B / E4B (TurboQuant)** default **`n_ctx` increased from 3072 to 6144** so refinement sees more of long dictation before hitting context limits.
+- **Long transcripts (> ~300 characters)** use **`get_system_formatter_for_transcript`**: shorter system prompt (still includes **`CRITICAL_RULES`**) and explicit **no summarization / no shortening**, instead of the full few-shot formatter that could crowd out the transcript.
+- **Grammar refinement `max_tokens`** scaled up for long inputs (including CJK-length heuristics, capped at 4096) so outputs are not cut off prematurely.
+
+### Config reload robustness
+- **`load_config`** reads JSON with **`utf-8-sig`** and **`_safe_json_load`**: on **`JSONDecodeError`**, logs the **file path** and a **short preview** of the contents, returns empty dicts where appropriate, and avoids noisy tracebacks when a file is mid-save or malformed.
+
+### Documentation
+- **README** updated: TurboQuant / VRAM notes, **`n_ctx` 6144**, compact-prompt behavior, config safety, and LLM library example aligned with current defaults.
+
 ## v1.2.0
 
 This section rolls up everything that shipped across the **1.1.0** / **1.1.1** line plus the **1.2.0** release (version bump and refiner prompting). Older **v1.1.x** headings are folded in here so there is a single current changelog entry.

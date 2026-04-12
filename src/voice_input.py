@@ -227,6 +227,27 @@ def log_transcription(msg, **kwargs):
         log_print(msg, **kwargs)
 
 
+def _safe_json_load(path: str, label: str) -> dict:
+    """Load JSON with BOM tolerance; on failure log path + preview and return {}."""
+    raw = ""
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            raw = f.read()
+        if not raw.strip():
+            return {}
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        preview = (raw[:400] if raw else "").replace("\r", "\\r").replace("\n", "\\n")
+        log_print(
+            f"Invalid JSON in {label} ({path}): {e}. "
+            f"Fix the file (valid UTF-8, double-quoted keys, no trailing commas). Preview: {preview!r}"
+        )
+        return {}
+    except OSError as e:
+        log_print(f"Could not read {label} ({path}): {e}")
+        return {}
+
+
 def _contains_cjk_char(s: str) -> bool:
     return any("\u4e00" <= c <= "\u9fff" for c in (s or ""))
 
@@ -1132,7 +1153,9 @@ class GrammarChecker:
                     transcript=clean_text,
                 )
                 # Dynamically select few-shot examples matched to the detected language
-                system_prompt = models_config.get_system_formatter(language=lang_effective)
+                system_prompt = models_config.get_system_formatter_for_transcript(
+                    language=lang_effective, transcript_char_len=len(clean_text)
+                )
                 user_content = (
                     f"[Core Directive]: {core_directive}\n"
                     f"[Transcript]: {text}\n"
@@ -1172,9 +1195,11 @@ class GrammarChecker:
                 )
                 stop_tokens = ["<|eot_id|>"]
             
-            # 2. Proportional max_tokens cap to prevent runaway generation
-            input_tokens_est = max(len(clean_text) // 3, len(clean_text.split()))
-            max_tokens = min(2048, max(128, input_tokens_est * 4)) # Increased caps slightly for complex edits
+            # 2. Proportional max_tokens: CJK-heavy text needs ~1 token/char of headroom; cap runaway at 4096.
+            char_n = len(clean_text)
+            word_n = len(clean_text.split())
+            input_tokens_est = max(char_n // 2, word_n * 3, char_n // 4 + 200)
+            max_tokens = min(4096, max(256, int(char_n * 1.3) + 512, input_tokens_est * 3))
 
             output = self.model(
                 prompt, 
@@ -2062,16 +2087,10 @@ class VoiceInputApp:
             prefs_path = os.path.join(BASE_DIR, ".user_prefs.json")
             
             # --- 1. Load Technical Config (Static/Public) ---
-            config = {}
-            if os.path.exists(config_path):
-                with open(config_path, "r", encoding="utf-8") as f:
-                    config = json.load(f)
-            
+            config = _safe_json_load(config_path, "config.json") if os.path.exists(config_path) else {}
+
             # --- 2. Load User Preferences (Hidden/Private) ---
-            prefs = {}
-            if os.path.exists(prefs_path):
-                with open(prefs_path, "r", encoding="utf-8") as f:
-                    prefs = json.load(f)
+            prefs = _safe_json_load(prefs_path, ".user_prefs.json") if os.path.exists(prefs_path) else {}
 
             # --- 3. Migration Logic (Move settings from config -> prefs) ---
             pref_keys = [

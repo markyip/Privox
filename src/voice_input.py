@@ -1116,6 +1116,62 @@ class GrammarChecker:
 
         return prompt
 
+    @staticmethod
+    def _is_gemma_unused_degeneracy(text: str) -> bool:
+        """Detect Gemma pathologies: repeated <unusedNN> tokens (wrong chat template / quant quirks)."""
+        if not text:
+            return False
+        head = text[:4000]
+        n = len(re.findall(r"<unused\d+>", head, flags=re.IGNORECASE))
+        if n < 10:
+            return False
+        if text.lstrip().startswith("<unused"):
+            return True
+        return len(head) >= 300 and (n * 11) > len(head) * 0.25
+
+    def _run_refiner_completion(
+        self, prompt: str, prompt_type: str, max_tokens: int, stop_tokens
+    ) -> tuple[str, bool]:
+        """
+        Run llama.cpp completion. Returns (raw_text, degenerate_gemma_spam).
+        Gemma uses streaming + early abort on <unused*> loops to avoid 30s+ wasted generation.
+        """
+        stop_list = list(stop_tokens) if isinstance(stop_tokens, (list, tuple)) else (
+            [stop_tokens] if stop_tokens else []
+        )
+        if "</refined>" not in stop_list:
+            stop_list.append("</refined>")
+
+        gen_kw: dict = dict(
+            max_tokens=max_tokens,
+            stop=stop_list,
+            echo=False,
+            temperature=0.3,
+            top_p=0.9,
+            repeat_penalty=1.18 if prompt_type == "gemma" else 1.1,
+            seed=42,
+        )
+
+        if prompt_type == "gemma":
+            parts: list[str] = []
+            for out in self.model(prompt, stream=True, **gen_kw):
+                chunk = out["choices"][0]["text"]
+                parts.append(chunk)
+                acc = "".join(parts)
+                if "</refined>" in acc:
+                    break
+                if self._is_gemma_unused_degeneracy(acc):
+                    log_transcription(" Gemma refiner: early-abort on <unused*> degeneracy.")
+                    return "", True
+            text = "".join(parts).strip()
+            if text and self._is_gemma_unused_degeneracy(text):
+                return "", True
+            return text, False
+
+        output = self.model(prompt, stream=False, **gen_kw)
+        text = (output["choices"][0]["text"] or "").strip()
+        return text, False
+
     def correct(self, text, is_command=False, language=None, language_prob=0.0):
         # 1. Pre-processing Guardrail: Skip LLM for very short or empty inputs
         # (Unless it's a known keyword in the custom dictionary)
@@ -1179,10 +1235,12 @@ class GrammarChecker:
                 )
                 stop_tokens = ["<|im_end|>"]
             elif prompt_type == "gemma":
-                # Gemma instruction template (commonly used by GGUF Gemma instruct variants)
+                # Gemma IT / Gemma 4: do not use a separate system turn unless the GGUF is explicitly
+                # trained for it — Google recommends folding system into the first user turn. A lone
+                # <start_of_turn>system block can push E2B/TurboQuant checkpoints into <unused*> loops.
+                combined_user = f"{system_prompt}\n\n{user_content}"
                 prompt = (
-                    f"<start_of_turn>system\n{system_prompt}<end_of_turn>\n"
-                    f"<start_of_turn>user\n{user_content}<end_of_turn>\n"
+                    f"<start_of_turn>user\n{combined_user}<end_of_turn>\n"
                     "<start_of_turn>model\n"
                 )
                 stop_tokens = ["<end_of_turn>"]
@@ -1201,17 +1259,15 @@ class GrammarChecker:
             input_tokens_est = max(char_n // 2, word_n * 3, char_n // 4 + 200)
             max_tokens = min(4096, max(256, int(char_n * 1.3) + 512, input_tokens_est * 3))
 
-            output = self.model(
-                prompt, 
-                max_tokens=max_tokens,
-                stop=stop_tokens, 
-                echo=False,
-                temperature=0.3,     # Balanced helpfulness vs accuracy
-                top_p=0.9,           # Allow more nuanced word choices
-                repeat_penalty=1.1,  # Gentle penalty just to prevent catastrophic looping
-                seed=42              # Fixed seed to ensure consistent output quality
+            raw_response, gemma_degenerate = self._run_refiner_completion(
+                prompt, prompt_type, max_tokens, stop_tokens
             )
-            raw_response = output['choices'][0]['text'].strip()
+            if gemma_degenerate:
+                log_transcription(
+                    " Gemma refiner degeneracy (<unused*> / bad distribution). Using ASR transcript."
+                )
+                return _finalize_refiner_text(clean_text, self.use_simplified_chinese_output)
+
             raw_for_extract = self._strip_critical_rules_echo(raw_response)
 
             # Diagnostic Log

@@ -2086,6 +2086,12 @@ class VoiceInputApp:
                 else:
                     self.sound_manager.play_start()
             finally:
+                # track_model_usage() updates .user_prefs.json during load; align poll baseline
+                # so we do not spuriously run load_config() right after wake (log noise + extra work).
+                try:
+                    self._sync_prefs_poll_from_disk()
+                except Exception:
+                    pass
                 self._heavy_model_load_in_progress = False
 
     def unload_heavy_models(self):
@@ -2111,6 +2117,14 @@ class VoiceInputApp:
             self.update_tray_tooltip()
             self.update_status("SLEEP") # Trigger flat line animation
             log_print("Models Unloaded. VRAM released.")
+
+    def _sync_prefs_poll_from_disk(self):
+        """Refresh hot-reload snapshot so internal prefs writes do not trigger load_config."""
+        prefs_path = os.path.join(BASE_DIR, ".user_prefs.json")
+        if os.path.exists(prefs_path):
+            self._last_prefs_mtime = os.path.getmtime(prefs_path)
+            with open(prefs_path, "rb") as f:
+                self._last_prefs_hash = hashlib.md5(f.read()).hexdigest()
 
     def track_model_usage(self, model_name):
         """Update last_used timestamp for the given model in hidden prefs."""

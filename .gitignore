@@ -49,7 +49,6 @@ models/
 **/*.onnx
 **/*.json
 !config.json
-!.user_prefs.json
 
 # IDEs
 .vscode/
@@ -85,6 +84,11 @@ design-system/
 .agent/
 .cursor/
 .gemini/
+privox_error_last.txt
+.tmp_llama_test/
 
 # User Prefs
 .user_prefs.json
+
+# CUDA llama-cpp-python wheel vendored for installer (copy before build; use Git LFS if you commit it)
+wheels/*.whl

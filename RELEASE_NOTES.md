@@ -2,6 +2,12 @@
 
 ## v1.2.2
 
+**Release date:** 2026-04-15
+
+### Release summary
+- Stabilization release for the current codebase snapshot that finalizes the **v1.2.2** cut.
+- Versioned metadata and docs are aligned for release packaging and GitHub distribution.
+
 ### Versioning
 - Application metadata at **1.2.2**: `APP_VERSION` in `src/bootstrap.py`, Settings footer, Windows `version_info.txt` / `assets/privox.manifest`, and model-setup download `User-Agent`.
 

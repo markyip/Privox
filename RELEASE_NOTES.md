@@ -8,6 +8,18 @@
 - Stabilization release for the current codebase snapshot that finalizes the **v1.2.2** cut.
 - Versioned metadata and docs are aligned for release packaging and GitHub distribution.
 
+### Packaged executable (logging & diagnostics)
+- **No `privox_app.log` in the built exe**: frozen builds use a **null logging root** only (no log file on disk, no stdout/stderr capture into Privox’s logging pipeline).
+- **Development unchanged**: `pixi run` / `python src/voice_input.py` still writes **`privox_app.log`** next to the repo for troubleshooting.
+- **Transcript diagnostics**: `PRIVOX_LOG_TRANSCRIPTION=1` is documented for **source / Pixi** runs where `privox_app.log` exists; the silent exe build does not persist those lines to disk.
+
+### Reliability (VAD / stderr)
+- **Fixed** a `NameError` (`msg` undefined) in **`LoggerWriter._stderr_downgrade`** that could surface while loading **Silero VAD** (e.g. tqdm/hub stderr) and was mis-reported as **VAD load failure** when stdout/stderr capture was active.
+- **Silero → WebRTC VAD fallback**: if Silero cannot load, Privox tries **`webrtcvad`** (`WebRtcVadAdapter`) when available; VRAM unload avoids calling **`.cpu()`** on non-module VAD sentinels.
+
+### Hotkey (first press vs model wake)
+- **First hotkey** when the app is **not** ready (e.g. VAD missing or mic stream not up) **does not** set **`pending_wakeup`** auto-start, avoiding a “phantom” recording session after load.
+
 ### Versioning
 - Application metadata at **1.2.2**: `APP_VERSION` in `src/bootstrap.py`, Settings footer, Windows `version_info.txt` / `assets/privox.manifest`, and model-setup download `User-Agent`.
 

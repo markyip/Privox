@@ -29,36 +29,6 @@ _drop_user_site_from_sys_path()
 import PyInstaller.__main__
 
 
-def _collect_llama_cpp_binary_args():
-    """Bundle llama.cpp DLLs from the current Python env (e.g. CUDA build) into the onefile MEIPASS tree."""
-    try:
-        import llama_cpp
-    except ImportError:
-        print(
-            "WARNING: llama_cpp not importable in this interpreter; "
-            "PyInstaller will not embed llama_cpp/lib/*.dll. "
-            "Run `pixi run python build_app.py` after a successful env install.",
-            file=sys.stderr,
-        )
-        return []
-
-    pkg_dir = os.path.dirname(llama_cpp.__file__)
-    lib_dir = os.path.join(pkg_dir, "lib")
-    if not os.path.isdir(lib_dir):
-        return []
-
-    args = []
-    for name in sorted(os.listdir(lib_dir)):
-        if not name.lower().endswith(".dll"):
-            continue
-        src = os.path.join(lib_dir, name)
-        args.append(f"--add-binary={src}{os.pathsep}llama_cpp/lib")
-
-    if args:
-        print(f"PyInstaller: embedding {len(args)} file(s) from llama_cpp/lib (CUDA/CPU runtime DLLs).")
-    return args
-
-
 def _collect_zhconv_pyinstaller_args():
     """Only pass --hidden-import=zhconv if the build interpreter can import it (PyInstaller validates the name)."""
     try:
@@ -164,9 +134,8 @@ _pyinstaller_argv = [
     '--exclude-module=ctranslate2',
     '--exclude-module=tokenizers',
     '--exclude-module=onnxruntime',
-    # llama_cpp: keep package + embed lib/*.dll (CUDA) from build env — do not exclude.
-    '--hidden-import=llama_cpp',
-    '--hidden-import=llama_cpp.llama_cpp',
+    # llama_cpp runtime is installed into Pixi env from bundled wheels/ at first-run model setup.
+    # Keep bootstrap lean: do not embed llama_cpp package or lib/*.dll into Privox.exe.
     '--exclude-module=PIL',
     '--exclude-module=pystray',
     '--exclude-module=sounddevice',
@@ -182,10 +151,9 @@ if os.path.isdir("scripts"):
 if os.path.isdir("wheels"):
     whl_count = sum(1 for n in os.listdir("wheels") if n.endswith(".whl"))
     if whl_count:
-        print(f"PyInstaller: embedding {whl_count} file(s) from wheels/ (bundled llama-cpp-python).")
+        print(f"PyInstaller: embedding {whl_count} file(s) from wheels/ (llama-cpp runtime source for first-run install).")
     _pyinstaller_argv.append("--add-data=wheels;wheels")
 
-_pyinstaller_argv.extend(_collect_llama_cpp_binary_args())
 _pyinstaller_argv.extend(_collect_zhconv_pyinstaller_args())
 
 PyInstaller.__main__.run(_pyinstaller_argv)

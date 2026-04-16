@@ -9,7 +9,7 @@ ASR_LIBRARY = [
     {"name": "OpenAI Whisper Small", "whisper_repo": "openai/whisper-small", "whisper_model": "small", "repo": "openai/whisper-small", "description": "Quick processing for low-resource environments."},
     {"name": "Qwen-ASR v3 0.6B", "whisper_repo": "Qwen/Qwen3-ASR-0.6B", "whisper_model": "qwen3-asr-0.6b", "repo": "Qwen/Qwen3-ASR-0.6B", "backend": "qwen_asr", "description": "Ultra-fast Qwen v3 ASR."},
     {"name": "Qwen-ASR v3 1.7B", "whisper_repo": "Qwen/Qwen3-ASR-1.7B", "whisper_model": "qwen3-asr-1.7b", "repo": "Qwen/Qwen3-ASR-1.7B", "backend": "qwen_asr", "description": "Powerful Qwen v3 ASR."},
-    {"name": "Whisper Large v3 Turbo (Multilingual)", "whisper_repo": "deepdml/faster-whisper-large-v3-turbo-ct2", "whisper_model": "large-v3-turbo", "repo": "deepdml/faster-whisper-large-v3-turbo-ct2", "description": "Multilingual Whisper Large v3 Turbo (CTranslate2). Use for Cantonese, Korean, Japanese, European languages, Hindi, Singlish, Arabic, and mixed speech when you do not want a separate per-language model."}
+    {"name": "Whisper Large v3 Turbo (Multilingual)", "whisper_repo": "deepdml/faster-whisper-large-v3-turbo-ct2", "whisper_model": "large-v3-turbo", "repo": "deepdml/faster-whisper-large-v3-turbo-ct2", "description": "Distilled Large v3 Turbo (CT2): fast multilingual; good all-rounder. Code-mixing is still imperfect vs full Large v3."},
 ]
 
 # --- Refiner (LLM) Library ---
@@ -20,9 +20,9 @@ LLM_LIBRARY = [
         "file_name": "gemma-4-E2B-it-Q4_K_M.gguf",
         "prompt_type": "gemma",
         "turboquant": True,
-        "n_ctx": 6144,
+        "n_ctx": 8192,
         "n_gpu_layers": 20,
-        "description": "Gemma 4 E2B tuned for low VRAM with TurboQuant defaults."
+        "description": "Gemma 4 E2B tuned for speed and low VRAM."
     },
     {
         "name": "Gemma 4 E4B (TurboQuant)",
@@ -30,17 +30,18 @@ LLM_LIBRARY = [
         "file_name": "gemma-4-E4B-it-Q4_K_M.gguf",
         "prompt_type": "gemma",
         "turboquant": True,
-        "n_ctx": 6144,
+        "n_ctx": 8192,
         "n_gpu_layers": 24,
-        "description": "Gemma 4 E4B with TurboQuant defaults for lower VRAM usage."
+        "description": "Gemma 4 E4B tuned for speed and low VRAM usage."
     },
 ]
 
 # --- Defaults ---
+# Default ASR uses faster-whisper (CTranslate2) — no PyTorch for transcription.
 # Display name as stored in .user_prefs.json / ASR combo (must match ASR_LIBRARY "name").
-DEFAULT_ASR = "Qwen-ASR v3 1.7B"
+DEFAULT_ASR = "Distil-Whisper Large v3 (English)"
 # Folder id under models/whisper-<id> and config.json "whisper_model" (keep in sync with ASR_LIBRARY entry).
-DEFAULT_ASR_WHISPER_MODEL = "qwen3-asr-1.7b"
+DEFAULT_ASR_WHISPER_MODEL = "distil-large-v3"
 DEFAULT_LLM = "Gemma 4 E2B (TurboQuant)"
 
 # --- Persona Lenses ---
@@ -113,7 +114,7 @@ CRITICAL RULES:
 4. STRICT NO HALLUCINATION: Never add new semantic information, facts, commentary, or ideas not explicitly present in the original transcript.
 5. NO CONVERSATION: Output ONLY the processed text inside the tags. Never add greetings.
 6. ARABIC NUMERALS (ALL LANGUAGES, 0–9): Whenever the transcript refers to a number—cardinals, ordinals (keep each language’s normal ordinal markers: 1st, 2e, 第3, etc.), counts, measurements, money, dates/times, list positions, math, codes/IDs, ages, percentages, fractions—write the numeric value with Western Arabic digits (0–9), not spelled-out number words in the local language. Applies equally to English, Chinese, Japanese, Korean, French, German, Spanish, Arabic, Hindi, and any other supported language. Examples: "twelve" → "12"; "douze" → "12"; "十五" / "じゅうご" → "15"; "اثنا عشر" → "12"; "बारह" → "12". Lists: "one, two, three" → "1, 2, 3"; space-separated runs → comma-separated digits. Do not replace non-numeric idioms or metaphors with digits when the speaker did not state a quantity. All non-numeric words stay in the transcript language (rule 7).
-7. PRESERVE INPUT LANGUAGE: The transcript may be Chinese, Japanese, Korean, or other languages. Keep the refined text in that SAME language. Never translate to English unless the transcript itself is English. Using Western Arabic digits (0–9) for numeric references is NOT translation and is required (rule 6).
+7. PRESERVE INPUT LANGUAGE: The transcript may be Chinese, Japanese, Korean, or other languages. Keep the refined text in that SAME language. Never translate to English unless the transcript itself is English. Using Western Arabic digits (0–9) for numeric references is NOT translation and is required (rule 6). CODE-MIXING: If the transcript combines CJK text with Latin/English words in one utterance, preserve that pattern—do not translate the English into Chinese (or the reverse) unless fixing an obvious misrecognition.
 8. CHINESE SCRIPT: If the Core Directive specifies Traditional or Simplified output for Chinese, follow it for all Chinese characters. Otherwise, match the transcript script (繁體 vs 简体).
 9. CANTONESE: If the transcript contains spoken Cantonese particles (e.g. 嘅、咗、唔), keep colloquial Cantonese; do not rewrite into formal Mandarin book style unless the user asked for formal prose.
 10. SPOKEN ARITHMETIC & OPERATORS (ALL LANGUAGES): When the user dictates math, render with context-appropriate symbols (+ − × ÷ =), not only in English/Chinese. Follow each language’s spoken cues: English (plus/minus/times/divided by/equals); Chinese 加減乘除等於; French (plus/moins/fois/divisé par/égale); German (plus/minus/mal/geteilt durch/ist/gleich); Spanish (más/menos/por/dividido entre/es/igual a); Japanese (たす/ひく/かける/わる/は); Korean (더하기/빼기/곱하기/나누기/은/는); Arabic (زائد/ناقص/ضرب/قسمة/يساوي); Hindi (धन/घटा/गुणा/भाग/बराबर), etc. Use Unicode operators in prose when clear; ASCII (- *) in code-like lines if the transcript implies code. Never add unstated steps or unstated numeric results.
@@ -280,10 +281,13 @@ Output: <refined>Use Western Arabic digits (0–9) for every numeric value, + �
 }
 
 
-def get_system_formatter(language=None):
+def get_system_formatter(language=None, persona_mission=None):
     """Generates a system prompt with a language-relevant few-shot example."""
     lang_key = language if language in LANGUAGE_EXAMPLES else "en"
     ex = LANGUAGE_EXAMPLES[lang_key]
+    
+    # Mission override for Persona/Tone enforcement
+    mission_greeting = f"Your specific mission is: {persona_mission}" if persona_mission else "Your job is to process the user's transcript according to the Core Directive."
     
     # Common structural example
     struct_ex = {
@@ -301,7 +305,7 @@ def get_system_formatter(language=None):
         numbers_ex = _NUMBERS_FEW_SHOT_BY_LANG.get(lang_key) or _NUMBERS_FEW_SHOT_BY_LANG["_default"]
 
     formatter = f"""
-You are a precise text-processing API. Your job is to process the user's transcript according to the Core Directive.
+You are a precise text-processing API. {mission_greeting}
 You MUST wrap your final processed text perfectly inside <refined> and </refined> XML tags. Do NOT output anything outside of these tags.
 
 {CRITICAL_RULES}
@@ -320,12 +324,15 @@ Output: <refined>{struct_ex['output']}</refined>
     return formatter
 
 
-def get_system_formatter_for_transcript(language=None, transcript_char_len=0):
+def get_system_formatter_for_transcript(language=None, transcript_char_len=0, persona_mission=None):
     """Shorter system prompt for long transcripts so prompt+text fits n_ctx; forbids summarization."""
     if transcript_char_len <= 300:
-        return get_system_formatter(language=language)
+        return get_system_formatter(language=language, persona_mission=persona_mission)
+    
+    mission_greeting = f"Your specific mission is: {persona_mission}" if persona_mission else "Refine the user's transcript per the Core Directive."
+    
     return f"""
-You are a precise text-processing API. Refine the user's transcript per the Core Directive.
+You are a precise text-processing API. {mission_greeting}
 You MUST put the COMPLETE refined transcript inside one pair of <refined> and </refined> tags.
 Do NOT summarize, shorten, skip paragraphs, or omit sentences — keep the same substance and coverage as the input.
 

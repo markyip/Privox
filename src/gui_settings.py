@@ -164,6 +164,48 @@ class ModelUpdateWorker(QObject):
         finally:
             sys.stderr = old_stderr
 
+
+class OnnxAsrPrefetchSignals(QObject):
+    finished = Signal(bool, str)
+    log_line = Signal(str)
+
+
+class OnnxAsrPrefetchWorker(QObject):
+    """Background HF snapshot for ONNX ASR presets when user selects them in Settings."""
+
+    def __init__(self, base_dir: str, whisper_model: str, whisper_repo: str, asr_backend: str, signals: OnnxAsrPrefetchSignals):
+        super().__init__()
+        self.base_dir = base_dir
+        self.whisper_model = whisper_model
+        self.whisper_repo = whisper_repo
+        self.asr_backend = asr_backend
+        self.signals = signals
+
+    @Slot()
+    def run(self):
+        import download_models
+
+        os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+        def _log(m: str) -> None:
+            try:
+                print(f"[ONNX prefetch] {m}", flush=True)
+            except Exception:
+                pass
+            self.signals.log_line.emit(m)
+
+        try:
+            download_models.ensure_asr_snapshot(
+                self.base_dir,
+                self.whisper_model,
+                self.whisper_repo,
+                self.asr_backend,
+                log_local=_log,
+            )
+            self.signals.finished.emit(True, "")
+        except Exception as e:
+            self.signals.finished.emit(False, str(e))
+
+
 ARROW_DOWN_SVG = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path fill='%23aaaaaa' d='M2 4l4 4 4-4z'/></svg>"
 ARROW_UP_SVG = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path fill='%23ffffff' d='M2 8l4-4 4 4z'/></svg>"
 
@@ -523,6 +565,12 @@ class SettingsGUI(QMainWindow):
         self.config_path = config_path
         self.is_dirty = False
         self._saved_settings_snapshot = None
+        self._onnx_prefetch_thread = None
+        self._status_transient_text = None
+        self._onnx_prefetch_detail = ""
+        self._status_clear_timer = QTimer(self)
+        self._status_clear_timer.setSingleShot(True)
+        self._status_clear_timer.timeout.connect(self._clear_transient_status)
 
         self.load_config()
         self.init_ui()
@@ -559,6 +607,7 @@ class SettingsGUI(QMainWindow):
         
         self.config_path = os.path.abspath(self.config_path)
         base_dir = os.path.dirname(self.config_path)
+        self.base_dir = base_dir
         self.prefs_path = os.path.join(base_dir, ".user_prefs.json")
         
         # Load Tech Config
@@ -965,10 +1014,69 @@ class SettingsGUI(QMainWindow):
         content_layout.addWidget(self.stack)
         main_layout.addWidget(content_container)
 
+        # --- Status bar (inside rounded panel, below sidebar + content) ---
+        status_strip = QFrame()
+        status_strip.setObjectName("status_strip")
+        status_strip.setFixedHeight(30)
+        status_strip.setStyleSheet("""
+            QFrame#status_strip {
+                background-color: rgba(0, 0, 0, 0.28);
+                border-top: 1px solid rgba(255, 255, 255, 0.08);
+                border-bottom-left-radius: 11px;
+                border-bottom-right-radius: 11px;
+            }
+        """)
+        status_layout = QHBoxLayout(status_strip)
+        status_layout.setContentsMargins(14, 0, 14, 0)
+        self._status_label = QLabel("")
+        self._status_label.setStyleSheet(
+            "color: rgba(255, 255, 255, 0.5); font-size: 11px; font-weight: 500;"
+        )
+        self._status_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self._status_label.setWordWrap(False)
+        self._status_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        status_layout.addWidget(self._status_label, 1)
+        main_v_layout.addWidget(status_strip)
+
         self.switch_tab(0)
+        self._refresh_status_bar()
+
+    def _clear_transient_status(self):
+        self._status_transient_text = None
+        self._refresh_status_bar()
+
+    def set_status_message(self, text: str, timeout_ms: int = 0) -> None:
+        """Show a temporary status message; restores Ready / dirty / download state when timeout_ms elapses."""
+        self._status_clear_timer.stop()
+        self._status_transient_text = (text or "").strip() or None
+        self._refresh_status_bar()
+        if timeout_ms > 0 and self._status_transient_text:
+            self._status_clear_timer.start(timeout_ms)
+
+    def _refresh_status_bar(self) -> None:
+        if not getattr(self, "_status_label", None):
+            return
+        if self._status_transient_text:
+            self._status_label.setText(self._status_transient_text)
+        elif self.is_dirty:
+            self._status_label.setText(
+                "Unsaved changes — use SAVE ALL SETTINGS or choose on exit"
+            )
+        else:
+            self._status_label.setText("Ready")
+        pp = getattr(self, "prefs_path", "") or ""
+        cfg = getattr(self, "config_path", "") or ""
+        if pp or cfg:
+            self._status_label.setToolTip(f"Preferences: {pp}\nConfig: {cfg}")
+        else:
+            self._status_label.setToolTip("")
+
+
 
     def mark_dirty(self):
         self.is_dirty = True
+        if not self._status_transient_text:
+            self._refresh_status_bar()
 
     def _hotkey_display_label(self):
         tip = (self.hk_val.toolTip() or "").strip()
@@ -1092,7 +1200,14 @@ class SettingsGUI(QMainWindow):
         set_combo_safe(self.char_combo, self.config.get("character", "Writing Assistant"))
         set_combo_safe(self.tone_combo, self.config.get("tone", "Natural"))
         _asr_cfg = self.config.get("whisper_model")
-        _asr_combo_val = models_config.DEFAULT_ASR if _asr_cfg is None else self._resolve_asr_display_name(_asr_cfg)
+        if not _asr_cfg:
+            _wr = (self.config.get("whisper_repo") or self.tech_config.get("whisper_repo") or "").strip()
+            if _wr:
+                for m in self.asr_library:
+                    if (m.get("whisper_repo") or m.get("repo") or "").strip() == _wr:
+                        _asr_cfg = m.get("whisper_model")
+                        break
+        _asr_combo_val = models_config.DEFAULT_ASR if not _asr_cfg else self._resolve_asr_display_name(_asr_cfg)
         set_combo_safe(self.asr_combo, _asr_combo_val)
         set_combo_safe(self.llm_combo, self.config.get("current_refiner", models_config.DEFAULT_LLM))
 
@@ -1156,6 +1271,8 @@ class SettingsGUI(QMainWindow):
         # Reset Dirty Flag after load
         self.is_dirty = False
         self._refresh_saved_snapshot()
+        self._refresh_status_bar()
+        # Prefetch ONNX only ran on combo text changes; initial selection was set with signals blocked.
         print(f"DEBUG: Initial Refiner: {current_llm}")
 
     def switch_tab(self, index):
@@ -1286,6 +1403,8 @@ class SettingsGUI(QMainWindow):
                 break
         self.asr_info.setText(desc)
         self.asr_info.setVisible(bool(desc))
+
+
 
     def update_llm_desc(self, text):
         desc = ""
@@ -1698,8 +1817,10 @@ class SettingsGUI(QMainWindow):
                     json.dump(self.prefs, f, indent=4)
                 self.is_dirty = False
                 self._refresh_saved_snapshot()
+                self._refresh_status_bar()
         else:
             self.show_toast("Settings saved successfully!")
+            self.set_status_message("Settings saved.", 4000)
 
     # Common system / app shortcuts that should not be used as a Privox hotkey
     CONFLICTING_HOTKEYS = {
@@ -2044,9 +2165,12 @@ class SettingsGUI(QMainWindow):
         # --- Thread and Signal Wiring ---
         dlg.signals = ModelUpdateSignals() # Attach to dialog to prevent GC
         worker = ModelUpdateWorker(dlg.signals)
-        thread = QThread(dlg) # Attach to dialog
+        # Parent SettingsGUI (not the dialog) so the thread is not destroyed with the dialog
+        # before sys.exit(10); avoids "QThread: Destroyed while thread is still running".
+        thread = QThread(self)
         worker.moveToThread(thread)
         dlg.worker = worker # Keep reference
+        dlg._model_setup_thread = thread
 
         def on_status(msg):
             msg_l = msg.lower()
@@ -2100,7 +2224,13 @@ class SettingsGUI(QMainWindow):
         thread.start()
         
         # Block until thread finishes (success or revert)
-        if dlg.exec() == QDialog.Accepted:
+        _accepted = dlg.exec() == QDialog.Accepted
+        _t = getattr(dlg, "_model_setup_thread", None)
+        if _t is not None:
+            _t.quit()
+            if not _t.wait(60_000):
+                print("WARNING: Model setup QThread did not finish within 60s.", flush=True)
+        if _accepted:
             print("Restarting application to apply model changes...")
             # Use exit code 10 to signal a restart requirement with settings recovery
             sys.exit(10)

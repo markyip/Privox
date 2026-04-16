@@ -714,7 +714,7 @@ class InstallerGUI(QMainWindow):
                 self,
                 "Error",
                 "Setup failed.",
-                "Please review the log above and try again.\nIf the problem persists, check privox_app.log in the install folder.",
+                "Please review the messages above in this window and try again.",
                 buttons=["Close"],
             )
             dlg.exec()
@@ -802,16 +802,6 @@ def install_app_files(target_dir, log_cb):
                 except Exception as e:
                     log_cb(f"Warning syncing {folder}: {e}")
 
-        bundled_llama_lib = os.path.join(BUNDLE_DIR, "llama_cpp", "lib")
-        if os.path.isdir(bundled_llama_lib):
-            dst_ll = os.path.join(target_dir, "_internal", "llama_cpp", "lib")
-            try:
-                os.makedirs(os.path.dirname(dst_ll), exist_ok=True)
-                shutil.copytree(bundled_llama_lib, dst_ll, dirs_exist_ok=True)
-                log_cb("Installed bundled llama_cpp DLLs to _internal/llama_cpp/lib (matches build machine CUDA build).")
-            except Exception as e:
-                log_cb(f"Warning: could not copy bundled llama_cpp/lib: {e}")
-        
         create_shortcut(target_exe, target_dir)
         
         # Register in Windows Settings (Add/Remove Programs)

@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import shutil
@@ -6,6 +7,114 @@ import threading
 import time
 import urllib.request
 import models_config
+
+
+
+
+def ensure_asr_snapshot(
+    target_base_dir: str,
+    whisper_model_name: str,
+    whisper_repo: str,
+    asr_backend: str,
+    log_local=None,
+) -> None:
+    """
+    Ensure ASR weights exist under models/whisper-<whisper_model_name>.
+    Runs snapshot_download from whisper_repo when files are missing or repo tag mismatches.
+    Used by download_models.main() and by Settings GUI when user selects an ONNX ASR preset.
+    """
+    if log_local is None:
+        log_local = log
+
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError as e:
+        raise RuntimeError("huggingface_hub is required for model download.") from e
+
+    models_dir = os.path.join(target_base_dir, "models")
+    if not os.path.exists(models_dir):
+        log_local(f"Creating models directory: {models_dir}")
+        os.makedirs(models_dir, exist_ok=True)
+
+    if asr_backend == "qwen_asr":
+        log_local("[ASR] Verifying Qwen-ASR (Transformers) files...")
+    else:
+        log_local("[ASR] Verifying faster-whisper / Whisper files...")
+
+    whisper_target = os.path.join(models_dir, "whisper-" + whisper_model_name)
+    repo_tag_file = os.path.join(whisper_target, ".repo_id")
+    existing_repo = ""
+    if os.path.exists(repo_tag_file):
+        try:
+            with open(repo_tag_file, "r") as f:
+                existing_repo = f.read().strip()
+        except Exception:
+            pass
+
+    critical_files = ["model.bin", "config.json", "tokenizer.json", "preprocessor_config.json"]
+    needs_download = False
+
+    if existing_repo != whisper_repo:
+        needs_download = True
+        if os.path.exists(whisper_target):
+            if existing_repo.strip():
+                log_local(
+                    f"ASR .repo_id mismatch ({existing_repo!r} vs {whisper_repo!r}); clearing folder before re-download."
+                )
+            else:
+                log_local(
+                    f"ASR folder exists without a valid .repo_id (e.g. partial download); "
+                    f"clearing before snapshot to {whisper_repo!r}."
+                )
+            try:
+                shutil.rmtree(whisper_target)
+                os.makedirs(whisper_target)
+            except Exception:
+                pass
+
+    if not os.path.exists(whisper_target):
+        needs_download = True
+    else:
+        for f in critical_files:
+            if not os.path.exists(os.path.join(whisper_target, f)):
+                needs_download = True
+                break
+
+    if not needs_download:
+        log_local(f"[ASR] Already present: {whisper_target}")
+        return
+
+    if asr_backend == "qwen_asr":
+        log_local(
+            f"Downloading Qwen-ASR from {whisper_repo} "
+            f"(local folder whisper-{whisper_model_name})."
+        )
+    else:
+        log_local(f"Downloading Whisper / CT2 weights ({whisper_model_name}) from {whisper_repo}...")
+    log_local("Note: Large models may take several minutes. Please wait.")
+
+    os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+
+    dl_kw: dict = {"repo_id": whisper_repo, "local_dir": whisper_target}
+
+    try:
+        snapshot_download(**dl_kw)
+    except Exception as e:
+        log_local(f"[ASR] huggingface_hub snapshot_download failed: {e}")
+        raise RuntimeError(
+            f"Failed to download ASR from {whisper_repo!r} into {whisper_target}. "
+            "Check network, disk space, and HF access. "
+            "Try: pixi run python src/download_models.py from the install folder."
+        ) from e
+
+    log_local("Finalizing ASR download...")
+    try:
+        with open(repo_tag_file, "w") as f:
+            f.write(whisper_repo)
+    except Exception:
+        pass
+
+    log_local("[ASR] Setup complete.")
 
 
 def _win_short_path(path: str) -> str:
@@ -101,6 +210,24 @@ def _local_llama_cpp_wheel_paths(wheels_dir: str) -> list[str]:
 def log(msg):
     print(f"[ModelSetup] {msg}", flush=True)
 
+
+def reconcile_whisper_model_folder_id(whisper_model_name: str, whisper_repo: str) -> str:
+    """
+    Local ASR files live under models/whisper-<whisper_model>.
+    If config.json has a stale whisper_model id but whisper_repo matches a library entry,
+    return that entry's folder id (fixes ONNX downloaded into whisper-distil-large-v3, etc.).
+    """
+    r = (whisper_repo or "").strip()
+    if not r:
+        return whisper_model_name
+    for m in models_config.ASR_LIBRARY:
+        m_repo = (m.get("whisper_repo") or m.get("repo") or "").strip()
+        if m_repo == r:
+            mid = (m.get("whisper_model") or "").strip()
+            return mid if mid else whisper_model_name
+    return whisper_model_name
+
+
 def main(log_callback=None):
     def log_local(msg):
         if log_callback:
@@ -109,6 +236,14 @@ def main(log_callback=None):
             log(msg)
 
     print(f"[DEBUG] download_models.main() entered with log_callback={log_callback}", flush=True)
+    # huggingface_hub uses threaded tqdm for each file; mixed with [ModelSetup] lines it corrupts Windows consoles
+    # (prompt glued to progress text, bars re-printing after "complete"). Disable tqdm for CLI unless user opted in.
+    if log_callback is None and os.environ.get("HF_HUB_DISABLE_PROGRESS_BARS") is None:
+        os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+        log_local(
+            "HF per-file progress bars disabled for clean [ModelSetup] logs "
+            "(set HF_HUB_DISABLE_PROGRESS_BARS=0 before running to show tqdm)."
+        )
     log_local("Initializing model setup engine...")
     # 0. Environment Isolation
     os.environ["PYTHONNOUSERSITE"] = "1"
@@ -136,7 +271,6 @@ def main(log_callback=None):
     asr_backend = "whisper"
     if os.path.exists(config_path):
         try:
-            import json
             with open(config_path, "r") as f:
                 config = json.load(f)
                 whisper_model_name = config.get("whisper_model", whisper_model_name)
@@ -148,6 +282,24 @@ def main(log_callback=None):
         except Exception as e:
             log_local(f"Config load error (using defaults): {e}")
             asr_backend = "whisper"
+
+    _fixed_id = reconcile_whisper_model_folder_id(whisper_model_name, whisper_repo)
+    if _fixed_id != whisper_model_name:
+        log_local(
+            f"[ASR] Corrected whisper_model folder id {whisper_model_name!r} -> {_fixed_id!r} "
+            f"(must match ASR_LIBRARY entry for repo {whisper_repo})."
+        )
+        whisper_model_name = _fixed_id
+        try:
+            if os.path.exists(config_path):
+                with open(config_path, "r", encoding="utf-8") as f:
+                    _cfg = json.load(f)
+                _cfg["whisper_model"] = whisper_model_name
+                with open(config_path, "w", encoding="utf-8") as f:
+                    json.dump(_cfg, f, indent=4)
+                log_local("[ASR] Wrote corrected whisper_model to config.json.")
+        except Exception as _e:
+            log_local(f"[ASR] Could not update config.json: {_e}")
 
     log_local("[Stage 1/4] Environment verification & configuration loading...")
 
@@ -209,7 +361,8 @@ def main(log_callback=None):
     try:
         import llama_cpp
         version = getattr(llama_cpp, '__version__', '0.0.0')
-        sys_info = str(llama_cpp.llama_print_system_info())
+        _sys_fn = getattr(llama_cpp, "llama_system_info", getattr(llama_cpp, "llama_print_system_info", None))
+        sys_info = str(_sys_fn()) if _sys_fn else ""
         llama_has_cuda = ("CUDA = 1" in sys_info) or ("CUDA :" in sys_info)
         
         log_local(f"Found llama-cpp-python v{version} (CUDA: {llama_has_cuda}) | System GPU: {has_gpu}")
@@ -586,64 +739,10 @@ def main(log_callback=None):
     else:
         log_local(f"Grammar Model {grammar_file} present.")
 
-    # 2. ASR weights on disk (faster-whisper layout under models/whisper-<id>, or Qwen snapshot in same path)
-    if asr_backend == "qwen_asr":
-        log_local("[Stage 4/4] Verifying speech recognition model files (Qwen-ASR)...")
-    else:
-        log_local("[Stage 4/4] Verifying transcription model files (faster-whisper / Whisper)...")
-    whisper_target = os.path.join(models_dir, "whisper-" + whisper_model_name)
-    
-    # Check for repo-specific tag to force redownload if we switched repos
-    repo_tag_file = os.path.join(whisper_target, ".repo_id")
-    existing_repo = ""
-    if os.path.exists(repo_tag_file):
-        try:
-            with open(repo_tag_file, "r") as f:
-                existing_repo = f.read().strip()
-        except: pass
-    
-    # Robust check: Ensure critical files exist
-    critical_files = ["model.bin", "config.json", "tokenizer.json", "preprocessor_config.json"]
-    needs_download = False
-    
-    if existing_repo != whisper_repo:
-            needs_download = True
-            if os.path.exists(whisper_target):
-                log_local(f"Repository mismatch ({existing_repo} vs {whisper_repo}). Clearing old model data...")
-                try:
-                    shutil.rmtree(whisper_target)
-                    os.makedirs(whisper_target)
-                except: pass
-    
-    if not os.path.exists(whisper_target):
-        needs_download = True
-    else:
-        for f in critical_files:
-            if not os.path.exists(os.path.join(whisper_target, f)):
-                needs_download = True
-                break
-                
-    if needs_download:
-        if asr_backend == "qwen_asr":
-            log_local(
-                f"Downloading Qwen-ASR from {whisper_repo} "
-                f"(local folder whisper-{whisper_model_name}; config whisper_model id may differ from HF repo)."
-            )
-        else:
-            log_local(f"Downloading faster-whisper / Whisper weights ({whisper_model_name}) from {whisper_repo}...")
-        log_local("Note: Large models (3GB+) may take several minutes. Please wait.")
-        snapshot_download(
-            repo_id=whisper_repo, 
-            local_dir=whisper_target
-        )
-        # Save the repo tag so we don't redownload again if successful
-        log_local("Finalizing ASR model setup...")
-        try:
-            with open(repo_tag_file, "w") as f:
-                f.write(whisper_repo)
-        except: pass
-        log_local("ASR model setup complete.")
-        
+    # 2. ASR weights on disk (faster-whisper layout under models/whisper-<id>, or Qwen / ONNX snapshot)
+    log_local("[Stage 4/4] Verifying speech / transcription model files...")
+    ensure_asr_snapshot(target_base_dir, whisper_model_name, whisper_repo, asr_backend, log_local)
+
     log_local("All AI models are verified and ready.")
 
 if __name__ == "__main__":

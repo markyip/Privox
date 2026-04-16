@@ -9,12 +9,31 @@ platforms = ["win-64"]
 [tasks]
 start = "python src/voice_input.py"
 start-windowless = "pythonw src/voice_input.py"
+# CTranslate2 ASR path: if .user_prefs.json chose Qwen/SenseVoice, falls back to default faster-whisper; otherwise keeps your Whisper preset (e.g. Multilingual Turbo). PyTorch still used for Silero VAD unless NO_TORCH.
+start-ct2-asr = { cmd = "python src/voice_input.py", env = { PRIVOX_CT2_ASR = "1" } }
+start-windowless-ct2-asr = { cmd = "pythonw src/voice_input.py", env = { PRIVOX_CT2_ASR = "1" } }
+# No PyTorch: WebRTC VAD + faster-whisper (same ASR preset rule as PRIVOX_CT2_ASR for non–PyTorch backends).
+start-no-torch = { cmd = "python src/voice_input.py", env = { PRIVOX_NO_TORCH = "1", PRIVOX_CT2_ASR = "1" } }
+start-windowless-no-torch = { cmd = "pythonw src/voice_input.py", env = { PRIVOX_NO_TORCH = "1", PRIVOX_CT2_ASR = "1" } }
+# Shorthand: same env as start-no-torch (people often try `pixi run no-torch`).
+# If Pixi panics copying onnxruntime*.dll (WinError 32): close Privox/Python using this env, or run
+#   pixi run --as-is no-torch
+# or .\run-no-torch.ps1 / run-no-torch.cmd (uses .pixi env python directly; no sync).
+no-torch = { cmd = "python src/voice_input.py", env = { PRIVOX_NO_TORCH = "1", PRIVOX_CT2_ASR = "1" } }
+# Full app env (voice_input imports, PATH/DLL), then CT2 benchmark only — no tray. Example:
+#   pixi run bench-ct2 --from-prefs --audio sample.wav
+#   pixi run bench-ct2 --device cuda --synthetic-seconds 2
+bench-ct2 = "python src/voice_input.py --benchmark-ct2-asr"
 # PYTHONNOUSERSITE: avoid picking PyInstaller from %APPDATA%\Python\... (wrong pkg_resources / setuptools).
 build = { cmd = "python build_app.py", env = { PYTHONNOUSERSITE = "1" } }
 # Refiner (Gemma 4): needs llama-cpp-python >=0.3.20 with CUDA. Optional: copy the built wheel to wheels/ before `pixi run build` to ship it in the installer.
 install-llama-cuda = "python scripts/install_llama_cuda.py"
 # Same env as install-llama-cuda (CUDA CMAKE_ARGS, Ninja, /utf-8). Do not use bare `pixi run pip wheel` for CUDA.
 wheel-llama-cuda = "python scripts/install_llama_cuda.py --wheel"
+# ASR only: faster-whisper (CTranslate2), no torch imported — compare latency/RTF vs Qwen in full app.
+benchmark-ct2-asr = "python scripts/benchmark_ct2_asr.py"
+# faster-whisper still pulls CPU `onnxruntime`; run this with Privox closed so only GPU wheel remains (see scripts/repair_onnx_gpu.py).
+repair-onnx-gpu = "python scripts/repair_onnx_gpu.py"
 
 [system-requirements]
 cuda = "12"
@@ -24,12 +43,11 @@ python = ">=3.10,<3.13" # Support Python 3.10-3.12
 pip = "*"
 cmake = "*"
 ninja = "*"
-# PyTorch 2.6 expects NumPy 2.x internals; keep below 2.4 for numba compatibility.
-numpy = ">=2.0.0,<2.4.0"
+# PyTorch 2.6 expects NumPy 2.x internals; pinning strictly below 2.4 for numba 0.61+ compatibility.
+numpy = ">=2.0.0,<=2.3.0"
+numba = ">=0.60.0"
 packaging = "*"
 pywin32 = "*"
-setuptools = "==69.5.1"
-
 
 # PyPI deps sized for what src/ actually imports. Large / optional notes:
 # - torch: required (Silero VAD torch.hub, Qwen-ASR, CUDA checks). ~GBs with cu124 wheels.
@@ -40,6 +58,8 @@ setuptools = "==69.5.1"
 # - scipy: kept — used transitively by qwen-asr → librosa; pinning range helps conda/pip resolve.
 # - diskcache: required by llama-cpp-python (llama_cache.py); not imported by Privox src directly.
 [pypi-dependencies]
+# setuptools on PyPI (not conda): Pixi+conda-forge noarch setuptools left no setuptools/pkg_resources on disk here; webrtcvad needs pkg_resources.
+setuptools = ">=69.5.1"
 # Also on PyPI: torch.hub / Silero VAD can import `packaging`; conda-only packaging sometimes missing from site-packages in Pixi merges.
 packaging = ">=23.0"
 # PyInstaller via PyPI — conda-forge record sometimes ends up out of sync on disk; pip keeps it in site-packages.
@@ -51,6 +71,8 @@ pillow = "*"
 pyperclip = "*"
 huggingface_hub = "*"
 faster-whisper = "*"
+librosa = ">=0.10.0"
+webrtcvad = "*"
 scipy = "*"
 pyside6 = "==6.8.1"
 qwen-asr = "*"

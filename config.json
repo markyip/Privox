@@ -3,5 +3,6 @@
     "whisper_repo": "Qwen/Qwen3-ASR-1.7B",
     "grammar_repo": "unsloth/gemma-4-E2B-it-GGUF",
     "grammar_file": "gemma-4-E2B-it-Q4_K_M.gguf",
-    "active_character": "Professional Refiner"
+    "active_character": "Professional Refiner",
+    "log_transcription": false
 }

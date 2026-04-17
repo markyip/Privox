@@ -284,11 +284,47 @@ def log_print(msg, **kwargs):
     print(msg, **kwargs)
 
 
+_cached_transcription_log: bool | None = None
+
+
 def transcription_logging_enabled() -> bool:
-    """Packaged exe: do not persist ASR/refiner output or transcript-adjacent diagnostics to the log file."""
-    if (os.environ.get("PRIVOX_LOG_TRANSCRIPTION") or "").strip().lower() in ("1", "true", "yes", "on"):
+    """Whether to persist ASR/refiner / transcript-adjacent diagnostics (see privox_app.log when not frozen).
+
+    Precedence: PRIVOX_LOG_TRANSCRIPTION env (on/off) > config.json ``log_transcription`` > default (on if not frozen).
+    """
+    global _cached_transcription_log
+    if _cached_transcription_log is not None:
+        return _cached_transcription_log
+
+    raw = (os.environ.get("PRIVOX_LOG_TRANSCRIPTION") or "").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        _cached_transcription_log = True
         return True
-    return not getattr(sys, "frozen", False)
+    if raw in ("0", "false", "no", "off"):
+        _cached_transcription_log = False
+        return False
+
+    try:
+        cfg_path = os.path.join(_privox_install_root(), "config.json")
+        if os.path.isfile(cfg_path):
+            with open(cfg_path, encoding="utf-8-sig") as f:
+                c = json.load(f)
+            lt = c.get("log_transcription")
+            if lt is True or (
+                isinstance(lt, str) and lt.strip().lower() in ("1", "true", "yes", "on")
+            ):
+                _cached_transcription_log = True
+                return True
+            if lt is False or (
+                isinstance(lt, str) and lt.strip().lower() in ("0", "false", "no", "off")
+            ):
+                _cached_transcription_log = False
+                return False
+    except Exception:
+        pass
+
+    _cached_transcription_log = not getattr(sys, "frozen", False)
+    return _cached_transcription_log
 
 
 def log_transcription(msg, **kwargs):
@@ -2524,7 +2560,9 @@ class VoiceInputApp:
 
     def load_config(self):
         """Unified configuration loader with split protection and migration."""
+        global _cached_transcription_log
         try:
+            _cached_transcription_log = None  # re-read log_transcription / env on hot-reload
             config_path = os.path.join(BASE_DIR, "config.json")
             prefs_path = os.path.join(BASE_DIR, ".user_prefs.json")
             

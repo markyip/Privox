@@ -183,6 +183,15 @@ def run_pixi_command(worker, cmd, cwd):
         return False
 
 
+def _gguf_magic_ok(path: str) -> bool:
+    """True if file looks like a GGUF container (not HTML error page / truncated stub)."""
+    try:
+        with open(path, "rb") as f:
+            return f.read(4) == b"GGUF"
+    except OSError:
+        return False
+
+
 def verify_required_models(target_dir):
     """Ensure required ASR and refiner model files exist after setup."""
     try:
@@ -206,6 +215,12 @@ def verify_required_models(target_dir):
             return False, f"Missing refiner model file: {grammar_file}"
         if os.path.getsize(grammar_path) < 256 * 1024 * 1024:
             return False, f"Refiner model too small/corrupt: {grammar_file}"
+        if str(grammar_file).lower().endswith(".gguf") and not _gguf_magic_ok(grammar_path):
+            return (
+                False,
+                f"Refiner file is not a valid GGUF (bad header). Delete {grammar_file} and re-run "
+                "model setup or reinstall so it can re-download.",
+            )
 
         whisper_dir = os.path.join(models_dir, f"whisper-{whisper_model}")
         if not os.path.isdir(whisper_dir):
@@ -662,6 +677,20 @@ class InstallerGUI(QMainWindow):
         layout.addWidget(desc)
 
     def start_install(self):
+        raw_path = (self.path_edit.text() or "").strip()
+        if not raw_path:
+            dlg = ModernDialog(
+                self,
+                "Privox Setup",
+                "Please choose an installation folder.",
+                "The path cannot be empty. Use Browse… or enter a full folder path (for example under Local App Data).",
+                buttons=["OK"],
+            )
+            dlg.exec()
+            return
+        norm = os.path.normpath(raw_path)
+        self.path_edit.setText(norm)
+
         self.stack.setCurrentIndex(1)
         self.btn_next.setEnabled(False)
         self.btn_next.setText("INSTALLING...")
@@ -671,7 +700,7 @@ class InstallerGUI(QMainWindow):
         self.btn_cancel.setText("CANCEL")
         
         self.thread = QThread()
-        self.worker = InstallWorker(self.path_edit.text())
+        self.worker = InstallWorker(norm)
         self.worker.moveToThread(self.thread)
         
         self.thread.started.connect(self.worker.run)

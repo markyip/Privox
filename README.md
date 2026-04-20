@@ -1,6 +1,6 @@
 # Privox 🎙️
 
-![App version](https://img.shields.io/badge/app-v1.2.2-blue)
+![App version](https://img.shields.io/badge/app-v1.2.3-blue)
 [![Python Version](https://img.shields.io/badge/python-3.10--3.12-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-Noncommercial-green.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Windows-blue?logo=windows)
@@ -28,7 +28,7 @@ A powerful, private, and fully local voice input assistant for Windows. Privox c
 
 ### 1. Installation
 
-1. Download **Privox.exe** from our [Releases](https://github.com/markyip/Privox/releases) page. The latest stable release is **v1.2.2** (2026-04-15); see [RELEASE_NOTES.md](RELEASE_NOTES.md) for full changes.
+1. Download **Privox.exe** from our [Releases](https://github.com/markyip/Privox/releases) page. The latest stable release is **v1.2.3** (2026-04-19); see [RELEASE_NOTES.md](RELEASE_NOTES.md) for full changes.
 2. Run the program and follow the simple on-screen instructions.
 3. On your first run, Privox will take a few minutes to set up its "AI Brains"—then you're ready to go!
 
@@ -49,7 +49,7 @@ A powerful, private, and fully local voice input assistant for Windows. Privox c
 
 You don't need to be a computer expert to customize Privox. Just right-click the **Privox icon** near your clock (the system tray):
 
-- **Settings**: Change your hotkey, **General** options (sounds, startup, **Chinese output script**, VRAM saver, auto-stop), **AI Models** (ASR + refiner, persona, custom instructions), and **Dictionary**.
+- **Settings**: Change your hotkey, **General** options (sounds, startup, **Chinese output script**, VRAM saver, auto-stop), **AI Models** (ASR + refiner, persona, custom instructions), and **Dictionary**. On Windows, refined text is delivered with **Ctrl+V** after a short end-of-recording vs foreground check; if the active window changed, Privox copies to the clipboard instead and notifies you.
 - **Run at Startup**: Have Privox ready for you as soon as you turn on your computer.
 
 ## 🖥️ What You Need
@@ -74,7 +74,7 @@ You don't need to be a computer expert to customize Privox. Just right-click the
 - **Multilingual accuracy varies**: Voice-to-text is provided by **faster-whisper** (English-focused Distil/Small, plus one **Multilingual Large v3 Turbo** checkpoint) and **Qwen-ASR** on Hugging Face (shipped default: **Qwen-ASR v3 1.7B**). Non-English and code-mixed speech are best-effort; if quality is weak for your language, try **Whisper Large v3 Turbo (Multilingual)** or another **Qwen-ASR** size in Settings. Please [open an Issue](https://github.com/markyip/Privox/issues) with the model name and a short example if something looks wrong.
 - **Accent variations may affect transcription accuracy**: The voice-to-text engine can be sensitive to strong or regional accents, which is an inherent limitation of the underlying ASR technology. If transcription quality seems off, try switching to a different ASR model in **Settings** (e.g., the Multilingual model may handle diverse accents better).
 - **Occasional LLM hallucination**: Although multiple safeguards are in place, the refiner model may occasionally add, rephrase, or embellish words beyond the original transcript. The refiner is asked to return text inside `<refined>` tags; if a model ignores that format, Privox falls back to heuristics and may return the raw transcription when the reply looks like a prompt echo. If you notice output that doesn't match what you said, please report it.
-- **Mixed-language sentences are not supported**: Privox works best when you speak in a single language per recording. Mixing two languages within the same sentence (e.g., switching between English and Cantonese mid-sentence) may produce unexpected results.
+- **Mixed-language in one utterance**: ASR quality still varies when you code-mix (e.g. English technical terms inside Chinese). The refiner is instructed to **preserve** Latin + CJK in the same sentence rather than translating everything to one language; if you see unwanted rewriting, try another ASR model or report an issue with a short example.
 
 ## 🗺️ What's Coming
 
@@ -100,7 +100,7 @@ Every piece of feedback helps shape Privox into a better tool. Thank you for you
 
 For power users who want to go beyond the Settings UI, Privox can be customized by editing the configuration files directly.
 
-The **packaged app version** string is `APP_VERSION` in `src/bootstrap.py` (currently **1.2.2**); it should match `version_info.txt` and `assets/privox.manifest` when you cut a release build.
+The **packaged app version** string is `APP_VERSION` in `src/bootstrap.py` (currently **1.2.3**); it should match `version_info.txt` and `assets/privox.manifest` when you cut a release build.
 
 ### Adding Your Own AI Models
 

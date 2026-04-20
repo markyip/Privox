@@ -141,6 +141,12 @@ def setup_logging():
         except: pass
 
     is_frozen = getattr(sys, "frozen", False)
+    is_packaged_launch = (os.environ.get("PRIVOX_PACKAGED_LAUNCH") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
     # Dev: log file under project / exe folder. Packaged exe: no log file (NullHandler only).
     log_file = os.path.join(base_dir, "privox_app.log")
@@ -148,7 +154,7 @@ def setup_logging():
     log_format = "%(asctime)s.%(msecs)03d - %(levelname)s - %(message)s"
     log_datefmt = "%Y-%m-%d %H:%M:%S"
 
-    if is_frozen:
+    if is_frozen or is_packaged_launch:
         _handlers: list[logging.Handler] = [logging.NullHandler()]
     else:
         _handlers = [logging.FileHandler(log_file, encoding="utf-8")]
@@ -265,7 +271,7 @@ def setup_logging():
         def flush(self):
             pass
 
-    if not is_frozen:
+    if not (is_frozen or is_packaged_launch):
         sys.stdout = LoggerWriter(logging.info)
         sys.stderr = LoggerWriter(logging.error)
 
@@ -280,6 +286,8 @@ setup_logging()
 def log_print(msg, **kwargs):
     """Dev: print → LoggerWriter → logging + log file. Packaged exe: no log file and no stdout capture."""
     if getattr(sys, "frozen", False):
+        return
+    if (os.environ.get("PRIVOX_PACKAGED_LAUNCH") or "").strip().lower() in ("1", "true", "yes", "on"):
         return
     print(msg, **kwargs)
 
@@ -355,6 +363,23 @@ def _safe_json_load(path: str, label: str) -> dict:
 
 def _contains_cjk_char(s: str) -> bool:
     return any("\u4e00" <= c <= "\u9fff" for c in (s or ""))
+
+
+def _cjk_is_substantial_for_refiner(s: str) -> bool:
+    """Enough Han characters to apply Chinese script rules — avoids 1–2 stray CJK glitches on English ASR."""
+    if not (s and str(s).strip()):
+        return False
+    han = len(re.findall(r"[\u4e00-\u9fff\u3400-\u4dbf]", s))
+    if han < 2:
+        return False
+    if _transcript_mixes_cjk_and_latin(s):
+        return True
+    lat = len(re.findall(r"[A-Za-z]", s))
+    if lat == 0:
+        return True
+    if han >= 8:
+        return True
+    return han >= 3 and han >= lat * 0.4
 
 
 def _transcript_mixes_cjk_and_latin(text: str | None) -> bool:
@@ -786,12 +811,18 @@ def _infer_language_from_transcript(text: str) -> tuple[str | None, float]:
     if total == 0:
         return None, 0.0
     kana = hiragana + katakana
+    # Latin-first: a few stray CJK characters in otherwise English ASR must not select "zh"
+    # (that used to trigger "PROVIDE A CLEAN CHINESE VERSION" and looked like spontaneous translation).
+    if latin >= 8 and latin >= han * 4 and latin >= total * 0.52:
+        return "en", 0.84
     if hangul >= total * 0.22 and hangul >= max(han, kana):
         return "ko", 0.88
     if kana > 0 and (kana >= total * 0.12 or han <= kana * 3):
         return "ja", 0.85
-    if han >= total * 0.18:
+    if han >= 3 and han >= total * 0.22:
         return "zh", 0.9
+    if han >= 2 and han >= total * 0.34:
+        return "zh", 0.78
     if latin >= total * 0.72:
         return "en", 0.75
     return None, 0.0
@@ -917,8 +948,11 @@ class GrammarChecker:
                 if os.path.exists(model_path):
                     f_size = os.path.getsize(model_path)
                     log_print(f"Model file verified: {model_path} ({f_size / 1024**2:.2f} MB)")
-                    if f_size < 100 * 1024**2: # A 3B model should be > 200MB even at extreme quantization
-                         log_print("WARNING: Model file seems too small. Moving to backup/re-download.")
+                    min_b = models_config.refiner_gguf_min_complete_bytes(file_name)
+                    if f_size < min_b:
+                         log_print(
+                             "WARNING: Model file seems too small or incomplete. Moving to backup/re-download."
+                         )
                          if os.path.exists(model_path + ".bak"):
                              try: os.remove(model_path + ".bak")
                              except: pass
@@ -1136,14 +1170,24 @@ class GrammarChecker:
         key = f"{self.character}|{self.tone}"
         user_text = self.custom_prompts.get(key, "").strip()
         sample = (transcript or "").strip()
+        _inf_lang, _inf_prob = _infer_language_from_transcript(sample) if sample else (None, 0.0)
+        _mixed_cjk_lat = _transcript_mixes_cjk_and_latin(sample) if sample else False
 
         # Layer 1: Core System Directives (Global Critical Rules)
         directive = (
-            "REFINE TRANSCRIPT: Provide a clean, accurate version of the ASR input in its ORIGINAL LANGUAGE. "
+            "REFINE TRANSCRIPT: Provide a clean, accurate version of the ASR input in its ORIGINAL LANGUAGE(S). "
             "Do NOT translate into English or any other language. "
             "Whenever the utterance refers to a numeric value (counts, amounts, dates, math, lists, etc.), "
             "write it with Western Arabic digits (0–9); this applies in every supported language (CRITICAL RULE 6)."
         )
+        if _mixed_cjk_lat:
+            directive += (
+                "\nCODE-MIXING (same utterance): Latin (English, etc.) appears with Chinese characters, "
+                "Japanese kana, and/or Korean Hangul in one sentence. Preserve that mix: do NOT rewrite "
+                "into English-only or Chinese-only; keep each script as spoken. Only fix clear ASR/dictation "
+                "errors and punctuation. Traditional vs Simplified applies only to Chinese characters "
+                "when USER PREFERENCE below requires it—not to Latin segments."
+            )
 
         # Language Hinting (Robust Multilingual Support)
         # Only inject specific language directive if confidence is high (> 0.4)
@@ -1178,11 +1222,33 @@ class GrammarChecker:
                 "including space-separated runs like 'one two three'. "
                 "Spoken arithmetic (plus, minus, times, multiplied by, divided by, equals) → +, −, ×, ÷, = with digits per CRITICAL RULE 10 (choose − vs - and ÷ vs / by context)."
             )
+            if _mixed_cjk_lat:
+                directive += (
+                    "\nASR tagged English but text mixes CJK: Follow CODE-MIXING above—do NOT translate "
+                    "Chinese/Japanese/Korean fragments into English; polish each script in place."
+                )
+        elif (
+            sample
+            and _inf_lang == "en"
+            and _inf_prob >= 0.72
+            and not (language and language != "en" and language_prob > 0.4)
+        ):
+            # Qwen ASR etc.: no whisper info.* — inferred English for Latin-heavy text; do not imply "all English".
+            if _mixed_cjk_lat:
+                directive += (
+                    "\nMIXED SCRIPT (inferred Latin-primary): Keep all CJK phrases unchanged in meaning; "
+                    "remove fillers only in Latin parts (CRITICAL RULE 12). Never translate CJK to English "
+                    "or English to Chinese (CRITICAL RULE 7)."
+                )
+            else:
+                directive += (
+                    "\nENGLISH (inferred): Remove non-semantic fillers (um, uh, ah, er, hmm, like/you know when purely "
+                    "discourse markers). Keep wording otherwise; do not translate to another language (CRITICAL RULE 7)."
+                )
 
         # Chinese script: user chooses Simplified vs Traditional for all Chinese output (default: Traditional).
         if sample:
-            _has_zh = (language == "zh" and language_prob > 0.4) or _contains_cjk_char(sample)
-            _mixed_cjk_lat = _transcript_mixes_cjk_and_latin(sample)
+            _has_zh = (language == "zh" and language_prob > 0.4) or _cjk_is_substantial_for_refiner(sample)
             if _has_zh:
                 if self.use_simplified_chinese_output:
                     if _mixed_cjk_lat:
@@ -1271,7 +1337,7 @@ class GrammarChecker:
         Gemma refiner via create_chat_completion so llama_cpp applies the same BOS/special
         tokenization as format_gemma (raw self.model(str) skips that and can emit <unused*> spam).
         """
-        extra_stop = ["</refined>", "<end_of_turn>", "<end_of_turn>\n"]
+        extra_stop = ["</refined>", "<end_of_turn>", "<end_of_turn>\n", "</start_of_turn>", "</start_of_turn>\n"]
         parts: list[str] = []
         try:
             stream = self.model.create_chat_completion(
@@ -1312,7 +1378,7 @@ class GrammarChecker:
         stop_list = list(stop_tokens) if isinstance(stop_tokens, (list, tuple)) else (
             [stop_tokens] if stop_tokens else []
         )
-        for s in ("</refined>", "<end_of_turn>", "<end_of_turn>\n"):
+        for s in ("</refined>", "<end_of_turn>", "<end_of_turn>\n", "</start_of_turn>", "</start_of_turn>\n"):
             if s not in stop_list:
                 stop_list.append(s)
         gen_kw: dict = dict(
@@ -1536,6 +1602,21 @@ class GrammarChecker:
                 else:
                     result = raw_for_extract or raw_response
 
+            if prompt_type == "gemma" and result:
+                stripped = self._strip_gemma_turn_markup(result)
+                if self._gemma_refined_body_is_invalid(stripped, clean_text):
+                    log_transcription(
+                        " Gemma: refined text was only turn/markup tokens; trying fallback or ASR transcript."
+                    )
+                    fb = self._fallback_extract_refined_body(raw_for_extract, clean_text)
+                    fb2 = self._strip_gemma_turn_markup((fb or "").strip()) if fb else ""
+                    if fb2 and not self._gemma_refined_body_is_invalid(fb2, clean_text):
+                        result = fb2
+                    else:
+                        result = clean_text
+                else:
+                    result = stripped
+
             # 3a. Strip trailing meta-commentary ("Note:", "I've preserved...", etc.)
             result = self._strip_meta_commentary(result)
 
@@ -1659,6 +1740,32 @@ class GrammarChecker:
         )
         return any(m in sl for m in markers)
 
+    # Gemma chat templates may emit turn delimiters inside or instead of <refined>…</refined> body.
+    _GEMMA_TURN_MARKUP_RE = re.compile(
+        r"<\s*/?\s*start_of_turn\s*>|<\s*/?\s*end_of_turn\s*>",
+        re.IGNORECASE,
+    )
+
+    def _strip_gemma_turn_markup(self, s: str) -> str:
+        if not s:
+            return s
+        t = self._GEMMA_TURN_MARKUP_RE.sub("", s)
+        return t.strip()
+
+    def _gemma_refined_body_is_invalid(self, body: str, transcript: str) -> bool:
+        """True when extracted <refined> body is empty or only Gemma turn / markup (not usable text)."""
+        b = (body or "").strip()
+        if not b:
+            return True
+        core = self._GEMMA_TURN_MARKUP_RE.sub("", b)
+        core = re.sub(r"<\s*/?\s*refined\s*>", "", core, flags=re.IGNORECASE)
+        core = core.strip()
+        if not core:
+            return True
+        if not any(ch.isalnum() for ch in core):
+            return True
+        return False
+
     def _fallback_extract_refined_body(self, raw: str, transcript: str) -> str | None:
         """Recover refined text when tags are missing (Gemma often echoes instructions)."""
         s = self._strip_critical_rules_echo((raw or "").strip())
@@ -1668,9 +1775,14 @@ class GrammarChecker:
 
         m = re.search(r"<\s*refined\s*>(.*?)(?:<\s*/\s*refined\s*>|$)", s, flags=re.DOTALL | re.IGNORECASE)
         if m:
-            body = m.group(1).strip()
+            body = self._strip_gemma_turn_markup(m.group(1).strip())
             if body and not self._looks_like_prompt_echo(body):
-                return body
+                if self.profile.get("prompt_type") == "gemma" and self._gemma_refined_body_is_invalid(
+                    body, transcript
+                ):
+                    pass
+                else:
+                    return body
 
         if re.search(r"\boutput:\s*", s, flags=re.IGNORECASE):
             tail = re.split(r"(?i)\boutput:\s*", s)[-1].strip()
@@ -1855,6 +1967,18 @@ def _privox_vad_prefers_cuda() -> bool:
     return v in ("1", "true", "yes", "on")
 
 
+def _defer_heavy_models_until_first_use() -> bool:
+    """Frozen exe or Privox.exe --run (pythonw + voice_input): skip upfront ASR/refiner load."""
+    if getattr(sys, "frozen", False):
+        return True
+    return (os.environ.get("PRIVOX_PACKAGED_LAUNCH") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
 class VoiceInputApp:
     def __init__(self):
         log_print("Initializing Voice Input Application...")
@@ -1914,6 +2038,9 @@ class VoiceInputApp:
         self._asr_loaded_key = None  # (ASR_BACKEND, WHISPER_SIZE) after successful ASR load
         self.model_lock = threading.Lock()
         self._paste_clipboard_lock = threading.Lock()
+        self._paste_anchor_lock = threading.Lock()
+        self._paste_anchor_timer = None  # threading.Timer for deferred HWND capture
+        self._paste_anchor_hwnd = None
         self.vram_timeout = 60 # Seconds before unloading
         # Idle unload policy: unload ASR with refiner after VRAM Saver timeout (wake-up reload is fast enough).
         self.use_simplified_chinese_output = False
@@ -2018,15 +2145,15 @@ class VoiceInputApp:
         self.update_tray_tooltip()
         self.load_vad()
         
-        # In packaged EXE mode, prefer lazy heavy-model loading to avoid
-        # startup hangs caused by backend/model initialization edge cases.
-        if getattr(sys, "frozen", False):
+        # Packaged installs (frozen exe or --run → pythonw): prefer lazy heavy-model loading to avoid
+        # long boot + startup hangs from ASR/refiner init while Windows is still busy at logon.
+        if _defer_heavy_models_until_first_use():
             self.loading_status = "Ready (Lazy Model Warmup)"
             self.update_tray_tooltip()
             self.update_status("READY")
             return
 
-        # In dev mode we still pre-load for faster first transcription.
+        # Dev (plain `pixi run python src/voice_input.py`): pre-load for faster first transcription.
         self.load_heavy_models()
 
     def _vad_end_silence_ms(self) -> int:
@@ -2552,7 +2679,8 @@ class VoiceInputApp:
                 stats = latest_prefs.get("model_usage_stats", {})
                 stats[model_name] = datetime.now().isoformat()
                 latest_prefs["model_usage_stats"] = stats
-                
+                models_config.scrub_obsolete_user_pref_keys(latest_prefs)
+
                 with open(prefs_path, "w", encoding="utf-8") as f:
                     json.dump(latest_prefs, f, indent=4)
         except Exception as e:
@@ -2571,6 +2699,12 @@ class VoiceInputApp:
 
             # --- 2. Load User Preferences (Hidden/Private) ---
             prefs = _safe_json_load(prefs_path, ".user_prefs.json") if os.path.exists(prefs_path) else {}
+            if prefs and models_config.scrub_obsolete_user_pref_keys(prefs) and os.path.exists(prefs_path):
+                try:
+                    with open(prefs_path, "w", encoding="utf-8") as f:
+                        json.dump(prefs, f, indent=4)
+                except OSError as _e:
+                    log_print(f"Could not rewrite prefs after obsolete-key scrub: {_e}")
 
             # --- 3. Migration Logic (Move settings from config -> prefs) ---
             pref_keys = [
@@ -2768,6 +2902,7 @@ class VoiceInputApp:
                 _wm_pref = models_config.DEFAULT_ASR
             if _prefs_wm_missing and _wm_pref and _wm_pref != models_config.DEFAULT_ASR:
                 prefs["whisper_model"] = _wm_pref
+                models_config.scrub_obsolete_user_pref_keys(prefs)
                 try:
                     with open(prefs_path, "w", encoding="utf-8") as f:
                         json.dump(prefs, f, indent=4)
@@ -3290,7 +3425,47 @@ class VoiceInputApp:
         if key_name == self.target_key:
             self._hotkey_primary_down = False
 
+    def _cancel_paste_anchor_timer(self):
+        t = getattr(self, "_paste_anchor_timer", None)
+        if t is not None:
+            try:
+                t.cancel()
+            except Exception:
+                pass
+            self._paste_anchor_timer = None
+
+    def _deferred_capture_paste_anchor(self, task_id: int):
+        """Run ~120ms after stop: foreground often stabilizes after hotkey release."""
+        try:
+            if getattr(self, "_transcribe_task_id", -1) != task_id:
+                return
+            hwnd = int(ctypes.windll.user32.GetForegroundWindow() or 0) or None
+            if hwnd:
+                with self._paste_anchor_lock:
+                    self._paste_anchor_hwnd = hwnd
+                log_print(f"Paste focus guard: deferred anchor HWND={hwnd}")
+        except Exception:
+            pass
+        finally:
+            self._paste_anchor_timer = None
+
+    def _wait_paste_anchor_hwnd(self, timeout_s: float):
+        """Poll for deferred anchor (do not hold clipboard lock while waiting)."""
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            with self._paste_anchor_lock:
+                h = self._paste_anchor_hwnd
+            if h:
+                return int(h)
+            time.sleep(0.02)
+        with self._paste_anchor_lock:
+            h = self._paste_anchor_hwnd
+        return int(h) if h else None
+
     def start_listening(self):
+        self._cancel_paste_anchor_timer()
+        with self._paste_anchor_lock:
+            self._paste_anchor_hwnd = None
         self._transcribe_task_id += 1
         self.last_activity_time = time.time()
         log_print("\n[Start Listening]", flush=True)
@@ -3317,8 +3492,19 @@ class VoiceInputApp:
         self.update_tray_tooltip()
 
         if len(self.audio_buffer) > 0:
-            audio_segment = np.array(self.audio_buffer)
+            # Paste guard: immediate GetForegroundWindow() is often wrong (0 or wrong HWND) right on hotkey release.
+            # Defer ~120ms then sample; transcribe thread waits for anchor before injecting Ctrl+V.
+            with self._paste_anchor_lock:
+                self._paste_anchor_hwnd = None
             task_id = getattr(self, "_transcribe_task_id", 0)
+            if sys.platform == "win32":
+                self._cancel_paste_anchor_timer()
+                self._paste_anchor_timer = threading.Timer(
+                    0.12, self._deferred_capture_paste_anchor, args=(task_id,)
+                )
+                self._paste_anchor_timer.daemon = True
+                self._paste_anchor_timer.start()
+            audio_segment = np.array(self.audio_buffer)
             # Run transcription in a separate thread so we don't block the keyboard listener!
             threading.Thread(target=self.transcribe, args=(audio_segment, task_id), daemon=True).start()
         else:
@@ -3566,6 +3752,15 @@ class VoiceInputApp:
             self.loading_status = "ASR Error"
             self.sound_manager.play_error()
         finally:
+            try:
+                self._cancel_paste_anchor_timer()
+            except Exception:
+                pass
+            try:
+                with self._paste_anchor_lock:
+                    self._paste_anchor_hwnd = None
+            except Exception:
+                pass
             if task_id is None or task_id == getattr(self, "_transcribe_task_id", 0):
                 # Always leave PROCESSING: on error show ERROR tray state (was: stuck spinner forever).
                 if self.loading_status in ["ASR Error", "Refiner Error"]:
@@ -3574,8 +3769,15 @@ class VoiceInputApp:
                     self.update_status("READY")
                 self.update_tray_tooltip()
 
+    def _notify_tray(self, title: str, body: str):
+        try:
+            if self.icon:
+                self.icon.notify(body, title)
+        except Exception:
+            pass
+
     def paste_text(self, text):
-        """Paste via clipboard + Ctrl+V. Serialized and clipboard-verified: avoids pasting stale clipboard on Windows."""
+        """Deliver transcript: clipboard swap + synthetic Ctrl+V (with restore); Win32 compares focus vs end-of-recording."""
         if text is None:
             return
         text = str(text)
@@ -3588,27 +3790,90 @@ class VoiceInputApp:
             return s.replace("\r\n", "\n").replace("\r", "\n")
 
         target = _norm_clip(text)
+        guard = sys.platform == "win32"
+
+        anchor_hwnd = None
+        if guard:
+            anchor_hwnd = self._wait_paste_anchor_hwnd(0.55)
+            self._cancel_paste_anchor_timer()
+            with self._paste_anchor_lock:
+                self._paste_anchor_hwnd = None
+        else:
+            self._cancel_paste_anchor_timer()
+            with self._paste_anchor_lock:
+                self._paste_anchor_hwnd = None
 
         with self._paste_clipboard_lock:
+            fg_hwnd = None
+            if guard:
+                try:
+                    fg_hwnd = int(ctypes.windll.user32.GetForegroundWindow() or 0)
+                except Exception:
+                    fg_hwnd = None
+                log_print(
+                    f"Paste focus guard: anchor HWND (deferred end-of-recording)={anchor_hwnd}, "
+                    f"foreground HWND (at delivery)={fg_hwnd}"
+                )
             try:
                 original_clipboard = pyperclip.paste()
             except Exception:
                 original_clipboard = ""
 
-            try:
-                pyperclip.copy(text)
-                ok = False
-                deadline = time.time() + 0.6
+            def _verified_copy() -> bool:
+                try:
+                    pyperclip.copy(text)
+                except Exception:
+                    return False
+                # Large transcripts / busy systems: allow longer than legacy 0.6s
+                clip_wait = min(4.0, max(1.0, 0.55 + len(text) / 6000))
+                deadline = time.time() + clip_wait
                 while time.time() < deadline:
                     try:
                         if _norm_clip(pyperclip.paste()) == target:
-                            ok = True
-                            break
+                            return True
                     except Exception:
                         pass
                     time.sleep(0.025)
+                return False
 
+            def _clipboard_only_no_restore() -> bool:
+                ok = _verified_copy()
                 if not ok:
+                    log_print(
+                        "Paste: clipboard did not update in time; cannot place transcript on clipboard."
+                    )
+                    try:
+                        pyperclip.copy(original_clipboard)
+                    except Exception:
+                        pass
+                return ok
+
+            try:
+                # No reliable anchor → never synthetic paste (avoids Ctrl+V to wrong target + clipboard restore wiping transcript)
+                if guard and not anchor_hwnd:
+                    if _clipboard_only_no_restore():
+                        self._notify_tray(
+                            "Privox",
+                            "Could not sample the active window — transcript on clipboard. Paste with Ctrl+V.",
+                        )
+                    else:
+                        self.sound_manager.play_error()
+                    return
+
+                # Foreground changed since end of recording → clipboard only
+                if guard and anchor_hwnd and (
+                    fg_hwnd is None or int(anchor_hwnd) != int(fg_hwnd)
+                ):
+                    if _clipboard_only_no_restore():
+                        self._notify_tray(
+                            "Privox",
+                            "Active window changed — transcript on clipboard. Paste with Ctrl+V.",
+                        )
+                    else:
+                        self.sound_manager.play_error()
+                    return
+
+                if not _verified_copy():
                     log_print(
                         "Paste: clipboard did not update in time; skipping Ctrl+V to avoid injecting stale clipboard."
                     )

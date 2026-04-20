@@ -9,6 +9,8 @@ import urllib.request
 import json
 import winreg
 
+import models_config
+
 # --- 0. Hard Environment Isolation (MUST BE FIRST) ---
 os.environ["PYTHONNOUSERSITE"] = "1"
 import site
@@ -30,7 +32,7 @@ from PySide6.QtGui import QIcon, QFont, QColor, QPalette
 from PySide6.QtCore import Qt, Signal, QObject, QThread
 
 # --- Versioning ---
-APP_VERSION = "1.2.2"
+APP_VERSION = "1.2.3"
 
 # Disable Symlinks for Windows
 os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
@@ -213,14 +215,25 @@ def verify_required_models(target_dir):
         grammar_path = os.path.join(models_dir, grammar_file)
         if not os.path.exists(grammar_path):
             return False, f"Missing refiner model file: {grammar_file}"
-        if os.path.getsize(grammar_path) < 256 * 1024 * 1024:
+        if str(grammar_file).lower().endswith(".gguf"):
+            if not _gguf_magic_ok(grammar_path):
+                return (
+                    False,
+                    f"Refiner file is not a valid GGUF (bad header). Delete {grammar_file} and re-run "
+                    "model setup or reinstall so it can re-download.",
+                )
+            min_b = models_config.refiner_gguf_min_complete_bytes(grammar_file)
+            sz = os.path.getsize(grammar_path)
+            if sz < min_b:
+                exp_gib = min_b / (1024**3)
+                return (
+                    False,
+                    f"Refiner model appears incomplete (~{sz / (1024 * 1024):.0f} MiB on disk; "
+                    f"this preset needs about {exp_gib:.1f} GiB). Delete models/{grammar_file} "
+                    "and run model setup again, or reinstall.",
+                )
+        elif os.path.getsize(grammar_path) < 256 * 1024 * 1024:
             return False, f"Refiner model too small/corrupt: {grammar_file}"
-        if str(grammar_file).lower().endswith(".gguf") and not _gguf_magic_ok(grammar_path):
-            return (
-                False,
-                f"Refiner file is not a valid GGUF (bad header). Delete {grammar_file} and re-run "
-                "model setup or reinstall so it can re-download.",
-            )
 
         whisper_dir = os.path.join(models_dir, f"whisper-{whisper_model}")
         if not os.path.isdir(whisper_dir):
@@ -350,10 +363,16 @@ class InstallerGUI(QMainWindow):
         self.setWindowTitle("Privox " + ("Uninstall" if mode == "uninstall" else "Setup"))
         self.setFixedSize(700, 600) # Slightly larger for Swiss spacing
         
-        # Favicon
-        icon_path = os.path.join(BUNDLE_DIR, "assets", "icon.ico")
-        if os.path.exists(icon_path):
-            self.setWindowIcon(QIcon(icon_path))
+        # Favicon (prefer current app icon names; keep fallback order explicit)
+        icon_candidates = (
+            os.path.join(BUNDLE_DIR, "assets", "privox.ico"),
+            os.path.join(BUNDLE_DIR, "assets", "app_icon.ico"),
+            os.path.join(BUNDLE_DIR, "assets", "icon.ico"),  # legacy path
+        )
+        for icon_path in icon_candidates:
+            if os.path.exists(icon_path):
+                self.setWindowIcon(QIcon(icon_path))
+                break
             
         # Absolute Frameless Window for Swiss Style
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint if mode == "uninstall" else Qt.FramelessWindowHint)
@@ -931,6 +950,10 @@ def run_app():
         ):
             if os.path.isdir(_p):
                 env["PATH"] = _p + os.pathsep + env.get("PATH", "")
+
+    # Tell voice_input.py this is a packaged launch path (launcher exe -> pythonw script),
+    # so it can apply the same no-log-disk behavior as frozen mode.
+    env["PRIVOX_PACKAGED_LAUNCH"] = "1"
 
     if os.path.exists(env_pythonw):
         # Run pythonw directly to ensure no console flashes from 'pixi run' invoking a shell

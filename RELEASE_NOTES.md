@@ -1,5 +1,20 @@
 # Privox Release Notes
 
+## v1.2.3
+
+**Release date:** 2026-04-19
+
+### Release summary
+- Refiner prompting and language hints are tuned for **Qwen ASR** and other backends without per-utterance LID, reducing cases where English dictation was pushed toward Chinese-style rewriting.
+- **Code-mixing** (Latin + Chinese / kana / Hangul in the same sentence) is called out explicitly in the refiner core directive and **CRITICAL_RULES** so the model keeps the mix instead of “helpfully” unifying to one language.
+- **Spoken fillers** (e.g. English *um* / *uh*) are reinforced via **CRITICAL RULE 12** and English-specific prompt hints where applicable.
+
+### Settings and preferences
+- The **Transcript delivery** UI block is **removed**. Behavior is fixed to the previous **Instant** path on Windows: deferred capture of the foreground window at end of recording, comparison at paste time, **Ctrl+V** when the target matches, otherwise **clipboard + tray notification**. The legacy preference key **`paste_delivery`** is scrubbed from `.user_prefs.json` on load/save (same mechanism as other obsolete keys).
+
+### Versioning
+- Application metadata at **1.2.3**: `APP_VERSION` in `src/bootstrap.py`, Settings footer, Windows `version_info.txt` / `assets/privox.manifest`, and grammar download `User-Agent` in `src/download_models.py`.
+
 ## v1.2.2
 
 **Release date:** 2026-04-15

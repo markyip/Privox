@@ -117,6 +117,25 @@ def ensure_asr_snapshot(
     log_local("[ASR] Setup complete.")
 
 
+def _gguf_magic_ok(path: str) -> bool:
+    try:
+        with open(path, "rb") as f:
+            return f.read(4) == b"GGUF"
+    except OSError:
+        return False
+
+
+def _grammar_gguf_is_complete(grammar_path: str, grammar_file: str) -> bool:
+    if not os.path.isfile(grammar_path):
+        return False
+    if not str(grammar_file).lower().endswith(".gguf"):
+        return os.path.getsize(grammar_path) >= 256 * 1024 * 1024
+    if not _gguf_magic_ok(grammar_path):
+        return False
+    need = models_config.refiner_gguf_min_complete_bytes(grammar_file)
+    return os.path.getsize(grammar_path) >= need
+
+
 def _win_short_path(path: str) -> str:
     """8.3 path so CMAKE_ARGS is not split on spaces (Program Files, etc.)."""
     if sys.platform != "win32" or not path or not os.path.exists(path):
@@ -649,18 +668,30 @@ def main(log_callback=None):
 
     # 1. Grammar Model (LLM Refiner)
     log_local("[Stage 3/4] Verifying LLM Grammar Model files...")
-    if not os.path.exists(os.path.join(models_dir, grammar_file)):
+    grammar_target = os.path.join(models_dir, grammar_file)
+    if os.path.exists(grammar_target) and not _grammar_gguf_is_complete(grammar_target, grammar_file):
+        try:
+            sz = os.path.getsize(grammar_target)
+            log_local(
+                f"Grammar model on disk is incomplete or invalid "
+                f"({sz / (1024 * 1024):.1f} MiB); removing and re-downloading..."
+            )
+            os.remove(grammar_target)
+        except OSError as e:
+            log_local(f"Could not remove incomplete grammar model ({e}); will attempt overwrite download.")
+
+    if not _grammar_gguf_is_complete(grammar_target, grammar_file):
         log_local(f"Downloading Grammar Model ({grammar_file})...")
         log_local(f"Source Repo: {grammar_repo}")
         log_local("Large GGUF download can take several minutes depending on network speed.")
 
-        target_path = os.path.join(models_dir, grammar_file)
+        target_path = grammar_target
 
         def _download_http_stream(repo_id, filename, out_path):
             # Direct streaming download to avoid silent cache-only phases.
             url = hf_hub_url(repo_id=repo_id, filename=filename)
             tmp_path = out_path + ".part"
-            req = urllib.request.Request(url, headers={"User-Agent": "Privox-Installer/1.2.2"})
+            req = urllib.request.Request(url, headers={"User-Agent": "Privox-Installer/1.2.3"})
             with urllib.request.urlopen(req, timeout=60) as resp:
                 total = int(resp.headers.get("Content-Length", "0") or "0")
                 downloaded = 0
@@ -737,7 +768,7 @@ def main(log_callback=None):
 
         log_local("Grammar Model download complete.")
     else:
-        log_local(f"Grammar Model {grammar_file} present.")
+        log_local(f"Grammar Model {grammar_file} present (size OK).")
 
     # 2. ASR weights on disk (faster-whisper layout under models/whisper-<id>, or Qwen / ONNX snapshot)
     log_local("[Stage 4/4] Verifying speech / transcription model files...")

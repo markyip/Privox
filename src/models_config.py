@@ -3,6 +3,22 @@ Shared configuration for Privox AI model libraries and prompt templates.
 Ensures consistency between GUI and Background engine.
 """
 
+# Keys removed from code paths; stripped from .user_prefs.json on load/save.
+OBSOLETE_USER_PREF_KEYS = frozenset(
+    {"paste_focus_guard", "paste_verify_input_field", "paste_delivery"}
+)
+
+
+def scrub_obsolete_user_pref_keys(prefs: dict) -> bool:
+    """Remove deprecated preference keys. Mutates prefs. Returns True if anything was removed."""
+    changed = False
+    for k in OBSOLETE_USER_PREF_KEYS:
+        if k in prefs:
+            del prefs[k]
+            changed = True
+    return changed
+
+
 # --- Voice-to-Text (ASR) Library ---
 ASR_LIBRARY = [
     {"name": "Distil-Whisper Large v3 (English)", "whisper_repo": "Systran/faster-distil-whisper-large-v3", "whisper_model": "distil-large-v3", "repo": "Systran/faster-distil-whisper-large-v3", "description": "Fast & High Quality. Best accuracy with distilled architecture."},
@@ -35,6 +51,22 @@ LLM_LIBRARY = [
         "description": "Gemma 4 E4B tuned for speed and low VRAM usage."
     },
 ]
+
+
+def refiner_gguf_min_complete_bytes(file_name: str) -> int:
+    """Minimum on-disk bytes to treat a refiner .gguf as complete (not a partial download).
+
+    Thresholds sit safely below current Unsloth Q4_K_M sizes on Hugging Face so minor
+    revisions still pass; unknown filenames keep a 256 MiB floor to reject empty stubs.
+    """
+    key = str(file_name).replace("\\", "/").rsplit("/", 1)[-1].lower()
+    gib = 1024**3
+    if key == "gemma-4-e2b-it-q4_k_m.gguf":
+        return int(2.7 * gib)  # catalog ~3.11 GiB
+    if key == "gemma-4-e4b-it-q4_k_m.gguf":
+        return int(4.3 * gib)  # catalog ~4.98 GiB
+    return 256 * 1024 * 1024
+
 
 # --- Defaults ---
 # Default ASR uses faster-whisper (CTranslate2) — no PyTorch for transcription.
@@ -114,11 +146,12 @@ CRITICAL RULES:
 4. STRICT NO HALLUCINATION: Never add new semantic information, facts, commentary, or ideas not explicitly present in the original transcript.
 5. NO CONVERSATION: Output ONLY the processed text inside the tags. Never add greetings.
 6. ARABIC NUMERALS (ALL LANGUAGES, 0–9): Whenever the transcript refers to a number—cardinals, ordinals (keep each language’s normal ordinal markers: 1st, 2e, 第3, etc.), counts, measurements, money, dates/times, list positions, math, codes/IDs, ages, percentages, fractions—write the numeric value with Western Arabic digits (0–9), not spelled-out number words in the local language. Applies equally to English, Chinese, Japanese, Korean, French, German, Spanish, Arabic, Hindi, and any other supported language. Examples: "twelve" → "12"; "douze" → "12"; "十五" / "じゅうご" → "15"; "اثنا عشر" → "12"; "बारह" → "12". Lists: "one, two, three" → "1, 2, 3"; space-separated runs → comma-separated digits. Do not replace non-numeric idioms or metaphors with digits when the speaker did not state a quantity. All non-numeric words stay in the transcript language (rule 7).
-7. PRESERVE INPUT LANGUAGE: The transcript may be Chinese, Japanese, Korean, or other languages. Keep the refined text in that SAME language. Never translate to English unless the transcript itself is English. Using Western Arabic digits (0–9) for numeric references is NOT translation and is required (rule 6). CODE-MIXING: If the transcript combines CJK text with Latin/English words in one utterance, preserve that pattern—do not translate the English into Chinese (or the reverse) unless fixing an obvious misrecognition.
+7. PRESERVE INPUT LANGUAGE: The transcript may be Chinese, Japanese, Korean, or other languages. Keep the refined text in that SAME language. Never translate to English unless the transcript itself is English. Using Western Arabic digits (0–9) for numeric references is NOT translation and is required (rule 6). BILINGUAL / CODE-MIXING: If Latin and CJK (or kana/Hangul) appear in the same sentence, output must stay mixed the same way—do not “helpfully” unify to one language. The ASR language tag may name one primary language; ignore that for translation purposes and preserve every script as spoken unless fixing an obvious misrecognition.
 8. CHINESE SCRIPT: If the Core Directive specifies Traditional or Simplified output for Chinese, follow it for all Chinese characters. Otherwise, match the transcript script (繁體 vs 简体).
 9. CANTONESE: If the transcript contains spoken Cantonese particles (e.g. 嘅、咗、唔), keep colloquial Cantonese; do not rewrite into formal Mandarin book style unless the user asked for formal prose.
 10. SPOKEN ARITHMETIC & OPERATORS (ALL LANGUAGES): When the user dictates math, render with context-appropriate symbols (+ − × ÷ =), not only in English/Chinese. Follow each language’s spoken cues: English (plus/minus/times/divided by/equals); Chinese 加減乘除等於; French (plus/moins/fois/divisé par/égale); German (plus/minus/mal/geteilt durch/ist/gleich); Spanish (más/menos/por/dividido entre/es/igual a); Japanese (たす/ひく/かける/わる/は); Korean (더하기/빼기/곱하기/나누기/은/는); Arabic (زائد/ناقص/ضرب/قسمة/يساوي); Hindi (धन/घटा/गुणा/भाग/बराबर), etc. Use Unicode operators in prose when clear; ASCII (- *) in code-like lines if the transcript implies code. Never add unstated steps or unstated numeric results.
 11. LARGE NUMBERS & MAGNITUDES (ALL LANGUAGES): Normalize big quantities for clarity using regional conventions for grouping and unit words (Chinese 千／百／萬／億; Japanese 万／億; Korean 만／억; Indian lakh/crore; European millions / separators). The digit glyphs themselves MUST remain Western Arabic (0–9) per rule 6 unless the transcript explicitly uses Eastern Arabic-Indic digits (٣٤٥) and you should preserve that style. Prefer one clear numeric form; never invent, omit, or round beyond what was spoken.
+12. SPOKEN FILLERS / HESITATION: Remove non-semantic hesitation sounds in the SAME language as the transcript (e.g. English: um, uh, ah, er, hmm, drawn-out uhhh when purely filler; Chinese: 嗯、啊、呃; Japanese: えーと; Korean: 어…; French: euh). Keep words that carry meaning (e.g. English "like" when introducing a comparison or example). Light cleanup only—still follow rule 1 (no aggressive summarization).
 """
 
 # --- language-specific Few-Shot Examples ---

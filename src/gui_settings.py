@@ -630,7 +630,10 @@ class SettingsGUI(QMainWindow):
         if os.path.exists(self.prefs_path):
             with open(self.prefs_path, "r", encoding="utf-8") as f:
                 self.prefs = json.load(f)
-        
+            if self.prefs and models_config.scrub_obsolete_user_pref_keys(self.prefs):
+                with open(self.prefs_path, "w", encoding="utf-8") as f:
+                    json.dump(self.prefs, f, indent=4)
+
         # Unified state
         self.config = {**self.tech_config, **self.prefs}
         
@@ -982,7 +985,7 @@ class SettingsGUI(QMainWindow):
         self.btn_save_all.clicked.connect(self.save_config)
         sidebar_layout.addWidget(self.btn_save_all)
         
-        footer_label = QLabel("v1.2.2")
+        footer_label = QLabel("v1.2.3")
         footer_label.setStyleSheet("color: #444444; padding-left: 20px;")
         sidebar_layout.addWidget(footer_label)
 
@@ -1144,7 +1147,6 @@ class SettingsGUI(QMainWindow):
             lines.append(f"Auto-stop silence: {snap['auto_stop_s']}s → {cur['auto_stop_s']}s")
         if cur["hotkey_pref"] != snap["hotkey_pref"]:
             lines.append(f"Recording hotkey: {snap['hotkey_display']} → {cur['hotkey_display']}")
-
         prompts_changed = cur["custom_prompts"] != snap["custom_prompts"]
         editor_changed = (cur["prompt_editor_text"] or "").strip() != (snap["prompt_editor_text"] or "").strip()
         if prompts_changed or editor_changed:
@@ -1242,7 +1244,7 @@ class SettingsGUI(QMainWindow):
         stop_ms = self.config.get("silence_timeout_ms", 10000)
         self.stop_spin.setValue(max(5, int(stop_ms/1000)))
         self.hk_val.setText(self.config.get("hotkey", "F8").upper())
-        
+
         # Initial prompt load
         self.on_prompt_change()
         self.refresh_dict_list()
@@ -1755,6 +1757,7 @@ class SettingsGUI(QMainWindow):
         if current_text:
             self.custom_prompts[self.last_prompt_key] = current_text
 
+        models_config.scrub_obsolete_user_pref_keys(self.prefs)
         # Save files
         with open(self.prefs_path, "w", encoding="utf-8") as f:
             json.dump(self.prefs, f, indent=4)

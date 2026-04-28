@@ -55,15 +55,16 @@ pystray = "*"
 pillow = "*"
 pyperclip = "*"
 huggingface_hub = "*"
+certifi = "*"
 colorama = "*"
 pyside6 = "==6.8.1"
 
 [target.osx-arm64.pypi-dependencies]
-mlx = "==0.30.6"
-mlx-lm = "==0.30.5"
+mlx = "==0.31.1"
+mlx-lm = "==0.31.1"
 mlx-whisper = "*"
-mlx-audio = ">=0.3.1"
-transformers = "==5.0.0rc3"
+mlx-audio = ">=0.4.1"
+transformers = ">=5.0.0"
 onnxruntime = "*"
 # qwen-asr (PyTorch Qwen3-ASR) pins transformers 4.x and conflicts with mlx-lm's transformers 5.x pin.
 # On Apple Silicon use ASR backend mlx_qwen_asr (mlx-audio) instead of qwen_asr.

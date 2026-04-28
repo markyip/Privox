@@ -130,10 +130,14 @@ PLIST_CONTENT = f"""<?xml version="1.0" encoding="UTF-8"?>
     <!-- Privacy Permissions needed for Privox -->
     <key>NSMicrophoneUsageDescription</key>
     <string>Privox needs microphone access to record your voice for transcription.</string>
+    <key>NSAccessibilityUsageDescription</key>
+    <string>Privox needs accessibility access to detect your global activation hotkey and paste transcribed text into the active app.</string>
+    <key>NSInputMonitoringUsageDescription</key>
+    <string>Privox needs input monitoring access to listen for your global activation hotkey while other apps are focused.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
     <string>Privox needs speech recognition to transcribe your audio.</string>
     <key>NSAppleEventsUsageDescription</key>
-    <string>Privox needs permission to paste transcribed text into your active window.</string>
+    <string>Privox only uses Apple Events for optional legacy paste fallback and diagnostics.</string>
 </dict>
 </plist>
 """

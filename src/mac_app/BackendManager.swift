@@ -48,6 +48,11 @@ func appLog(_ message: String) {
 
 class BackendManager {
     static let shared = BackendManager()
+
+    /// When set, this process only edits prefs (SwiftUI). The Python engine runs in the main PyInstaller app; do not spawn a second backend.
+    static var isSettingsOnlyLaunch: Bool {
+        ProcessInfo.processInfo.environment["PRIVOX_SWIFT_SETTINGS_ONLY"] == "1"
+    }
     
     private var process: Process?
     private var outputPipe: Pipe?
@@ -78,31 +83,46 @@ class BackendManager {
     }
     
     private init() {
-        startBackend()
+        if Self.isSettingsOnlyLaunch {
+            appLog("PRIVOX_SWIFT_SETTINGS_ONLY: skipping embedded Python backend (main app owns the engine).")
+        } else {
+            startBackend()
+        }
     }
     
     func startBackend() {
         if isRunning, process?.isRunning == true { return }
         isRunning = false
         
-        let pythonPath = findPythonExecutable()
+        guard let pythonPath = findPythonExecutable() else {
+            appLog("Python backend unavailable: no bundled or configured Python runtime was found.")
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(
+                    name: NSNotification.Name("PrivoxStatusChanged"),
+                    object: nil,
+                    userInfo: ["status": "ERROR"]
+                )
+                NotificationCenter.default.post(
+                    name: NSNotification.Name("PrivoxBackendDetail"),
+                    object: nil,
+                    userInfo: ["detail": "BACKEND_RUNTIME_MISSING"]
+                )
+            }
+            return
+        }
         appLog("Attempting to start Python backend via: \(pythonPath)")
         appLog("Project Directory (Cwd): \(projectDirectory)")
         appLog("App Data Directory: \(privoxAppDataDirectory().path)")
         
         process = Process()
-        if pythonPath == "/usr/bin/env python" {
-            // Workaround for Cocoa Process executableURL which hates arguments inside the path string
-            process?.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            process?.arguments = ["python", "src/voice_input.py", "--headless"]
-        } else {
-            process?.executableURL = URL(fileURLWithPath: pythonPath)
-            process?.arguments = ["src/voice_input.py", "--headless"]
-        }
+        process?.executableURL = URL(fileURLWithPath: pythonPath)
+        process?.arguments = ["src/voice_input.py", "--headless"]
         process?.currentDirectoryURL = URL(fileURLWithPath: projectDirectory)
         var env = ProcessInfo.processInfo.environment
         env["PRIVOX_APP_DATA_DIR"] = privoxAppDataDirectory().path
         env["PYTHONUNBUFFERED"] = "1"
+        env["PRIVOX_SWIFT_AUDIO_OWNER"] = "1"
+        env["PRIVOX_SWIFT_PASTE_OWNER"] = "1"
         process?.environment = env
         
         outputPipe = Pipe()
@@ -214,7 +234,7 @@ class BackendManager {
         }
     }
     
-    private func findPythonExecutable() -> String {
+    private func findPythonExecutable() -> String? {
         let fileManager = FileManager.default
         let appData = privoxAppDataDirectory()
 
@@ -260,7 +280,18 @@ class BackendManager {
             return localPython
         }
 
-        // 6. Fallback: system python from PATH
-        return "/usr/bin/env python"
+        // Do not silently fall back to PATH/system Python in the app flow. macOS TCC
+        // permissions are tied to the signed app/runtime identity, and a PATH fallback
+        // makes Accessibility/Input Monitoring/Automation prompts appear under the wrong process.
+        if ProcessInfo.processInfo.environment["PRIVOX_ALLOW_SYSTEM_PYTHON"] == "1" {
+            let systemPythonCandidates = ["/usr/bin/python3", "/opt/homebrew/bin/python3", "/usr/local/bin/python3"]
+            for candidate in systemPythonCandidates {
+                if fileManager.fileExists(atPath: candidate) {
+                    appLog("Using explicit PRIVOX_ALLOW_SYSTEM_PYTHON fallback: \(candidate)")
+                    return candidate
+                }
+            }
+        }
+        return nil
     }
 }

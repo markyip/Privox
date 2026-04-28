@@ -1,6 +1,8 @@
 import os
 import site
+import platform
 import shutil
+import subprocess
 import sys
 from glob import glob
 
@@ -61,6 +63,7 @@ pyinstaller_args = [
     '--add-data=src/download_models.py:src' if is_mac else '--add-data=src/download_models.py;src',
     '--add-data=src/gui_settings.py:src' if is_mac else '--add-data=src/gui_settings.py;src',
     '--add-data=src/models_config.py:src' if is_mac else '--add-data=src/models_config.py;src',
+    '--add-data=src/silero_vad_onnx.py:src' if is_mac else '--add-data=src/silero_vad_onnx.py;src',
     '--add-data=pixi.toml:.' if is_mac else '--add-data=pixi.toml;.',
     '--add-data=pixi.lock:.' if is_mac else '--add-data=pixi.lock;.',
     '--add-data=uninstall.bat:.' if is_mac else '--add-data=uninstall.bat;.',
@@ -142,6 +145,106 @@ def restore_optional_media_binaries():
             os.rename(disabled_path, original_path)
 
 
+def _remove_path(path):
+    if os.path.isdir(path) and not os.path.islink(path):
+        shutil.rmtree(path, ignore_errors=True)
+        return True
+    if os.path.exists(path):
+        try:
+            os.remove(path)
+            return True
+        except OSError:
+            return False
+    return False
+
+
+def _site_packages_dirs(env_root):
+    lib_root = os.path.join(env_root, "lib")
+    for pydir in ("python3.12", "python3.11", "python3.10"):
+        site = os.path.join(lib_root, pydir, "site-packages")
+        if os.path.isdir(site):
+            yield site
+
+
+def prune_pixi_bundle_for_mac(env_root):
+    """Remove dev-only and unused Mac runtime files from the bundled Pixi env."""
+    if not is_mac:
+        return
+    if os.environ.get("PRIVOX_PRUNE_BUNDLED_PIXI", "1") != "1":
+        print("Skipping bundled .pixi pruning (PRIVOX_PRUNE_BUNDLED_PIXI=0).")
+        return
+
+    removed = 0
+    lib_root = os.path.join(env_root, "lib")
+
+    # Headers, docs, metadata, tests, caches, and bytecode are not needed at runtime.
+    for path in (
+        os.path.join(env_root, "include"),
+        os.path.join(env_root, "share", "man"),
+        os.path.join(env_root, "share", "doc"),
+        os.path.join(env_root, "share", "info"),
+    ):
+        if _remove_path(path):
+            removed += 1
+
+    if os.path.isdir(lib_root):
+        for pattern in ("**/__pycache__", "**/*.pyc", "**/*.pyo", "**/*.a"):
+            for path in glob(os.path.join(lib_root, pattern), recursive=True):
+                if _remove_path(path):
+                    removed += 1
+
+    for site in _site_packages_dirs(env_root):
+        for name in os.listdir(site):
+            pkg_dir = os.path.join(site, name)
+            if name in ("test", "tests") and _remove_path(pkg_dir):
+                removed += 1
+                continue
+            if not os.path.isdir(pkg_dir):
+                continue
+            for sub in ("test", "tests", "__pycache__"):
+                if _remove_path(os.path.join(pkg_dir, sub)):
+                    removed += 1
+
+    # The Mac app uses Swift for UI/hotkey/paste and MLX/ONNX for the runtime path.
+    # Keep this list conservative: remove the largest stacks that are unused by
+    # the bundled macOS app, while preserving MLX, ONNX Runtime, and downloader deps.
+    unused_mac_pkgs = (
+        "PySide6",
+        "PySide6_Addons",
+        "PySide6_Essentials",
+        "shiboken6",
+        "customtkinter",
+        "torch",
+        "torchaudio",
+        "torchvision",
+        "torchgen",
+        "functorch",
+        "faster_whisper",
+        "funasr",
+        "modelscope",
+    )
+    for site in _site_packages_dirs(env_root):
+        for pkg in unused_mac_pkgs:
+            patterns = (
+                pkg,
+                pkg.replace("_", "-"),
+                f"{pkg}-*.dist-info",
+                f"{pkg}_*.dist-info",
+                f"{pkg}*.dist-info",
+                f"{pkg.lower()}-*.dist-info",
+                f"{pkg.lower()}_*.dist-info",
+                f"{pkg.lower()}*.dist-info",
+                f"{pkg}-*.egg-info",
+                f"{pkg.lower()}-*.egg-info",
+            )
+            for pattern in patterns:
+                for path in glob(os.path.join(site, pattern)):
+                    if _remove_path(path):
+                        removed += 1
+
+    print(f"Pruned {removed} items from bundled .pixi environment.")
+
+
 def copy_pixi_runtime_env_into_bundle():
     if not is_mac:
         return
@@ -155,6 +258,8 @@ def copy_pixi_runtime_env_into_bundle():
         shutil.rmtree(target_env, ignore_errors=True)
     print("Copying pixi runtime environment into app bundle...")
     shutil.copytree(source_env, target_env, symlinks=True)
+    print("Pruning bundled .pixi environment for macOS runtime...")
+    prune_pixi_bundle_for_mac(target_env)
 
 
 try:
@@ -164,6 +269,64 @@ finally:
     restore_optional_media_binaries()
 
 import plistlib
+
+
+def compile_mac_swift_settings_helper():
+    """SwiftUI binary launched by the PyInstaller app for Settings (avoids Qt gui_settings)."""
+    helper = os.path.join("dist", "Privox.app", "Contents", "MacOS", "PrivoxSwiftUI")
+    source_dir = "src/mac_app"
+    if not os.path.isdir(source_dir):
+        print("Warning: src/mac_app missing; skipping PrivoxSwiftUI.")
+        return
+    swift_files = sorted(
+        os.path.join(source_dir, f)
+        for f in os.listdir(source_dir)
+        if f.endswith(".swift")
+    )
+    if not swift_files:
+        print("Warning: no Swift sources in src/mac_app; skipping PrivoxSwiftUI.")
+        return
+    machine = platform.machine().lower()
+    if machine in ("arm64", "aarch64"):
+        swift_target = "arm64-apple-macosx13.0"
+    elif machine in ("x86_64", "amd64", "i386"):
+        swift_target = "x86_64-apple-macosx13.0"
+    else:
+        swift_target = "arm64-apple-macosx13.0"
+    cmd = ["swiftc", "-parse-as-library", "-target", swift_target, *swift_files, "-o", helper]
+    try:
+        subprocess.run(cmd, check=True)
+        os.chmod(helper, 0o755)
+        print(f"Built SwiftUI settings helper: {helper}")
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        print(
+            f"Warning: could not build PrivoxSwiftUI ({exc}). "
+            "Install Xcode Command Line Tools; Settings will fall back to Qt until fixed."
+        )
+
+
+def codesign_dist_mac_app():
+    app_path = os.path.join("dist", "Privox.app")
+    if not os.path.isdir(app_path):
+        return
+    identity = os.environ.get("PRIVOX_SIGNING_IDENTITY", "-").strip() or "-"
+    sign_cmd = ["codesign", "--force", "--deep", "--sign", identity]
+    if identity != "-":
+        sign_cmd.extend(["--options", "runtime", "--timestamp"])
+    entitlements = "assets/entitlements.plist"
+    if os.path.exists(entitlements):
+        sign_cmd.extend(["--entitlements", entitlements])
+    sign_cmd.append(app_path)
+    try:
+        subprocess.run(sign_cmd, check=True)
+        subprocess.run(
+            ["codesign", "--verify", "--deep", "--strict", "--verbose=2", app_path],
+            check=True,
+        )
+        print("Re-signed dist/Privox.app (includes PrivoxSwiftUI).")
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        print(f"Warning: codesign on dist/Privox.app failed ({exc}).")
+
 
 if is_mac:
     copy_pixi_runtime_env_into_bundle()
@@ -177,6 +340,9 @@ if is_mac:
             # Add required privacy descriptions for macOS
             plist['NSMicrophoneUsageDescription'] = "Privox needs microphone access to listen to your speech and transcribe it."
             plist['NSAccessibilityUsageDescription'] = "Privox needs accessibility access to detect your global activation hotkey across all applications."
+            # Stable bundle id helps TCC (Accessibility / Input Monitoring) map the same app across updates
+            # when code signing identity is consistent. Matches build_mac_app.py.
+            plist['CFBundleIdentifier'] = "ai.privox.app"
             
             # Optional: Hide dock icon since we rely on Menu Bar (LSUIElement)
             plist['LSUIElement'] = True
@@ -186,6 +352,9 @@ if is_mac:
             print("Successfully injected privacy strings and LSUIElement into Info.plist.")
         except Exception as e:
             print(f"Error modifying Info.plist: {e}")
+
+    compile_mac_swift_settings_helper()
+    codesign_dist_mac_app()
 
     print("Build Complete. Application bundle is in 'dist/Privox.app'")
 else:

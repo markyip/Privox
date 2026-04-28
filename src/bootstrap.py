@@ -268,6 +268,8 @@ def apply_dark_title_bar(window):
         # Disable Mica/Acrylic (DWMWA_SYSTEMBACKDROP_TYPE = 38, None = 1)
         none_backdrop = ctypes.c_int(1)
         ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 38, ctypes.byref(none_backdrop), 4)
+    except Exception:
+        pass
 
 def verify_required_models(target_dir):
     """Ensure required ASR and refiner model files exist after setup."""

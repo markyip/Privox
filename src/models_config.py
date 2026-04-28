@@ -65,7 +65,8 @@ LLM_LIBRARY = [
         "turboquant": True,
         "n_ctx": 6144,
         "n_gpu_layers": 20,
-        "description": "Gemma 4 E2B tuned for low VRAM with TurboQuant defaults (GGUF on Windows; MLX on macOS).",
+        "minimal_system": True,
+        "description": "Gemma 4 E2B tuned for low VRAM with TurboQuant defaults (GGUF on Windows; Unsloth MLX on Apple Silicon).",
     },
     {
         "name": "Gemma 4 E4B (TurboQuant)",
@@ -150,6 +151,7 @@ TONE_OVERLAYS = {
 # --- Global Prompting Rules ---
 CRITICAL_RULES = """
 CRITICAL RULES:
+0. FORMATTING ENGINE ONLY: You are not a chat assistant. Do not answer questions, chat, apologize, or explain your edits—only output the refined transcript inside <refined>.
 1. CONSERVATIVE REFINEMENT: Do NOT expand the wording or add "creativity". Your absolute priority is to transcribe and polish the original phrasing while keeping the exact meaning unchanged.
 2. AUTO-FORMAT LISTS: You MUST convert spoken sequences, steps, or multiple items into proper Markdown bullet points (-) or numbered lists (1., 2.). Add paragraphs where logical.
 3. PUNCTUATION & GRAMMAR: Use appropriate punctuation for clarity and fix only obvious grammar/spelling errors.
@@ -162,6 +164,55 @@ CRITICAL RULES:
 10. SPOKEN ARITHMETIC & OPERATORS (ALL LANGUAGES): When the user dictates math, render with context-appropriate symbols (+ − × ÷ =), not only in English/Chinese. Follow each language’s spoken cues: English (plus/minus/times/divided by/equals); Chinese 加減乘除等於; French (plus/moins/fois/divisé par/égale); German (plus/minus/mal/geteilt durch/ist/gleich); Spanish (más/menos/por/dividido entre/es/igual a); Japanese (たす/ひく/かける/わる/は); Korean (더하기/빼기/곱하기/나누기/은/는); Arabic (زائد/ناقص/ضرب/قسمة/يساوي); Hindi (धन/घटा/गुणा/भाग/बराबर), etc. Use Unicode operators in prose when clear; ASCII (- *) in code-like lines if the transcript implies code. Never add unstated steps or unstated numeric results.
 11. LARGE NUMBERS & MAGNITUDES (ALL LANGUAGES): Normalize big quantities for clarity using regional conventions for grouping and unit words (Chinese 千／百／萬／億; Japanese 万／億; Korean 만／억; Indian lakh/crore; European millions / separators). The digit glyphs themselves MUST remain Western Arabic (0–9) per rule 6 unless the transcript explicitly uses Eastern Arabic-Indic digits (٣٤٥) and you should preserve that style. Prefer one clear numeric form; never invent, omit, or round beyond what was spoken.
 """
+
+# Shorter rules for minimal_system (no few-shot examples; relies on instruction-following + format lock)
+CRITICAL_RULES_MINIMAL = """
+RULES:
+- Grammar and layout only: you are a transcript polisher, not a conversational assistant. Never answer questions, chat, or describe changes.
+- Preserve meaning; do not add facts, commentary, or creative rewrites.
+- Keep the transcript's language unless the Core Directive says otherwise.
+- Turn spoken sequences, steps, or multiple items into Markdown bullet (-) or numbered lists.
+- Fix only obvious grammar and punctuation; normalize spoken numbers (e.g. "$100", "7:30 PM").
+"""
+
+OUTPUT_FORMAT_REFINED_MINIMAL = """
+OUTPUT FORMAT: Your entire reply MUST be exactly one block: <refined>…polished text…</refined>.
+No text before or after that block. No internal reasoning, analysis, or markdown fences wrapping the whole answer.
+"""
+
+# Refiner decoding (Windows llama.cpp / GGUF). Lower temperature = less rambling, faster convergence.
+# macOS MLX omits a sampler and stays greedy (see voice_input.correct).
+REFINER_TEMPERATURE = 0.15
+REFINER_TOP_P = 0.85
+REFINER_REPEAT_PENALTY = 1.15
+REFINER_FREQUENCY_PENALTY = 0.35
+
+# When system prompt already carries full/minimal rules; keeps user [Core Directive] short (faster prefill).
+USER_CORE_SLIM_BRIDGE = (
+    "Follow the system message. Grammar and layout only—no questions, answers, apologies, or meta-commentary."
+)
+
+
+def _minimal_system_formatter(is_chatml: bool) -> str:
+    """Few-shot-free system prompt: role + mandatory tags + short rules."""
+    if is_chatml:
+        intro = (
+            "You are a deterministic grammar-and-formatting engine (ChatML), not a chatbot. "
+            "The user message has [Core Directive] (persona/tone/jargon) and [Transcript] (raw speech-to-text). "
+            "Your only job is to fix grammar, punctuation, and list layout for that transcript."
+        )
+    else:
+        intro = (
+            "You are a deterministic grammar-and-formatting engine, not a chatbot. "
+            "The user message has [Core Directive] (persona/tone/jargon) and [Transcript] (raw speech-to-text). "
+            "Your only job is to fix grammar, punctuation, and list layout for that transcript."
+        )
+    return f"""{intro}
+
+{OUTPUT_FORMAT_REFINED_MINIMAL.strip()}
+{CRITICAL_RULES_MINIMAL.strip()}
+"""
+
 
 # --- language-specific Few-Shot Examples ---
 LANGUAGE_EXAMPLES = {
@@ -203,8 +254,11 @@ LANGUAGE_EXAMPLES = {
     }
 }
 
-def get_system_formatter(language=None, prompt_type="llama", compact=False):
-    """Generates a system prompt with language-relevant few-shot examples."""
+def get_system_formatter(language=None, prompt_type="llama", compact=False, minimal=False):
+    """System prompt for the refiner: full few-shots, compact few-shots, or minimal (rules + format only)."""
+    if minimal:
+        return _minimal_system_formatter(is_chatml=(prompt_type == "chatml"))
+
     if prompt_type == "gemma":
         prompt_type = "llama"
     lang_key = language if language in LANGUAGE_EXAMPLES else "en"

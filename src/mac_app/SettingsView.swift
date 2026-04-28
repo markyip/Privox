@@ -20,9 +20,73 @@ struct UserPrefs: Codable {
     // Using a dictionary to catch any other keys we don't strictly model here
     private var additionalData: [String: AnyCodable] = [:]
     
-    enum CodingKeys: String, CodingKey {
+    enum CodingKeys: String, CodingKey, CaseIterable {
         case character, tone, whisper_model, current_refiner, custom_dictionary,
              custom_prompts, sound_enabled, vram_timeout, silence_timeout_ms, paste_delay_seconds, hotkey
+    }
+
+    // Preserve unknown keys so Python-side migrations/flags/stats don't get erased on every save.
+    // SwiftUI settings only edits a subset of prefs; everything else must round-trip.
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let known = try decoder.container(keyedBy: CodingKeys.self)
+        character = try known.decodeIfPresent(String.self, forKey: .character) ?? character
+        tone = try known.decodeIfPresent(String.self, forKey: .tone) ?? tone
+        whisper_model = try known.decodeIfPresent(String.self, forKey: .whisper_model) ?? whisper_model
+        current_refiner = try known.decodeIfPresent(String.self, forKey: .current_refiner) ?? current_refiner
+        custom_dictionary = try known.decodeIfPresent([String].self, forKey: .custom_dictionary) ?? custom_dictionary
+        custom_prompts = try known.decodeIfPresent([String: String].self, forKey: .custom_prompts) ?? custom_prompts
+        sound_enabled = try known.decodeIfPresent(Bool.self, forKey: .sound_enabled) ?? sound_enabled
+        vram_timeout = try known.decodeIfPresent(Int.self, forKey: .vram_timeout) ?? vram_timeout
+        silence_timeout_ms = try known.decodeIfPresent(Int.self, forKey: .silence_timeout_ms) ?? silence_timeout_ms
+        paste_delay_seconds = try known.decodeIfPresent(Int.self, forKey: .paste_delay_seconds) ?? paste_delay_seconds
+        hotkey = try known.decodeIfPresent(String.self, forKey: .hotkey) ?? hotkey
+
+        struct DynamicKey: CodingKey {
+            var stringValue: String
+            init?(stringValue: String) { self.stringValue = stringValue }
+            var intValue: Int? { nil }
+            init?(intValue: Int) { nil }
+        }
+        let all = try decoder.container(keyedBy: DynamicKey.self)
+        let knownKeys = Set(CodingKeys.allCases.map { $0.stringValue })
+        var extras: [String: AnyCodable] = [:]
+        for key in all.allKeys {
+            if knownKeys.contains(key.stringValue) { continue }
+            if let val = try? all.decode(AnyCodable.self, forKey: key) {
+                extras[key.stringValue] = val
+            }
+        }
+        additionalData = extras
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var known = encoder.container(keyedBy: CodingKeys.self)
+        try known.encode(character, forKey: .character)
+        try known.encode(tone, forKey: .tone)
+        try known.encode(whisper_model, forKey: .whisper_model)
+        try known.encode(current_refiner, forKey: .current_refiner)
+        try known.encode(custom_dictionary, forKey: .custom_dictionary)
+        try known.encode(custom_prompts, forKey: .custom_prompts)
+        try known.encode(sound_enabled, forKey: .sound_enabled)
+        try known.encode(vram_timeout, forKey: .vram_timeout)
+        try known.encode(silence_timeout_ms, forKey: .silence_timeout_ms)
+        try known.encode(paste_delay_seconds, forKey: .paste_delay_seconds)
+        try known.encode(hotkey, forKey: .hotkey)
+
+        struct DynamicKey: CodingKey {
+            var stringValue: String
+            init?(stringValue: String) { self.stringValue = stringValue }
+            var intValue: Int? { nil }
+            init?(intValue: Int) { nil }
+        }
+        var all = encoder.container(keyedBy: DynamicKey.self)
+        for (k, v) in additionalData {
+            if let key = DynamicKey(stringValue: k) {
+                try all.encode(v, forKey: key)
+            }
+        }
     }
 }
 
@@ -248,8 +312,10 @@ class SettingsManager: ObservableObject {
             let data = try JSONEncoder().encode(prefs)
             try data.write(to: prefsURL)
             savedHotkey = normalizeHotkeyString(prefs.hotkey)
-            // Trigger Python backend reload
-            BackendManager.shared.sendCommand("RELOAD_CONFIG")
+            // Main app polls .user_prefs.json; IPC reload only when this process owns the backend.
+            if !BackendManager.isSettingsOnlyLaunch {
+                BackendManager.shared.sendCommand("RELOAD_CONFIG")
+            }
         } catch {
             print("Failed to save prefs: \(error)")
         }

@@ -164,4 +164,5 @@ if [ -n "${PRIVOX_NOTARY_PROFILE:-}" ]; then
 fi
 
 echo "Success! $DMG_NAME is ready for distribution."
+echo "Tip: DMG 內已含「應用程式」捷徑；請使用者把 Privox 拖進該資料夾，並用穩定的 Developer ID 簽章（PRIVOX_SIGNING_IDENTITY）以利隱私權限延續。"
 echo "Build log saved at: $LOG_FILE"

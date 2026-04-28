@@ -7,6 +7,7 @@ Model: snakers4/silero-vad v5 ONNX (16kHz and 8kHz).
 from __future__ import annotations
 
 import os
+import ssl
 import urllib.request
 import numpy as np
 
@@ -24,14 +25,31 @@ CHUNK_SAMPLES_16K = 512
 CHUNK_SAMPLES_8K = 256
 
 
+def _ssl_context():
+    """Pixi/embedded Python often lacks macOS cert store hooks; certifi fixes SSL verify."""
+    try:
+        import certifi
+
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return ssl.create_default_context()
+
+
 def _download_model(cache_dir: str) -> str:
     os.makedirs(cache_dir, exist_ok=True)
     name = "silero_vad_v5.onnx"
     path = os.path.join(cache_dir, name)
     if os.path.isfile(path):
         return path
+    req = urllib.request.Request(
+        SILERO_VAD_V5_ONNX_URL,
+        headers={"User-Agent": "Privox/1.0"},
+    )
     try:
-        urllib.request.urlretrieve(SILERO_VAD_V5_ONNX_URL, path)
+        with urllib.request.urlopen(req, context=_ssl_context(), timeout=120) as resp:
+            data = resp.read()
+        with open(path, "wb") as out:
+            out.write(data)
     except Exception as e:
         raise RuntimeError(f"Failed to download Silero VAD ONNX: {e}") from e
     return path

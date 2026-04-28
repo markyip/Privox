@@ -59,6 +59,7 @@ import queue
 import time
 import json
 import re
+import base64
 import importlib.util
 import hashlib
 import gc
@@ -73,6 +74,22 @@ from tqdm.auto import tqdm as base_tqdm
 IS_MAC = (sys.platform == 'darwin' or platform.system() == 'Darwin')
 IS_WIN = (sys.platform == 'win32' or platform.system() == 'Windows')
 DOWNLOAD_PROGRESS_REPORTER = None
+
+
+def run_on_main_thread_mac(fn):
+    """pystray on macOS uses AppKit; touching NSStatusItem from a worker thread raises NSInternalInconsistencyException."""
+    if not IS_MAC:
+        fn()
+        return
+    try:
+        from Foundation import NSOperationQueue
+
+        NSOperationQueue.mainQueue().addOperationWithBlock_(lambda: fn())
+    except Exception:
+        try:
+            fn()
+        except Exception:
+            pass
 
 
 class PrivoxDownloadTqdm(base_tqdm):
@@ -115,38 +132,39 @@ class PrivoxDownloadTqdm(base_tqdm):
         self._last_report_time = now
         self._last_report_n = self.n
 
-if IS_MAC:
-    try:
-        # Pre-import MLX on the MAIN THREAD to prevent silent deadlocks 
-        # when wake-up logic initializes it from a background ThreadPoolExecutor later.
-        import mlx_whisper
-        import mlx.core as mx
-    except ImportError:
-        pass
-
-
 if IS_WIN:
     import winreg
     import ctypes
     from ctypes import wintypes
 
 def setup_logging():
-    # Determine BASE_DIR early
+    # Log directory: writable location (macOS .app bundles are not writable inside Contents/).
     if getattr(sys, 'frozen', False):
-        # We want the log to be in the same folder as the app for portability/custom paths
-        base_dir = os.path.dirname(sys.executable)
+        if IS_MAC:
+            log_dir = models_config.get_app_data_dir(os.path.dirname(sys.executable))
+        else:
+            log_dir = os.path.dirname(sys.executable)
     else:
-        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    
-    if not os.path.exists(base_dir):
-        try: os.makedirs(base_dir, exist_ok=True)
-        except: pass
+        log_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-    # Log file next to the executable when frozen, else project / dev folder.
-    log_file = os.path.join(base_dir, 'privox_app.log')
+    if not os.path.exists(log_dir):
+        try:
+            os.makedirs(log_dir, exist_ok=True)
+        except OSError:
+            pass
+
+    log_file = os.path.join(log_dir, "privox_app.log")
     log_level = logging.INFO
-    log_format = '%(asctime)s.%(msecs)03d - %(levelname)s - %(message)s'
-    log_datefmt = '%Y-%m-%d %H:%M:%S'
+    log_format = "%(asctime)s.%(msecs)03d - %(levelname)s - %(message)s"
+    log_datefmt = "%Y-%m-%d %H:%M:%S"
+
+    try:
+        file_handler = logging.FileHandler(log_file, encoding="utf-8")
+    except OSError:
+        import tempfile
+
+        log_file = os.path.join(tempfile.gettempdir(), "privox_app.log")
+        file_handler = logging.FileHandler(log_file, encoding="utf-8")
 
     logging.basicConfig(
         format=log_format,
@@ -154,9 +172,9 @@ def setup_logging():
         level=log_level,
         force=True,
         handlers=[
-            logging.FileHandler(log_file, encoding='utf-8'),
-            logging.StreamHandler(sys.stdout) if sys.stdout else logging.NullHandler()
-        ]
+            file_handler,
+            logging.StreamHandler(sys.stdout) if sys.stdout else logging.NullHandler(),
+        ],
     )
 
     class _ThirdPartyNoiseFilter(logging.Filter):
@@ -261,11 +279,47 @@ def log_print(msg, **kwargs):
     print(msg, **kwargs)
 
 
+_cached_transcription_log: bool | None = None
+
+
 def transcription_logging_enabled() -> bool:
-    """Packaged exe: do not persist ASR/refiner output or transcript-adjacent diagnostics to the log file."""
-    if (os.environ.get("PRIVOX_LOG_TRANSCRIPTION") or "").strip().lower() in ("1", "true", "yes", "on"):
+    """Whether to persist ASR/refiner transcript-adjacent diagnostics.
+
+    Precedence: PRIVOX_LOG_TRANSCRIPTION env (on/off) > config.json log_transcription > default (on if not frozen).
+    """
+    global _cached_transcription_log
+    if _cached_transcription_log is not None:
+        return _cached_transcription_log
+
+    raw = (os.environ.get("PRIVOX_LOG_TRANSCRIPTION") or "").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        _cached_transcription_log = True
         return True
-    return not getattr(sys, "frozen", False)
+    if raw in ("0", "false", "no", "off"):
+        _cached_transcription_log = False
+        return False
+
+    try:
+        cfg_path = os.path.join(_privox_install_root(), "config.json")
+        if os.path.isfile(cfg_path):
+            with open(cfg_path, encoding="utf-8-sig") as f:
+                config = json.load(f)
+            setting = config.get("log_transcription")
+            if setting is True or (
+                isinstance(setting, str) and setting.strip().lower() in ("1", "true", "yes", "on")
+            ):
+                _cached_transcription_log = True
+                return True
+            if setting is False or (
+                isinstance(setting, str) and setting.strip().lower() in ("0", "false", "no", "off")
+            ):
+                _cached_transcription_log = False
+                return False
+    except Exception:
+        pass
+
+    _cached_transcription_log = not getattr(sys, "frozen", False)
+    return _cached_transcription_log
 
 
 def log_transcription(msg, **kwargs):
@@ -403,6 +457,47 @@ def _finalize_refiner_text(text: str | None, use_simplified_zh: bool) -> str:
     return _apply_chinese_output_script(t, use_simplified_zh)
 
 
+def _release_accelerator_memory(reason: str = "") -> None:
+    """Best-effort release for CUDA and Apple MLX/Metal allocator caches."""
+    try:
+        gc.collect()
+    except Exception:
+        pass
+
+    if torch is not None:
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                try:
+                    torch.cuda.ipc_collect()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            if hasattr(torch, "mps") and torch.backends.mps.is_available():
+                empty_cache = getattr(torch.mps, "empty_cache", None)
+                if callable(empty_cache):
+                    empty_cache()
+        except Exception:
+            pass
+
+    if IS_MAC:
+        try:
+            import mlx.core as mx
+
+            metal = getattr(mx, "metal", None)
+            clear_cache = getattr(metal, "clear_cache", None) if metal is not None else None
+            if callable(clear_cache):
+                clear_cache()
+            else:
+                clear_cache = getattr(mx, "clear_cache", None)
+                if callable(clear_cache):
+                    clear_cache()
+        except Exception as e:
+            log_print(f"MLX cache cleanup skipped ({reason}): {e}")
+
+
 _numpy_metadata_shim_installed = False
 
 
@@ -449,6 +544,15 @@ def ensure_numpy_version_visible_to_metadata():
 
 
 log_print("Starting Privox...")
+
+if IS_MAC:
+    try:
+        import mlx_whisper  # noqa: F401
+        import mlx.core as mx  # noqa: F401
+
+        log_print("MLX preloaded on main thread (before heavy imports; macOS stability).")
+    except Exception as mlx_pre_err:
+        log_print(f"MLX preload deferred: {mlx_pre_err}")
 
 if sys.platform == 'win32':
     # --- Single Instance Enforcement (Prevents model/log corruption) ---
@@ -517,6 +621,264 @@ else:
     BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 APP_DATA_DIR = models_config.get_app_data_dir(BASE_DIR)
+
+# macOS GUI: flock must be held before VoiceInputApp.__init__ (which starts VAD / model threads).
+# Otherwise a second .app launch loads MLX while the first is still running → NEWLAPACK noise and merged logs.
+_MAC_GUI_SINGLETON_LOCK_FP = None
+
+
+def _mac_release_gui_singleton_lock() -> None:
+    global _MAC_GUI_SINGLETON_LOCK_FP
+    fp = _MAC_GUI_SINGLETON_LOCK_FP
+    if fp is None:
+        return
+    try:
+        import fcntl
+
+        fcntl.flock(fp.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        pass
+    try:
+        fp.close()
+    except OSError:
+        pass
+    _MAC_GUI_SINGLETON_LOCK_FP = None
+
+
+def _mac_try_acquire_gui_singleton_lock() -> bool:
+    """Returns True if this process may continue as the GUI owner. Idempotent."""
+    global _MAC_GUI_SINGLETON_LOCK_FP
+    if _MAC_GUI_SINGLETON_LOCK_FP is not None:
+        return True
+    import fcntl
+
+    try:
+        os.makedirs(APP_DATA_DIR, exist_ok=True)
+        lock_path = os.path.join(APP_DATA_DIR, ".privox_instance.lock")
+    except OSError as lock_err:
+        log_print(f"Single-instance lock path unavailable ({lock_err}); continuing without lock.")
+        return True
+
+    for attempt in range(35):
+        fp = None
+        try:
+            fp = open(lock_path, "a+", encoding="utf-8")
+            fcntl.flock(fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _MAC_GUI_SINGLETON_LOCK_FP = fp
+            if attempt > 0:
+                log_print(f"Acquired single-instance lock (macOS) after {attempt} retry(ies).")
+            else:
+                log_print("Acquired single-instance lock (macOS).")
+            return True
+        except BlockingIOError:
+            if fp is not None:
+                try:
+                    fp.close()
+                except OSError:
+                    pass
+            if attempt + 1 < 35:
+                time.sleep(0.08)
+                continue
+            log_print("Another instance of Privox is already running. Exiting.")
+            return False
+        except OSError as lock_err:
+            log_print(f"Single-instance lock unavailable ({lock_err}); continuing without lock.")
+            return True
+    return False
+
+
+# --- macOS permissions diagnostics (Accessibility / Automation) ---
+def _mac_is_accessibility_trusted() -> bool:
+    """
+    Returns True if the process is trusted for Accessibility.
+    This is required for global hotkeys and synthetic input on macOS.
+    """
+    if not IS_MAC:
+        return True
+    try:
+        import ctypes
+
+        app_services = ctypes.CDLL(
+            "/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices"
+        )
+        app_services.AXIsProcessTrusted.restype = ctypes.c_bool
+        return bool(app_services.AXIsProcessTrusted())
+    except Exception:
+        # If we cannot query, be conservative and assume not trusted (we'll still proceed).
+        return False
+
+
+def _mac_open_privacy_pane(pane: str) -> None:
+    """
+    Best-effort open System Settings privacy pane.
+    Known panes (varies by macOS): Privacy_Accessibility, Privacy_ListenEvent, Privacy_Automation.
+    """
+    try:
+        import subprocess
+
+        subprocess.run(
+            [
+                "open",
+                f"x-apple.systempreferences:com.apple.preference.security?{pane}",
+            ],
+            check=False,
+        )
+    except Exception:
+        pass
+
+
+def _mac_prompt_enable_permissions(
+    *,
+    need_accessibility: bool = False,
+    need_input_monitoring: bool = False,
+    need_automation: bool = False,
+) -> None:
+    """Show a short dialog with buttons that open the right System Settings pane."""
+    if not IS_MAC:
+        return
+    try:
+        import subprocess
+        # Build minimal copy + dynamic buttons.
+        msg = "Privox 需要權限才能貼上/監聽熱鍵。"
+        log_print(
+            "Permission Prompt - "
+            f"need_accessibility={need_accessibility}, "
+            f"need_input_monitoring={need_input_monitoring}, "
+            f"need_automation={need_automation}"
+        )
+
+        # Keep the panel open until user chooses Done/Cancel.
+        while True:
+            buttons = []
+            if need_accessibility:
+                buttons.append("開啟「輔助使用」")
+            if need_input_monitoring:
+                buttons.append("開啟「輸入監控」")
+            if need_automation:
+                buttons.append("開啟「自動化」")
+            buttons.append("完成")
+            buttons.append("取消")
+
+            # Ask user which pane to open.
+            button_list = ", ".join([f'"{b}"' for b in buttons])
+            script = (
+                'tell application "Privox" to activate\n'
+                f'set _b to button returned of (display dialog "{msg}" '
+                f'buttons {{{button_list}}} default button "{buttons[0]}" '
+                f'with icon note with title "Privox")\n'
+                f'return _b\n'
+            )
+            proc = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+            chosen = (proc.stdout or "").strip()
+            if proc.returncode != 0:
+                err = (proc.stderr or proc.stdout or "").strip()
+                log_print(f"Permission Prompt failed (osascript rc={proc.returncode}): {err}")
+                # Fallback: open all relevant panes directly so user can still grant quickly.
+                if need_accessibility:
+                    _mac_open_privacy_pane("Privacy_Accessibility")
+                if need_input_monitoring:
+                    _mac_open_privacy_pane("Privacy_ListenEvent")
+                if need_automation:
+                    _mac_open_privacy_pane("Privacy_Automation")
+                return
+
+            if chosen in ("完成", "取消", ""):
+                break
+            if chosen == "開啟「輔助使用」":
+                _mac_open_privacy_pane("Privacy_Accessibility")
+                continue
+            if chosen == "開啟「輸入監控」":
+                _mac_open_privacy_pane("Privacy_ListenEvent")
+                continue
+            if chosen == "開啟「自動化」":
+                _mac_open_privacy_pane("Privacy_Automation")
+                continue
+    except Exception:
+        pass
+
+
+def _mac_log_permissions_diagnostics() -> None:
+    """Log current macOS permission state (best-effort)."""
+    if not IS_MAC:
+        return
+    try:
+        trusted = _mac_is_accessibility_trusted()
+        log_print(f"macOS Permission Diagnostic - Accessibility Trusted: {trusted}")
+    except Exception:
+        pass
+
+
+def _mac_frozen_app_bundle_path() -> str | None:
+    """.../Privox.app from PyInstaller frozen executable (Contents/MacOS/Privox)."""
+    if not IS_MAC or not getattr(sys, "frozen", False):
+        return None
+    exe = os.path.realpath(sys.executable)
+    macos_dir = os.path.dirname(exe)
+    contents_dir = os.path.dirname(macos_dir)
+    bundle = os.path.dirname(contents_dir)
+    return bundle if bundle.endswith(".app") else None
+
+
+def _mac_is_under_recommended_applications(bundle_path: str) -> bool:
+    norm = os.path.normpath(bundle_path) + os.sep
+    for base in ("/Applications", os.path.expanduser("~/Applications")):
+        prefix = os.path.normpath(base) + os.sep
+        if norm.startswith(prefix):
+            return True
+    return False
+
+
+def _mac_maybe_prompt_install_location() -> None:
+    """
+    If the user runs from dist/ or Downloads, TCC entries often break on the next rebuild.
+    Nudge once (until dismissed) to copy Privox.app into /Applications.
+    """
+    if not IS_MAC or not getattr(sys, "frozen", False):
+        return
+    if os.environ.get("PRIVOX_SKIP_INSTALL_HINT", "").strip() == "1":
+        return
+    bundle = _mac_frozen_app_bundle_path()
+    if not bundle or _mac_is_under_recommended_applications(bundle):
+        return
+    try:
+        os.makedirs(APP_DATA_DIR, exist_ok=True)
+    except OSError:
+        return
+    flag = os.path.join(APP_DATA_DIR, ".privox_install_location_hint_suppressed")
+    if os.path.isfile(flag):
+        return
+
+    msg = (
+        "建議將 Privox 放在「應用程式」資料夾，隱私權限在更新後較容易延續。"
+        "請結束程式後把 Privox.app 拖入「應用程式」再開啟。"
+    )
+    msg_as = msg.replace("\\", "\\\\").replace('"', '\\"')
+    script = (
+        f'set d to display dialog "{msg_as}" '
+        f'buttons {{"開啟「應用程式」", "在 Finder 顯示", "不再提示"}} '
+        f'default button "開啟「應用程式」" with title "Privox" with icon note\n'
+        "return button returned of d\n"
+    )
+    try:
+        proc = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=120)
+        chosen = (proc.stdout or "").strip()
+        log_print(f"Install hint dialog: rc={proc.returncode}, choice={chosen!r}")
+    except Exception as exc:
+        log_print(f"Install hint dialog failed: {exc}")
+        subprocess.run(["open", "/Applications"], check=False)
+        return
+
+    if chosen == "不再提示":
+        try:
+            with open(flag, "w", encoding="utf-8") as f:
+                f.write("1\n")
+        except OSError:
+            pass
+    elif chosen == "在 Finder 顯示":
+        subprocess.run(["open", "-R", bundle], check=False)
+    elif chosen == "開啟「應用程式」":
+        subprocess.run(["open", "/Applications"], check=False)
+
 
 # Simplified Path Logic: Trust Pixi environment but handle DLLs if needed
 if IS_WIN:
@@ -618,6 +980,8 @@ try:
     import sounddevice as sd
     import numpy as np
     from pynput import keyboard
+    import pystray
+    from PIL import Image, ImageDraw
     import pyperclip
     from huggingface_hub import hf_hub_download, snapshot_download
 
@@ -964,6 +1328,40 @@ class GrammarChecker:
                 log_print("MLX Model Loaded Successfully. (Using Apple Silicon Acceleration)")
                 self.mlx_generate = generate
             except Exception as e:
+                err_str = str(e) or ""
+                # mlx-lm may not support Gemma 4 model type on older versions.
+                # If so, automatically fall back to a known-good MLX model (Llama 3.2 3B).
+                if (
+                    attempts == 0
+                    and ("gemma4" in err_str.lower())
+                    and ("not supported" in err_str.lower())
+                ):
+                    try:
+                        fallback = next(
+                            m
+                            for m in models_config.LLM_LIBRARY
+                            if m.get("name") == "Llama 3.2 3B Instruct"
+                        )
+                        log_print(
+                            "MLX does not support Gemma 4 in this build; "
+                            "falling back to 'Llama 3.2 3B Instruct' (MLX)."
+                        )
+                        self.profile = {
+                            "repo_id": fallback.get("repo_id"),
+                            "file_name": fallback.get("file_name"),
+                            "prompt_type": fallback.get("prompt_type"),
+                            "description": fallback.get("description", ""),
+                            "mlx_repo": fallback.get("mlx_repo"),
+                            "minimal_system": fallback.get("minimal_system", False),
+                        }
+                        # Reset partially-initialized state then retry once.
+                        self.model = None
+                        self.tokenizer = None
+                        self.mlx_generate = None
+                        self.loading_error = None
+                        return self.load_model(attempts=attempts + 1)
+                    except Exception:
+                        pass
                 err_trace = traceback.format_exc()
                 log_print(f"\nCRITICAL: Failed to load MLX Model: {e}\n{err_trace}")
                 self.loading_error = str(e)
@@ -1150,14 +1548,19 @@ class GrammarChecker:
                  show_modern_error("Privox Model Error", f"Error loading Grammar Model (Llama): {e}", f"Traceback:\n{err_trace[:500]}")
             return False
 
-    def get_effective_prompt(self, language=None, language_prob=0.0, transcript=None):
+    def get_effective_prompt(self, language=None, language_prob=0.0, transcript=None, user_text=None, omit_critical_rules=False):
         """Constructs a composite prompt with hidden overrides.
         Layer 1: Core Safety/Format (Hidden)
         Layer 2: User Instructions (Visible in GUI)
         Layer 3: Late-Binding Overrides (Hidden, conditional)
+
+        omit_critical_rules: When True, skip embedding CRITICAL_RULES here (already in system prompt; shorter user block).
         """
-        key = f"{self.character}|{self.tone}"
-        user_text = self.custom_prompts.get(key, "").strip()
+        if user_text is None:
+            key = f"{self.character}|{self.tone}"
+            user_text = self.custom_prompts.get(key, "").strip()
+        else:
+            user_text = user_text.strip()
 
         # Layer 1: Core System Directives (Global Critical Rules)
         directive = (
@@ -1218,15 +1621,18 @@ class GrammarChecker:
         # NEW: Inject direct formatting instruction right to the core directive layer
         directive += "\nCRITICAL FORMATTING: Whenever the user dictates a list, sequence of items, or steps, you MUST format your output as a clear bulleted or numbered list. Add paragraphs where logical."
 
-        prompt = f"{directive}\n\n{models_config.CRITICAL_RULES}"
-
-        dict_str = ", ".join(self.custom_dictionary)
-        if dict_str:
-            prompt += f"Specific Jargon/Hints: {dict_str}\n"
+        if omit_critical_rules:
+            prompt = f"{directive}\n\n{models_config.USER_CORE_SLIM_BRIDGE}"
+        else:
+            prompt = f"{directive}\n\n{models_config.CRITICAL_RULES}"
 
         # Layer 2: User-Edited Instructions
         if user_text:
             prompt += f"\n### ADDITIONAL USER INSTRUCTIONS ###\n{user_text}\n"
+
+        dict_str = ", ".join(self.custom_dictionary)
+        if dict_str:
+            prompt += f"\n### JARGON/HINTS (PRIORITY) ###\nSpecific Jargon/Hints to recognize: {dict_str}\n"
 
         # Layer 3: Late-Binding Overrides (Ensures Dropdown Priority)
         # We append these LAST so they win any conflicts in the LLM's attention.
@@ -1245,6 +1651,93 @@ class GrammarChecker:
             prompt += f"\n### SYSTEM OVERRIDES (HIGHEST PRIORITY) ###{overrides}\n"
 
         return prompt
+
+    @staticmethod
+    def _is_gemma_unused_degeneracy(text: str) -> bool:
+        """Detect Gemma GGUF failures where the model emits repeated <unusedNN> tokens."""
+        if not text:
+            return False
+        head = text[:4000]
+        n = len(re.findall(r"<unused\d+>", head, flags=re.IGNORECASE))
+        if n < 10:
+            return False
+        if text.lstrip().startswith("<unused"):
+            return True
+        return len(head) >= 300 and (n * 11) > len(head) * 0.25
+
+    def _run_gemma_chat_completion(self, user_content: str, max_tokens: int) -> tuple[str, bool]:
+        """Use llama-cpp's Gemma chat formatter so BOS/special tokens are applied correctly."""
+        if not hasattr(self.model, "create_chat_completion"):
+            return "", True
+
+        extra_stop = ["</refined>", "<end_of_turn>", "<end_of_turn>\n", "</start_of_turn>", "</start_of_turn>\n"]
+        parts: list[str] = []
+        try:
+            stream = self.model.create_chat_completion(
+                messages=[{"role": "user", "content": user_content}],
+                max_tokens=max_tokens,
+                temperature=0.0,
+                top_p=1.0,
+                repeat_penalty=1.1,
+                seed=42,
+                stop=extra_stop,
+                stream=True,
+            )
+        except Exception as e:
+            log_print(f"Gemma create_chat_completion failed: {e}")
+            return "", True
+
+        for chunk in stream:
+            ch0 = chunk["choices"][0]
+            delta = ch0.get("delta") or {}
+            piece = delta.get("content") or ""
+            if piece:
+                parts.append(piece)
+            acc = "".join(parts)
+            if "</refined>" in acc:
+                break
+            if self._is_gemma_unused_degeneracy(acc):
+                log_transcription(" Gemma refiner: early-abort on <unused*> degeneracy.")
+                return "", True
+
+        text = "".join(parts).strip()
+        if text and self._is_gemma_unused_degeneracy(text):
+            return "", True
+        return text, False
+
+    def _run_gemma_raw_prompt_stream(self, prompt: str, max_tokens: int, stop_tokens) -> tuple[str, bool]:
+        """Last-resort Gemma raw prompt stream with degeneration detection."""
+        stop_list = list(stop_tokens) if isinstance(stop_tokens, (list, tuple)) else (
+            [stop_tokens] if stop_tokens else []
+        )
+        for stop in ("</refined>", "<end_of_turn>", "<end_of_turn>\n", "</start_of_turn>", "</start_of_turn>\n"):
+            if stop not in stop_list:
+                stop_list.append(stop)
+
+        gen_kw: dict = dict(
+            max_tokens=max_tokens,
+            stop=stop_list,
+            echo=False,
+            temperature=0.35,
+            top_p=0.92,
+            repeat_penalty=1.28,
+            seed=43,
+        )
+        parts: list[str] = []
+        for out in self.model(prompt, stream=True, **gen_kw):
+            chunk = out["choices"][0]["text"]
+            parts.append(chunk)
+            acc = "".join(parts)
+            if "</refined>" in acc:
+                break
+            if self._is_gemma_unused_degeneracy(acc):
+                log_transcription(" Gemma raw fallback: early-abort on <unused*> degeneracy.")
+                return "", True
+
+        text = "".join(parts).strip()
+        if text and self._is_gemma_unused_degeneracy(text):
+            return "", True
+        return text, False
 
     def _looks_like_structured_dictation(self, text):
         if not text:
@@ -1301,7 +1794,7 @@ class GrammarChecker:
             normalized += "."
         return normalized
 
-    def correct(self, text, is_command=False, language=None, language_prob=0.0):
+    def correct(self, text, is_command=False, language=None, language_prob=0.0, user_text=None):
         clean_text = text.strip()
         if not self.model or not clean_text:
             return _finalize_refiner_text(text, self.use_simplified_chinese_output)
@@ -1320,6 +1813,8 @@ class GrammarChecker:
 
         try:
             prompt_type = self.profile.get("prompt_type", "llama")
+            use_compact_formatter = False
+            use_minimal_system = False
 
             if is_command:
                 system_prompt = self.command_prompt or (
@@ -1331,20 +1826,36 @@ class GrammarChecker:
                 resolved_user = ""
                 if hasattr(self, "custom_prompts"):
                     resolved_user = self.custom_prompts.get(f"{self.character}|{self.tone}", "")
-                if self._should_fast_path_refine(clean_text, resolved_user):
+                if user_text is None:
+                    user_text = resolved_user
+                if self._should_fast_path_refine(clean_text, user_text):
                     log_print(f" [Fast Refine Path] Skipping LLM for simple short dictation ({len(clean_text)} chars).")
                     return _finalize_refiner_text(
                         self._fast_path_cleanup(text), self.use_simplified_chinese_output
                     )
 
+                use_compact_formatter = self._should_use_compact_formatter(clean_text, user_text)
+                use_minimal_system = self.profile.get("minimal_system")
+                if use_minimal_system is None:
+                    use_minimal_system = prompt_type == "gemma"
                 core_directive = self.get_effective_prompt(
                     language=lang_effective,
                     language_prob=prob_effective,
                     transcript=clean_text,
+                    user_text=user_text,
+                    omit_critical_rules=use_minimal_system,
                 )
-                system_prompt = models_config.get_system_formatter_for_transcript(
-                    language=lang_effective, transcript_char_len=len(clean_text)
-                )
+                if use_minimal_system or use_compact_formatter:
+                    system_prompt = models_config.get_system_formatter(
+                        language=lang_effective,
+                        prompt_type=prompt_type,
+                        compact=use_compact_formatter and not use_minimal_system,
+                        minimal=use_minimal_system,
+                    )
+                else:
+                    system_prompt = models_config.get_system_formatter_for_transcript(
+                        language=lang_effective, transcript_char_len=len(clean_text)
+                    )
                 user_content = (
                     f"[Core Directive]: {core_directive}\n"
                     f"[Transcript]: {text}\n"
@@ -1375,7 +1886,11 @@ class GrammarChecker:
                     "\nTHINKING MODE IS DISABLED. Do not output internal reasoning or analysis. "
                     "Return only the final answer inside <refined> tags."
                 )
-                if IS_MAC and self.tokenizer is not None and hasattr(self.tokenizer, "apply_chat_template"):
+                gemma_combined_user = f"{system_prompt}\n\n{user_content}"
+                if not IS_MAC:
+                    prompt = ""
+                    stop_tokens = []
+                elif self.tokenizer is not None and hasattr(self.tokenizer, "apply_chat_template"):
                     messages = [
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_content},
@@ -1404,26 +1919,66 @@ class GrammarChecker:
                 )
                 stop_tokens = ["<|eot_id|>"]
 
-            # 2. Proportional max_tokens: CJK-heavy text needs ~1 token/char of headroom; cap runaway at 4096.
-            char_n = len(clean_text)
-            word_n = len(clean_text.split())
-            input_tokens_est = max(char_n // 2, word_n * 3, char_n // 4 + 200)
-            max_tokens = min(4096, max(256, int(char_n * 1.3) + 512, input_tokens_est * 3))
+            # 2. Proportional max_tokens cap to prevent runaway generation
+            short_system = use_compact_formatter
+            if not is_command:
+                short_system = short_system or use_minimal_system
+            if IS_MAC:
+                input_tokens_est = max(len(clean_text) // 3, len(clean_text.split()))
+                if prompt_type == "chatml":
+                    max_tokens = min(96 if short_system else 128, max(24, input_tokens_est))
+                else:
+                    max_tokens = min(96 if short_system else 144, max(32, int(input_tokens_est * 1.5)))
+            else:
+                char_n = len(clean_text)
+                word_n = len(clean_text.split())
+                input_tokens_est = max(char_n // 2, word_n * 3, char_n // 4 + 200)
+                max_tokens = min(4096, max(256, int(char_n * 1.3) + 512, input_tokens_est * 3))
 
-            ref_mode = "long_ctx" if len(clean_text) > 300 else "standard"
+            if is_command:
+                _mode = "command"
+            elif use_minimal_system:
+                _mode = "minimal"
+            elif use_compact_formatter:
+                _mode = "compact"
+            else:
+                _mode = "full"
+            if not IS_MAC and len(clean_text) > 300:
+                _mode = "long_ctx"
             log_print(
-                f" Refiner prompt mode: {ref_mode} "
+                f" Refiner prompt mode: {_mode} "
                 f"(prompt_type={prompt_type}, prompt_chars={len(system_prompt) + len(user_content)}, max_tokens={max_tokens})"
             )
 
-            if IS_MAC:
+            gemma_degenerate = False
+            if prompt_type == "gemma" and not IS_MAC:
+                raw_response, gemma_degenerate = self._run_gemma_chat_completion(
+                    gemma_combined_user, max_tokens
+                )
+                if gemma_degenerate:
+                    log_transcription(" Gemma: chat path degenerate; retrying two-turn system/user template...")
+                    prompt_fb = (
+                        f"<start_of_turn>system\n{system_prompt}<end_of_turn>\n"
+                        f"<start_of_turn>user\n{user_content}<end_of_turn>\n"
+                        "<start_of_turn>model\n"
+                    )
+                    raw_response, gemma_degenerate = self._run_gemma_raw_prompt_stream(
+                        prompt_fb, max_tokens, ["<end_of_turn>"]
+                    )
+                if gemma_degenerate:
+                    log_transcription(
+                        " Gemma refiner degeneracy (<unused*> / bad distribution). Using ASR transcript."
+                    )
+                    return _finalize_refiner_text(clean_text, self.use_simplified_chinese_output)
+            elif IS_MAC:
                 # --- MLX Execution ---
+                # Omit sampler: mlx_lm uses argmax (greedy) by default—fast, deterministic polish.
                 output = self.mlx_generate(
-                    self.model, 
-                    self.tokenizer, 
-                    prompt=prompt, 
+                    self.model,
+                    self.tokenizer,
+                    prompt=prompt,
                     max_tokens=max_tokens,
-                    verbose=False
+                    verbose=False,
                 )
                 raw_response = output.strip()
             else:
@@ -1433,10 +1988,10 @@ class GrammarChecker:
                     max_tokens=max_tokens,
                     stop=stop_tokens, 
                     echo=False,
-                    temperature=0.4,     # Increased from 0.3 to reduce determinism
-                    repeat_penalty=1.2,  # Prevents token-level loops
-                    frequency_penalty=0.5, # Specifically discourages character repetition
-                    top_p=0.9,
+                    temperature=models_config.REFINER_TEMPERATURE,
+                    repeat_penalty=models_config.REFINER_REPEAT_PENALTY,
+                    frequency_penalty=models_config.REFINER_FREQUENCY_PENALTY,
+                    top_p=models_config.REFINER_TOP_P,
                     min_p=0.01,
                 )
                 raw_response = output['choices'][0]['text'].strip()
@@ -1747,9 +2302,16 @@ class GrammarChecker:
 
         return refined_text
     def unload_model(self):
+        released = False
         if self.model:
             del self.model
-            self.model = None
+            released = True
+        self.model = None
+        self.tokenizer = None
+        self.mlx_generate = None
+        self.loading_error = None
+        _release_accelerator_memory("grammar unload")
+        if released:
             log_print("Grammar Model Unloaded.")
 
 
@@ -1856,6 +2418,10 @@ class VoiceInputApp:
         self.last_mic_retry_time = 0
         self.mic_retry_interval = 5.0
         DOWNLOAD_PROGRESS_REPORTER = self.emit_download_progress
+
+        # Paste/typing diagnostics (macOS permissions are a common failure mode)
+        self._warned_paste_permissions = False
+        self._warned_hotkey_permissions = False
         
         # Load Config (FINAL STEP of init to prevent overwriting by defaults)
         self.load_config()
@@ -2148,6 +2714,30 @@ class VoiceInputApp:
             self.models_ready = True # Allow microphone capturing immediately after VAD is ready
         except Exception as e:
             log_print(f"\nError loading VAD: {e}")
+            if IS_MAC:
+                try:
+                    from silero_vad_onnx import load_silero_vad_onnx, VADIterator as OnnxVADIterator
+
+                    hub_dir = os.path.join(APP_DATA_DIR, "models", "hub")
+                    os.makedirs(hub_dir, exist_ok=True)
+                    self.vad_model = load_silero_vad_onnx(hub_dir)
+                    self._vad_is_onnx = True
+                    self.VADIterator = OnnxVADIterator
+                    self.get_speech_timestamps = None
+                    self.save_audio = None
+                    self.read_audio = None
+                    self.collect_chunks = None
+                    self.vad_iterator = OnnxVADIterator(
+                        self.vad_model,
+                        threshold=VAD_THRESHOLD,
+                        sampling_rate=SAMPLE_RATE,
+                        min_silence_duration_ms=self.silence_timeout_ms,
+                        speech_pad_ms=SPEECH_PAD_MS,
+                    )
+                    log_print("Silero VAD loaded via ONNX fallback (offline cache or download).")
+                    return
+                except Exception as e2:
+                    log_print(f"ONNX VAD fallback failed: {e2}")
             self.loading_status = "Error Loading VAD"
             if not self.headless:
                 self.update_tray_tooltip()
@@ -2258,10 +2848,22 @@ class VoiceInputApp:
                     self.loading_status = "Error Loading ASR"
                     return False
 
-            log_print("Using Parallel Load Strategy (Performance Mode)...")
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                futures = [executor.submit(load_grammar), executor.submit(load_asr)]
-                results = [f.result() for f in futures]
+            if IS_MAC:
+                # Import MLX on the main thread once; parallel workers have caused
+                # ImportError: Symbol not found: _cblas_cgemm$NEWLAPACK (libmlx vs Accelerate).
+                try:
+                    import mlx.core as _mlx_preflight  # noqa: F401
+                except Exception as preload_err:
+                    log_print(f"MLX preflight import failed: {preload_err}")
+                log_print("Using sequential model load on macOS (MLX stability).")
+                g_ok = load_grammar()
+                a_ok = load_asr()
+                results = [g_ok, a_ok]
+            else:
+                log_print("Using Parallel Load Strategy (Performance Mode)...")
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                    futures = [executor.submit(load_grammar), executor.submit(load_asr)]
+                    results = [f.result() for f in futures]
 
             if not results[1]: # Whisper is mandatory
                 log_print("CRITICAL: ASR model failed to load.")
@@ -2307,16 +2909,14 @@ class VoiceInputApp:
             
             idle_time = time.time() - self.last_activity_time
             log_print(f"Unloading Models (VRAM Saver - Idle for {idle_time:.1f}s)...")
-            # When unload_asr_on_idle is false (manual .user_prefs.json), ASR stays resident for lower wake latency.
-            if getattr(self, "unload_asr_on_idle", True):
-                self.asr_model = None
+            # Always release ASR and refiner on idle. Keeping ASR resident saves wake latency
+            # but leaves CUDA/MLX/Metal memory allocated, which is the VRAM/unified-memory leak users notice.
+            self.asr_model = None
+            self.mlx_asr_local_path = None
+            self.mlx_asr_warmed = False
             self.grammar_checker.unload_model()
             self.grammar_checker.context_buffer = "" # Clear conversation context
-            
-            # Force Garbage Collection
-            gc.collect()
-            if torch is not None and torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            _release_accelerator_memory("idle heavy model unload")
             
             self.heavy_models_loaded = False
             self.loading_status = "Idle (VRAM Free)"
@@ -2394,6 +2994,11 @@ class VoiceInputApp:
         try:
             config_path = os.path.join(APP_DATA_DIR, "config.json")
             prefs_path = os.path.join(APP_DATA_DIR, ".user_prefs.json")
+            if not hasattr(self, "_logged_prefs_paths"):
+                self._logged_prefs_paths = True
+                log_print(f"Prefs Diagnostic - APP_DATA_DIR: {APP_DATA_DIR}")
+                log_print(f"Prefs Diagnostic - prefs_path: {prefs_path}")
+                log_print(f"Prefs Diagnostic - config_path: {config_path}")
             old_refiner = getattr(self, "current_refiner", "")
             old_active_asr = getattr(self, "active_asr_name", "")
             old_asr_repo = getattr(self, "active_mlx_repo", None) or globals().get("WHISPER_REPO", "")
@@ -2596,7 +3201,8 @@ class VoiceInputApp:
                         "file_name": p.get("file_name"),
                         "prompt_type": p.get("prompt_type"),
                         "description": p.get("description", ""),
-                        "mlx_repo": p.get("mlx_repo")
+                        "mlx_repo": p.get("mlx_repo"),
+                        "minimal_system": p.get("minimal_system", False),
                     }
                     # REMOVED recursive usage tracking here
                     break
@@ -2620,6 +3226,16 @@ class VoiceInputApp:
             
             if hasattr(self, 'grammar_checker'):
                 self.grammar_checker.profile = profile
+                if not hasattr(self, "_logged_effective_settings"):
+                    self._logged_effective_settings = True
+                log_print(
+                    "Effective Settings - "
+                    f"ASR='{getattr(self, 'active_asr_name', '')}', "
+                    f"Refiner='{self.current_refiner}', "
+                    f"VAD auto_stop={self.auto_stop_enabled}, "
+                    f"silence_timeout_ms={self.silence_timeout_ms}, "
+                    f"vram_timeout_s={self.vram_timeout}"
+                )
 
                 if old_refiner and self.current_refiner != old_refiner:
                     log_print(f"Refiner change detected: {old_refiner} -> {self.current_refiner}")
@@ -2811,10 +3427,22 @@ class VoiceInputApp:
             
 
     def update_tray_tooltip(self):
-        if self.icon:
-            gpu_status = "GPU" if (torch is not None and torch.cuda.is_available()) else "CPU"
-            hk_display = getattr(self, 'hotkey_str', 'F8').upper()
-            self.icon.title = f"Privox: {self.loading_status} ({gpu_status})\nHotkey: {hk_display}"
+        if not self.icon:
+            return
+        gpu_status = "GPU" if (torch is not None and torch.cuda.is_available()) else "CPU"
+        hk_display = getattr(self, 'hotkey_str', 'F8').upper()
+        title = f"Privox: {self.loading_status} ({gpu_status})\nHotkey: {hk_display}"
+
+        def apply():
+            try:
+                self.icon.title = title
+            except Exception as e:
+                log_print(f"Tray tooltip update failed: {e}")
+
+        if IS_MAC:
+            run_on_main_thread_mac(apply)
+        else:
+            apply()
 
     def update_status(self, status):
         # status: READY, RECORDING, PROCESSING, ERROR, DOWNLOADING, INITIALIZING, SLEEP
@@ -2897,7 +3525,11 @@ class VoiceInputApp:
                     time.sleep(0.5)
 
                 if new_icon:
-                    self.icon.icon = new_icon
+                    img = new_icon
+                    if IS_MAC:
+                        run_on_main_thread_mac(lambda i=img: setattr(self.icon, "icon", i))
+                    else:
+                        self.icon.icon = img
                     
             except Exception as e:
                 log_print(f"Anim Error: {e}")
@@ -3314,7 +3946,66 @@ class VoiceInputApp:
                 else:
                     log_print("STATUS: READY")
 
+    def transcribe_file(self, audio_path):
+        """Headless Swift-owned microphone path: read a WAV file and reuse the normal ASR/refiner pipeline."""
+        try:
+            audio_data = self._load_wav_as_float32(audio_path)
+        except Exception as e:
+            log_print(f"Audio File Error: {e}")
+            if self.headless:
+                log_print("STATUS: READY")
+            elif not self.headless:
+                self.update_status("READY")
+            return
+
+        threading.Thread(target=self.transcribe, args=(audio_data,), daemon=True).start()
+
+    def _load_wav_as_float32(self, audio_path):
+        if not audio_path:
+            raise ValueError("Missing audio file path")
+        if not os.path.exists(audio_path):
+            raise FileNotFoundError(audio_path)
+
+        with wave.open(audio_path, "rb") as wav_file:
+            channels = wav_file.getnchannels()
+            sample_width = wav_file.getsampwidth()
+            sample_rate = wav_file.getframerate()
+            frame_count = wav_file.getnframes()
+            raw = wav_file.readframes(frame_count)
+
+        if frame_count <= 0 or not raw:
+            raise ValueError("Audio file is empty")
+
+        if sample_width == 1:
+            audio = (np.frombuffer(raw, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
+        elif sample_width == 2:
+            audio = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
+        elif sample_width == 4:
+            audio = np.frombuffer(raw, dtype="<i4").astype(np.float32) / 2147483648.0
+        else:
+            raise ValueError(f"Unsupported WAV sample width: {sample_width}")
+
+        if channels > 1:
+            audio = audio.reshape(-1, channels).mean(axis=1)
+
+        if sample_rate != SAMPLE_RATE:
+            duration = len(audio) / float(sample_rate)
+            target_len = max(1, int(round(duration * SAMPLE_RATE)))
+            source_x = np.linspace(0.0, duration, num=len(audio), endpoint=False)
+            target_x = np.linspace(0.0, duration, num=target_len, endpoint=False)
+            audio = np.interp(target_x, source_x, audio).astype(np.float32)
+        else:
+            audio = audio.astype(np.float32, copy=False)
+
+        return np.clip(audio, -1.0, 1.0)
+
     def paste_text(self, text):
+        if IS_MAC and self.headless and os.environ.get("PRIVOX_SWIFT_PASTE_OWNER", "0") == "1":
+            payload = base64.b64encode((text or "").encode("utf-8")).decode("ascii")
+            log_print(f"DETAIL: PASTE_TEXT_B64|{payload}")
+            return
+
+        restore_clipboard = True
         try:
             original_clipboard = pyperclip.paste()
             pyperclip.copy(text)
@@ -3324,27 +4015,96 @@ class VoiceInputApp:
             time.sleep(initial_clipboard_delay + self.paste_delay_seconds)
             
             if IS_MAC:
-                # Use AppleScript to paste on macOS to bypass pynput Sandbox inheritance blocks
-                import subprocess
-                subprocess.run([
-                    "osascript", 
-                    "-e", 
-                    'tell application "System Events" to keystroke "v" using command down'
-                ])
+                pasted = False
+                keyboard_err = None
+                try:
+                    # Prefer native synthetic key event first on macOS.
+                    with self.keyboard_controller.pressed(keyboard.Key.cmd):
+                        self.keyboard_controller.press('v')
+                        self.keyboard_controller.release('v')
+                    pasted = True
+                except Exception as ke:
+                    keyboard_err = ke
+                    log_print(f"Paste Error (keyboard cmd+v): {ke}")
+
+                allow_applescript_paste = os.environ.get("PRIVOX_ALLOW_APPLESCRIPT_PASTE", "0") == "1"
+                if not pasted and allow_applescript_paste:
+                    # Legacy fallback: AppleScript System Events. Disabled by default because it
+                    # introduces a separate Automation TCC permission path that can confuse users.
+                    import subprocess
+                    proc = subprocess.run(
+                        [
+                            "osascript",
+                            "-e",
+                            'tell application "System Events" to keystroke "v" using command down',
+                        ],
+                        capture_output=True,
+                        text=True,
+                    )
+                    if proc.returncode == 0:
+                        pasted = True
+                    else:
+                        err = (proc.stderr or proc.stdout or "").strip()
+                        log_print(f"Paste Error (osascript rc={proc.returncode}): {err}")
+                        if (not self._warned_paste_permissions) and (
+                            "not authorised" in err.lower()
+                            or "not authorized" in err.lower()
+                            or "not allowed" in err.lower()
+                            or "system events got an error" in err.lower()
+                            or "(-1743)" in err
+                            or "(-1719)" in err
+                            or "(1002)" in err
+                        ):
+                            # Show once per session; users typically need Accessibility and Automation.
+                            self._warned_paste_permissions = True
+                            _mac_prompt_enable_permissions(
+                                need_accessibility=(not _mac_is_accessibility_trusted()),
+                                # Input Monitoring cannot be reliably probed; suggest it when Accessibility is off.
+                                need_input_monitoring=(not _mac_is_accessibility_trusted()),
+                                need_automation=True,
+                            )
+
+                if not pasted:
+                    # Critical UX fallback: keep transcribed text in clipboard for manual Cmd+V.
+                    restore_clipboard = False
+                    log_print(
+                        "Paste failed via synthetic keyboard event. "
+                        "Keeping transcript in clipboard for manual paste. "
+                        "Grant Accessibility and Input Monitoring to Privox; set PRIVOX_ALLOW_APPLESCRIPT_PASTE=1 only for legacy Automation fallback."
+                    )
+                    if IS_MAC and (not self._warned_paste_permissions):
+                        self._warned_paste_permissions = True
+                        _mac_prompt_enable_permissions(
+                            need_accessibility=(not _mac_is_accessibility_trusted()),
+                            need_input_monitoring=True,
+                            need_automation=False,
+                        )
+                    if keyboard_err and not self.headless:
+                        try:
+                            self.sound_manager.play_error()
+                        except Exception:
+                            pass
             else:
                 modifier = keyboard.Key.cmd if IS_MAC else keyboard.Key.ctrl
                 with self.keyboard_controller.pressed(modifier):
                     self.keyboard_controller.press('v')
                     self.keyboard_controller.release('v')
                 
-            time.sleep(0.05)
-            pyperclip.copy(original_clipboard)
+            time.sleep(0.20)
+            if restore_clipboard:
+                pyperclip.copy(original_clipboard)
         except Exception as e:
             log_print(f"Paste Error: {e}")
             if not self.headless:
                 self.keyboard_controller.type(text)
 
     def start_audio_stream(self):
+        if IS_MAC and self.headless and os.environ.get("PRIVOX_SWIFT_AUDIO_OWNER", "0") == "1":
+            self.mic_active = True
+            log_print("Swift owns microphone capture; Python microphone stream is disabled.")
+            log_print("DETAIL: MICROPHONE_STREAM_ACTIVE")
+            return
+
         with self.audio_stream_lock:
             self.last_mic_retry_time = time.time()
             if self.mic_active and self.stream is not None:
@@ -3395,10 +4155,16 @@ class VoiceInputApp:
                     self.sound_manager.play_error()
 
     def processing_loop(self):
-        self.start_audio_stream()
+        swift_audio_owner = IS_MAC and self.headless and os.environ.get("PRIVOX_SWIFT_AUDIO_OWNER", "0") == "1"
+        if swift_audio_owner:
+            self.mic_active = True
+            log_print("DETAIL: MICROPHONE_STREAM_ACTIVE")
+            log_print("Swift microphone owner enabled; waiting for TRANSCRIBE_FILE IPC commands.")
+        else:
+            self.start_audio_stream()
             
         while self.running:
-            if not self.mic_active and (time.time() - self.last_mic_retry_time) >= self.mic_retry_interval:
+            if (not swift_audio_owner) and not self.mic_active and (time.time() - self.last_mic_retry_time) >= self.mic_retry_interval:
                 log_print("Microphone inactive. Attempting automatic audio reconnect...")
                 self.start_audio_stream()
 
@@ -3484,7 +4250,19 @@ class VoiceInputApp:
         if self.settings_process and self.settings_process.poll() is None:
             # Already running
             return
-            
+
+        if IS_MAC and getattr(sys, "frozen", False):
+            swift_ui = os.path.join(os.path.dirname(sys.executable), "PrivoxSwiftUI")
+            if os.path.isfile(swift_ui) and os.access(swift_ui, os.X_OK):
+                env = os.environ.copy()
+                env["PRIVOX_SWIFT_SETTINGS_ONLY"] = "1"
+                log_print(f"Launching SwiftUI settings helper: {swift_ui}")
+                try:
+                    subprocess.Popen([swift_ui], env=env, cwd=os.path.dirname(swift_ui))
+                    return
+                except OSError as exc:
+                    log_print(f"SwiftUI settings helper failed ({exc}); falling back to Qt GUI.")
+
         gui_path = resource_path("src/gui_settings.py")
         if not getattr(sys, 'frozen', False):
             # In Dev mode, we might need absolute path
@@ -3526,6 +4304,8 @@ class VoiceInputApp:
         # Cleanup
         if self.icon:
             self.icon.stop()
+
+        self._release_mac_instance_lock()
         
         if getattr(sys, 'frozen', False):
             args = [sys.executable]
@@ -3626,17 +4406,29 @@ class VoiceInputApp:
                 line = sys.stdin.readline()
                 if not line:
                     break
-                command = line.strip().upper()
+                raw_command = line.strip()
+                command = raw_command.upper()
                 if command == "QUIT":
                     log_print("IPC Command: QUIT received.")
                     self.running = False
                     os._exit(0)
+                elif raw_command.startswith("TRANSCRIBE_FILE|"):
+                    audio_path = raw_command.split("|", 1)[1]
+                    log_print(f"IPC Command: TRANSCRIBE_FILE received: {audio_path}")
+                    if not self.heavy_models_loaded:
+                        log_print("Models not fully loaded. Loading before file transcription...")
+                        self.load_heavy_models()
+                    self.transcribe_file(audio_path)
                 elif command == "TOGGLE" or command == "RECORD":
                     log_print(f"IPC Command: {command} received. Toggling recording...")
                     self.toggle_hotkey()
                 elif command == "RECONNECT_AUDIO":
-                    log_print("IPC Command: RECONNECT_AUDIO received. Restarting microphone stream...")
-                    self.start_audio_stream()
+                    if IS_MAC and self.headless and os.environ.get("PRIVOX_SWIFT_AUDIO_OWNER", "0") == "1":
+                        log_print("IPC Command: RECONNECT_AUDIO ignored because Swift owns microphone capture.")
+                        log_print("DETAIL: MICROPHONE_STREAM_ACTIVE")
+                    else:
+                        log_print("IPC Command: RECONNECT_AUDIO received. Restarting microphone stream...")
+                        self.start_audio_stream()
                 elif command == "RELOAD_CONFIG":
                     log_print("IPC Command: RELOAD_CONFIG received. Reloading preferences...")
                     self.load_config()
@@ -3648,36 +4440,56 @@ class VoiceInputApp:
                 log_print(f"IPC Read Error: {e}")
                 time.sleep(1)
 
+    def _release_mac_instance_lock(self):
+        """Release GUI single-instance flock before subprocess restart (parent may still be alive briefly)."""
+        _mac_release_gui_singleton_lock()
+        self._mac_instance_lock_fp = None
+
     def run(self):
-        # Start Threads
-        threading.Thread(target=self.processing_loop, daemon=True).start()
-        
-        # --- Headless Mode ---
+        self.mutex_handle = None
+        self._mac_instance_lock_fp = _MAC_GUI_SINGLETON_LOCK_FP
+
+        # --- Headless Mode (Swift 內嵌 Python 等)：不與選單列 .app 搶同一個 flock ---
         if self.headless:
+            threading.Thread(target=self.processing_loop, daemon=True).start()
             log_print("Running in headless mode. Bypassing PyStray and Pynput.")
             self.headless_ipc_loop()
             return
-        
-        # --- GUI Mode (Windows/Linux) ---
-        # Single Instance Mutex Check (Windows)
-        self.mutex_handle = None
+
+        # --- GUI：鎖應已在 __main__ 取得；若只呼叫 run()（例如測試），則在此補拿 ---
+        if IS_MAC:
+            if not _mac_try_acquire_gui_singleton_lock():
+                sys.exit(0)
+            self._mac_instance_lock_fp = _MAC_GUI_SINGLETON_LOCK_FP
+            _mac_log_permissions_diagnostics()
+            _mac_maybe_prompt_install_location()
+            if (not self._warned_hotkey_permissions) and (not _mac_is_accessibility_trusted()):
+                # Do not block startup; just guide the user once.
+                self._warned_hotkey_permissions = True
+                _mac_prompt_enable_permissions(
+                    need_accessibility=True,
+                    need_input_monitoring=True,
+                    need_automation=False,
+                )
+
         if sys.platform == 'win32':
             mutex_name = "Global\\Privox_SingleInstance_Mutex"
             self.mutex_handle = ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name)
             last_error = ctypes.windll.kernel32.GetLastError()
-            
-            # ERROR_ALREADY_EXISTS = 183
+
             if last_error == 183:
                 log_print("Another instance of Privox is already running. Exiting.")
                 if self.mutex_handle:
                     ctypes.windll.kernel32.CloseHandle(self.mutex_handle)
-                
-                # POPUP to let user know why it's invisible
+                self._release_mac_instance_lock()
                 ctypes.windll.user32.MessageBoxW(0, "Privox is already running in the background.\nCheck your system tray or Task Manager.", "Privox", 0x40)
                 sys.exit(0)
-            
+
             log_print("Acquired single-instance mutex.")
 
+        threading.Thread(target=self.processing_loop, daemon=True).start()
+
+        # --- GUI Mode: system tray (Windows / Linux / macOS frozen bundle) ---
         # Setup Tray Menu
         menu = pystray.Menu(
             pystray.MenuItem('Settings...', self.show_settings_gui),
@@ -3726,6 +4538,11 @@ if __name__ == "__main__":
     try:
         gpu_detected = torch is not None and torch.cuda.is_available()
 
+        is_headless = "--headless" in sys.argv
+        if IS_MAC and not is_headless:
+            if not _mac_try_acquire_gui_singleton_lock():
+                sys.exit(0)
+
         logging.info("--- VoiceInputApp Startup ---")
         logging.info(f"Python Executable: {sys.executable}")
         logging.info(f"sys.path: {sys.path}")
@@ -3734,8 +4551,7 @@ if __name__ == "__main__":
             logging.info(f"Using GPU: {torch.cuda.get_device_name(0)}")
         else:
             logging.warning("GPU NOT DETECTED early. Processing may be slow.")
-        
-        is_headless = "--headless" in sys.argv
+
         app = VoiceInputApp(headless=is_headless)
         app.run()
     except Exception as e:
@@ -3745,4 +4561,15 @@ if __name__ == "__main__":
         if sys.platform == 'win32':
             import ctypes
             ctypes.windll.user32.MessageBoxW(0, f"Privox failed to start:\n\n{e}\n\nCheck privox_app.log for details.", "Privox Fatal Error", 0x10)
+        elif IS_MAC:
+            # LSUIElement apps have no console; surface fatal errors in a dialog.
+            subprocess.run(
+                [
+                    "osascript",
+                    "-e",
+                    'display dialog "Privox failed to start. See privox_app.log in ~/Library/Application Support/Privox (or /tmp if fallback)." '
+                    'buttons {"OK"} default button "OK" with icon stop with title "Privox"',
+                ],
+                check=False,
+            )
         sys.exit(1)

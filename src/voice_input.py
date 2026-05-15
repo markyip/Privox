@@ -891,271 +891,273 @@ class GrammarChecker:
         self.icon = None # Placeholder
         self.context_buffer = "" # Max 2000 chars of conversation history
         self._has_loaded_once = False  # Instance-level: tracks if we've loaded before (for verbose control)
+        self.lock = threading.RLock()
 
     def load_model(self, attempts=0):
-        if self.model:
-            return True
-            
-        if attempts > 2:
-            log_print("CRITICAL: Model loading failed after 3 attempts. Stopping to prevent infinite loop.")
-            self.loading_error = "Model loading failed repeatedly. Please check your internet connection or model files."
-            if self.icon:
-                self.icon.notify("Privox Error: Model loading failed repeatedly. Check logs.", "Privox")
-            return False
-
-        repo_id = self.profile.get("repo_id", GRAMMAR_REPO)
-        file_name = self.profile.get("file_name", GRAMMAR_FILE)
-        profile_name = self.profile.get("name", "")
-        is_reload = self._has_loaded_once  # True on wake-from-idle, False on first boot
-        log_print(
-            f"Resolved Refiner Profile: name={profile_name or 'N/A'}, repo_id={repo_id}, file_name={file_name}, "
-            f"prompt_type={self.profile.get('prompt_type', 'unknown')}"
-        )
-
-        # --- Optimization 3: Skip HF cache probe if local file already exists ---
-        local_model_path = os.path.join(BASE_DIR, "models", file_name)
-        if os.path.exists(local_model_path):
-            if not is_reload:
-                log_print(f"Found local model: {local_model_path}")
-            model_path = local_model_path
-        else:
-            try:
-                # Check/Download from Hugging Face
-                log_print(f"Checking Hugging Face for Refiner Model ({repo_id})...")
+        with self.lock:
+            if self.model:
+                return True
                 
-                # First try to get it from cache or defined local dir
-                try:
-                    model_path = hf_hub_download(
-                        repo_id=repo_id, 
-                        filename=file_name, 
-                        local_files_only=True
-                    )
-                    log_print(f"Found in Hugging Face cache: {model_path}")
-                except Exception:
-                    log_print(f"Model not in cache. Downloading {file_name} from {repo_id}...")
-                    local_dir = os.path.join(BASE_DIR, "models")
-                    if not os.path.exists(local_dir):
-                        os.makedirs(local_dir, exist_ok=True)
-                    
-                    model_path = hf_hub_download(
-                        repo_id=repo_id, 
-                        filename=file_name,
-                        local_dir=local_dir
-                    )
-                    log_print(f"Download complete: {model_path}")
-                
-                # Verify file integrity
-                if os.path.exists(model_path):
-                    f_size = os.path.getsize(model_path)
-                    log_print(f"Model file verified: {model_path} ({f_size / 1024**2:.2f} MB)")
-                    min_b = models_config.refiner_gguf_min_complete_bytes(file_name)
-                    if f_size < min_b:
-                         log_print(
-                             "WARNING: Model file seems too small or incomplete. Moving to backup/re-download."
-                         )
-                         if os.path.exists(model_path + ".bak"):
-                             try: os.remove(model_path + ".bak")
-                             except: pass
-                         os.rename(model_path, model_path + ".bak")
-                         return self.load_model(attempts=attempts + 1) # Recursive retry
-            except Exception as e:
-                log_print(f"\nCRITICAL: Failed to download/locate model: {e}")
-                self.loading_error = f"Download Failed: {e}"
+            if attempts > 2:
+                log_print("CRITICAL: Model loading failed after 3 attempts. Stopping to prevent infinite loop.")
+                self.loading_error = "Model loading failed repeatedly. Please check your internet connection or model files."
                 if self.icon:
-                     self.icon.notify(f"Error: Could not download refiner ({file_name}). Check internet or place in 'models' folder.", "Privox Error")
+                    self.icon.notify("Privox Error: Model loading failed repeatedly. Check logs.", "Privox")
                 return False
-
-        try:
-            # --- Optimization 2: Cache llama_cpp import, skip diagnostics on reload ---
-            if not GrammarChecker._llama_imported:
-                log_print("Importing llama_cpp...")
+    
+            repo_id = self.profile.get("repo_id", GRAMMAR_REPO)
+            file_name = self.profile.get("file_name", GRAMMAR_FILE)
+            profile_name = self.profile.get("name", "")
+            is_reload = self._has_loaded_once  # True on wake-from-idle, False on first boot
+            log_print(
+                f"Resolved Refiner Profile: name={profile_name or 'N/A'}, repo_id={repo_id}, file_name={file_name}, "
+                f"prompt_type={self.profile.get('prompt_type', 'unknown')}"
+            )
+    
+            # --- Optimization 3: Skip HF cache probe if local file already exists ---
+            local_model_path = os.path.join(BASE_DIR, "models", file_name)
+            if os.path.exists(local_model_path):
+                if not is_reload:
+                    log_print(f"Found local model: {local_model_path}")
+                model_path = local_model_path
+            else:
                 try:
-                    import llama_cpp
-                    llama_version = getattr(llama_cpp, '__version__', 'Unknown')
-                    log_print(f"llama-cpp-python Version: {llama_version}")
-                    _sys_fn = getattr(llama_cpp, "llama_system_info", getattr(llama_cpp, "llama_print_system_info", None))
-                    sys_info = _sys_fn() if _sys_fn else b""
-                    log_print(f"llama-cpp-python System Info: {sys_info}")
-                    sys_info_text = str(sys_info)
-                    llama_has_cuda = ("CUDA = 1" in sys_info_text) or ("CUDA :" in sys_info_text)
-                    if llama_has_cuda:
-                        log_print("GPU Backend detected in llama-cpp-python.")
-                    else:
-                        log_print("WARNING: llama-cpp-python appears to be CPU-ONLY.")
-                except ImportError as ie:
-                    log_print(f"CRITICAL: Failed to import llama_cpp: {ie}")
-                    raise ie
-                
-                from llama_cpp import Llama
-                GrammarChecker._Llama = Llama
-                GrammarChecker._llama_imported = True
-
-                # Newer GGUF families require newer llama runtime to parse/load reliably.
-                model_sig = (repo_id + " " + file_name).lower()
-                needs_new_runtime = ("gemma-4" in model_sig) or ("qwen3.5" in model_sig)
-                if needs_new_runtime:
+                    # Check/Download from Hugging Face
+                    log_print(f"Checking Hugging Face for Refiner Model ({repo_id})...")
+                    
+                    # First try to get it from cache or defined local dir
                     try:
-                        v_parts = [int(p) for p in str(llama_version).split('.')[:3]]
-                        while len(v_parts) < 3:
-                            v_parts.append(0)
-                        # Windows cp312 abetlen CUDA wheels often stop at 0.3.19; 0.3.19+ is acceptable here.
-                        if tuple(v_parts) < (0, 3, 19):
+                        model_path = hf_hub_download(
+                            repo_id=repo_id, 
+                            filename=file_name, 
+                            local_files_only=True
+                        )
+                        log_print(f"Found in Hugging Face cache: {model_path}")
+                    except Exception:
+                        log_print(f"Model not in cache. Downloading {file_name} from {repo_id}...")
+                        local_dir = os.path.join(BASE_DIR, "models")
+                        if not os.path.exists(local_dir):
+                            os.makedirs(local_dir, exist_ok=True)
+                        
+                        model_path = hf_hub_download(
+                            repo_id=repo_id, 
+                            filename=file_name,
+                            local_dir=local_dir
+                        )
+                        log_print(f"Download complete: {model_path}")
+                    
+                    # Verify file integrity
+                    if os.path.exists(model_path):
+                        f_size = os.path.getsize(model_path)
+                        log_print(f"Model file verified: {model_path} ({f_size / 1024**2:.2f} MB)")
+                        min_b = models_config.refiner_gguf_min_complete_bytes(file_name)
+                        if f_size < min_b:
+                             log_print(
+                                 "WARNING: Model file seems too small or incomplete. Moving to backup/re-download."
+                             )
+                             if os.path.exists(model_path + ".bak"):
+                                 try: os.remove(model_path + ".bak")
+                                 except: pass
+                             os.rename(model_path, model_path + ".bak")
+                             return self.load_model(attempts=attempts + 1) # Recursive retry
+                except Exception as e:
+                    log_print(f"\nCRITICAL: Failed to download/locate model: {e}")
+                    self.loading_error = f"Download Failed: {e}"
+                    if self.icon:
+                         self.icon.notify(f"Error: Could not download refiner ({file_name}). Check internet or place in 'models' folder.", "Privox Error")
+                    return False
+    
+            try:
+                # --- Optimization 2: Cache llama_cpp import, skip diagnostics on reload ---
+                if not GrammarChecker._llama_imported:
+                    log_print("Importing llama_cpp...")
+                    try:
+                        import llama_cpp
+                        llama_version = getattr(llama_cpp, '__version__', 'Unknown')
+                        log_print(f"llama-cpp-python Version: {llama_version}")
+                        _sys_fn = getattr(llama_cpp, "llama_system_info", getattr(llama_cpp, "llama_print_system_info", None))
+                        sys_info = _sys_fn() if _sys_fn else b""
+                        log_print(f"llama-cpp-python System Info: {sys_info}")
+                        sys_info_text = str(sys_info)
+                        llama_has_cuda = ("CUDA = 1" in sys_info_text) or ("CUDA :" in sys_info_text)
+                        if llama_has_cuda:
+                            log_print("GPU Backend detected in llama-cpp-python.")
+                        else:
+                            log_print("WARNING: llama-cpp-python appears to be CPU-ONLY.")
+                    except ImportError as ie:
+                        log_print(f"CRITICAL: Failed to import llama_cpp: {ie}")
+                        raise ie
+                    
+                    from llama_cpp import Llama
+                    GrammarChecker._Llama = Llama
+                    GrammarChecker._llama_imported = True
+    
+                    # Newer GGUF families require newer llama runtime to parse/load reliably.
+                    model_sig = (repo_id + " " + file_name).lower()
+                    needs_new_runtime = ("gemma-4" in model_sig) or ("qwen3.5" in model_sig)
+                    if needs_new_runtime:
+                        try:
+                            v_parts = [int(p) for p in str(llama_version).split('.')[:3]]
+                            while len(v_parts) < 3:
+                                v_parts.append(0)
+                            # Windows cp312 abetlen CUDA wheels often stop at 0.3.19; 0.3.19+ is acceptable here.
+                            if tuple(v_parts) < (0, 3, 19):
+                                self.loading_error = (
+                                    f"Incompatible llama-cpp-python runtime ({llama_version}) for this refiner model. "
+                                    "Upgrade to >=0.3.19 (CUDA build on GPU), e.g. run model setup or install_llama_cuda.py."
+                                )
+                                log_print(self.loading_error)
+                                return False
+                        except Exception:
+                            pass
+                        if cuda_is_available() and not llama_has_cuda:
                             self.loading_error = (
-                                f"Incompatible llama-cpp-python runtime ({llama_version}) for this refiner model. "
-                                "Upgrade to >=0.3.19 (CUDA build on GPU), e.g. run model setup or install_llama_cuda.py."
+                                "llama-cpp-python is CPU-only but a CUDA GPU appears available to Privox. "
+                                "Reinstall llama-cpp-python with the CUDA 12.4 wheel (do not use the CPU wheel). "
+                                "Run: python src/download_models.py or pip install with --extra-index-url cu124."
                             )
                             log_print(self.loading_error)
                             return False
-                    except Exception:
-                        pass
-                    if cuda_is_available() and not llama_has_cuda:
-                        self.loading_error = (
-                            "llama-cpp-python is CPU-only but a CUDA GPU appears available to Privox. "
-                            "Reinstall llama-cpp-python with the CUDA 12.4 wheel (do not use the CPU wheel). "
-                            "Run: python src/download_models.py or pip install with --extra-index-url cu124."
+                
+                Llama = GrammarChecker._Llama
+    
+                # Keep llama.cpp stdout/stderr noise minimal unless explicitly requested per profile.
+                use_verbose = bool(self.profile.get("llama_verbose", False))
+                last_init_error_text = ""
+    
+                def _safe_llama_init(m_path, n_gpu_layers, n_ctx, n_batch):
+                    nonlocal last_init_error_text
+                    try:
+                        _llama_kw: dict = dict(
+                            model_path=m_path,
+                            n_ctx=n_ctx,
+                            n_gpu_layers=n_gpu_layers,
+                            n_batch=n_batch,
+                            verbose=use_verbose,
+                            n_threads=min(4, os.cpu_count() // 2) if os.cpu_count() else 4,
                         )
-                        log_print(self.loading_error)
-                        return False
-            
-            Llama = GrammarChecker._Llama
-
-            # Keep llama.cpp stdout/stderr noise minimal unless explicitly requested per profile.
-            use_verbose = bool(self.profile.get("llama_verbose", False))
-            last_init_error_text = ""
-
-            def _safe_llama_init(m_path, n_gpu_layers, n_ctx, n_batch):
-                nonlocal last_init_error_text
-                try:
-                    _llama_kw: dict = dict(
-                        model_path=m_path,
-                        n_ctx=n_ctx,
-                        n_gpu_layers=n_gpu_layers,
-                        n_batch=n_batch,
-                        verbose=use_verbose,
-                        n_threads=min(4, os.cpu_count() // 2) if os.cpu_count() else 4,
-                    )
-                    # Gemma: llama.cpp chat path tokenizes with BOS (see llama_chat_format); raw
-                    # self.model(prompt) does not — causes <unused*> degeneracy on Gemma 4 GGUF.
-                    if (self.profile.get("prompt_type") or "").lower() == "gemma":
-                        _llama_kw["chat_format"] = "gemma"
-                    return Llama(**_llama_kw)
-                except (AssertionError, RuntimeError, ValueError) as e:
-                    last_init_error_text = str(e)
-                    err_msg = str(e).lower()
-                    if "out of memory" in err_msg or "cuda_error_out_of_memory" in err_msg or "failed to allocate" in err_msg:
-                        log_print(f"Llama initialization OOM ({type(e).__name__}) with n_gpu_layers={n_gpu_layers}, n_ctx={n_ctx}, n_batch={n_batch}.")
+                        # Gemma: llama.cpp chat path tokenizes with BOS (see llama_chat_format); raw
+                        # self.model(prompt) does not — causes <unused*> degeneracy on Gemma 4 GGUF.
+                        if (self.profile.get("prompt_type") or "").lower() == "gemma":
+                            _llama_kw["chat_format"] = "gemma"
+                        return Llama(**_llama_kw)
+                    except (AssertionError, RuntimeError, ValueError) as e:
+                        last_init_error_text = str(e)
+                        err_msg = str(e).lower()
+                        if "out of memory" in err_msg or "cuda_error_out_of_memory" in err_msg or "failed to allocate" in err_msg:
+                            log_print(f"Llama initialization OOM ({type(e).__name__}) with n_gpu_layers={n_gpu_layers}, n_ctx={n_ctx}, n_batch={n_batch}.")
+                            return None
+                        # Do NOT auto-delete model on generic ValueError/RuntimeError.
+                        # Some backends/models can raise ValueError for non-corruption reasons
+                        # (unsupported runtime combo, metadata parsing differences, etc.).
+                        # We only remove tiny obviously-incomplete files.
+                        log_print(f"Llama initialization failed ({type(e).__name__}): {e}")
+                        if os.path.exists(m_path):
+                            size_mb = os.path.getsize(m_path) / (1024 * 1024)
+                            if size_mb < 256:
+                                log_print(f"Model file appears incomplete ({size_mb:.1f} MB). Removing: {m_path}")
+                                try: os.remove(m_path)
+                                except: pass
                         return None
-                    # Do NOT auto-delete model on generic ValueError/RuntimeError.
-                    # Some backends/models can raise ValueError for non-corruption reasons
-                    # (unsupported runtime combo, metadata parsing differences, etc.).
-                    # We only remove tiny obviously-incomplete files.
-                    log_print(f"Llama initialization failed ({type(e).__name__}): {e}")
-                    if os.path.exists(m_path):
-                        size_mb = os.path.getsize(m_path) / (1024 * 1024)
-                        if size_mb < 256:
-                            log_print(f"Model file appears incomplete ({size_mb:.1f} MB). Removing: {m_path}")
-                            try: os.remove(m_path)
-                            except: pass
-                    return None
-
-            # Assertive GPU Offloading
-            is_gpu = cuda_is_available()
-            turboquant = bool(self.profile.get("turboquant", False))
-
-            # TurboQuant profile lowers context/batch defaults to reduce VRAM pressure.
-            default_n_ctx = 3072 if turboquant else 4096
-            n_ctx = int(self.profile.get("n_ctx", default_n_ctx))
-            n_batch = 256 if turboquant else 512
-
-            gpu_mem_gb = cuda_device_total_memory_gib(0) if is_gpu else 0.0
-
-            # Allow higher batching for modern 40-series cards (8GB-12GB) to speed up prompt processing.
-            if is_gpu and gpu_mem_gb:
-                if gpu_mem_gb <= 8.5:
-                    n_batch = min(n_batch, 128) # Safety cap for low-end cards
-                elif gpu_mem_gb <= 12.5:
-                    n_batch = min(n_batch, 512) # High-speed batching for 4070/4070Ti
-
-            # Bounded offload counts for stability; allow full offload for high-end cards.
-            if is_gpu:
-                preferred_layers = int(self.profile.get("n_gpu_layers", 42))
-                if gpu_mem_gb and gpu_mem_gb <= 8.5:
-                    preferred_layers = min(preferred_layers, 24)
-                layer_plan = [preferred_layers, 24, 16, 0]
-            else:
-                layer_plan = [0]
-
-            # Deduplicate while preserving order
-            seen = set()
-            layer_plan = [x for x in layer_plan if not (x in seen or seen.add(x))]
-
-            log_print(
-                f"Loading Llama (GPU={is_gpu}, vram_gb={gpu_mem_gb:.1f}, turboquant={turboquant}, n_ctx={n_ctx}, n_batch={n_batch}, layers_plan={layer_plan})"
-                f"{'  [Quick Reload]' if is_reload else ''}..."
-            )
-            self.model = None
-            for n_gpu_layers in layer_plan:
-                self.model = _safe_llama_init(model_path, n_gpu_layers, n_ctx, n_batch)
-                if self.model is not None:
-                    break
-                if is_gpu and n_gpu_layers != layer_plan[-1]:
-                    log_print(f"Retrying with lower GPU offload... next n_gpu_layers={layer_plan[layer_plan.index(n_gpu_layers) + 1]}")
-            
-            if self.model is None:
-                # Qwen-specific hard fallback for stubborn init failures.
-                is_qwen_profile = "qwen" in (repo_id + " " + file_name + " " + profile_name).lower()
-                if is_qwen_profile:
-                    qwen_fallback_n_ctx = 2048
-                    qwen_fallback_n_batch = 64
-                    qwen_fallback_layers = 0
-                    log_print(
-                        "Qwen hard-fallback triggered: retrying with "
-                        f"n_ctx={qwen_fallback_n_ctx}, n_batch={qwen_fallback_n_batch}, n_gpu_layers={qwen_fallback_layers}"
-                    )
-                    self.model = _safe_llama_init(
-                        model_path,
-                        qwen_fallback_layers,
-                        qwen_fallback_n_ctx,
-                        qwen_fallback_n_batch
-                    )
-
-                if self.model is not None:
-                    self._has_loaded_once = True
-                    log_print(f"Done. (GPU Acceleration: {'ENABLED' if is_gpu else 'DISABLED'}) [Qwen Hard Fallback]")
-                    return True
-
-                # Model file exists and full offload fallback exhausted, but backend still cannot parse/open it.
-                # Avoid repeating the same sequence; provide an actionable compatibility hint.
-                if "failed to load model from file" in (last_init_error_text or "").lower():
-                    self.loading_error = (
-                        "Model file format appears incompatible with current llama-cpp-python runtime. "
-                        "Please update llama-cpp-python and retry."
-                    )
-                    log_print(
-                        "Model init failed due to file/runtime compatibility (not VRAM offload). "
-                        "Skipping repeated retries."
-                    )
-                    return False
-
-                # Could be OOM fallback exhaustion or a genuinely bad model file.
-                log_print("Model initialization failed after all fallback settings. Restarting load sequence...")
-                return self.load_model(attempts=attempts + 1)
-
-            self._has_loaded_once = True
-            log_print(f"Done. (GPU Acceleration: {'ENABLED' if is_gpu else 'DISABLED'})")
-            return True
-        except Exception as e:
-            err_trace = traceback.format_exc()
-            log_print(f"\nError loading Grammar Model: {e}\n{err_trace}")
-            self.loading_error = str(e)
-            # Check for another AssertionError in the fallback as well
-            if "AssertionError" in str(e):
-                 log_print(f"Corruption detected in fallback. Removing {model_path} and retrying.")
-                 try:
-                    if os.path.exists(model_path):
-                        os.remove(model_path)
-                 except: pass
-                 return self.load_model(attempts=attempts + 1)
+    
+                # Assertive GPU Offloading
+                is_gpu = cuda_is_available()
+                turboquant = bool(self.profile.get("turboquant", False))
+    
+                # TurboQuant profile lowers context/batch defaults to reduce VRAM pressure.
+                default_n_ctx = 3072 if turboquant else 4096
+                n_ctx = int(self.profile.get("n_ctx", default_n_ctx))
+                n_batch = 256 if turboquant else 512
+    
+                gpu_mem_gb = cuda_device_total_memory_gib(0) if is_gpu else 0.0
+    
+                # Allow higher batching for modern 40-series cards (8GB-12GB) to speed up prompt processing.
+                if is_gpu and gpu_mem_gb:
+                    if gpu_mem_gb <= 8.5:
+                        n_batch = min(n_batch, 128) # Safety cap for low-end cards
+                    elif gpu_mem_gb <= 12.5:
+                        n_batch = min(n_batch, 512) # High-speed batching for 4070/4070Ti
+    
+                # Bounded offload counts for stability; allow full offload for high-end cards.
+                if is_gpu:
+                    preferred_layers = int(self.profile.get("n_gpu_layers", 42))
+                    if gpu_mem_gb and gpu_mem_gb <= 8.5:
+                        preferred_layers = min(preferred_layers, 24)
+                    layer_plan = [preferred_layers, 24, 16, 0]
+                else:
+                    layer_plan = [0]
+    
+                # Deduplicate while preserving order
+                seen = set()
+                layer_plan = [x for x in layer_plan if not (x in seen or seen.add(x))]
+    
+                log_print(
+                    f"Loading Llama (GPU={is_gpu}, vram_gb={gpu_mem_gb:.1f}, turboquant={turboquant}, n_ctx={n_ctx}, n_batch={n_batch}, layers_plan={layer_plan})"
+                    f"{'  [Quick Reload]' if is_reload else ''}..."
+                )
+                self.model = None
+                for n_gpu_layers in layer_plan:
+                    self.model = _safe_llama_init(model_path, n_gpu_layers, n_ctx, n_batch)
+                    if self.model is not None:
+                        break
+                    if is_gpu and n_gpu_layers != layer_plan[-1]:
+                        log_print(f"Retrying with lower GPU offload... next n_gpu_layers={layer_plan[layer_plan.index(n_gpu_layers) + 1]}")
+                
+                if self.model is None:
+                    # Qwen-specific hard fallback for stubborn init failures.
+                    is_qwen_profile = "qwen" in (repo_id + " " + file_name + " " + profile_name).lower()
+                    if is_qwen_profile:
+                        qwen_fallback_n_ctx = 2048
+                        qwen_fallback_n_batch = 64
+                        qwen_fallback_layers = 0
+                        log_print(
+                            "Qwen hard-fallback triggered: retrying with "
+                            f"n_ctx={qwen_fallback_n_ctx}, n_batch={qwen_fallback_n_batch}, n_gpu_layers={qwen_fallback_layers}"
+                        )
+                        self.model = _safe_llama_init(
+                            model_path,
+                            qwen_fallback_layers,
+                            qwen_fallback_n_ctx,
+                            qwen_fallback_n_batch
+                        )
+    
+                    if self.model is not None:
+                        self._has_loaded_once = True
+                        log_print(f"Done. (GPU Acceleration: {'ENABLED' if is_gpu else 'DISABLED'}) [Qwen Hard Fallback]")
+                        return True
+    
+                    # Model file exists and full offload fallback exhausted, but backend still cannot parse/open it.
+                    # Avoid repeating the same sequence; provide an actionable compatibility hint.
+                    if "failed to load model from file" in (last_init_error_text or "").lower():
+                        self.loading_error = (
+                            "Model file format appears incompatible with current llama-cpp-python runtime. "
+                            "Please update llama-cpp-python and retry."
+                        )
+                        log_print(
+                            "Model init failed due to file/runtime compatibility (not VRAM offload). "
+                            "Skipping repeated retries."
+                        )
+                        return False
+    
+                    # Could be OOM fallback exhaustion or a genuinely bad model file.
+                    log_print("Model initialization failed after all fallback settings. Restarting load sequence...")
+                    return self.load_model(attempts=attempts + 1)
+    
+                self._has_loaded_once = True
+                log_print(f"Done. (GPU Acceleration: {'ENABLED' if is_gpu else 'DISABLED'})")
+                return True
+            except Exception as e:
+                err_trace = traceback.format_exc()
+                log_print(f"\nError loading Grammar Model: {e}\n{err_trace}")
+                self.loading_error = str(e)
+                # Check for another AssertionError in the fallback as well
+                if "AssertionError" in str(e):
+                     log_print(f"Corruption detected in fallback. Removing {model_path} and retrying.")
+                     try:
+                        if os.path.exists(model_path):
+                            os.remove(model_path)
+                     except: pass
+                     return self.load_model(attempts=attempts + 1)
 
             if sys.platform == 'win32':
                  show_modern_error("Privox Model Error", f"Error loading Grammar Model (Llama): {e}", f"Traceback:\n{err_trace[:500]}")
@@ -1446,202 +1448,203 @@ class GrammarChecker:
         return text, False
 
     def correct(self, text, is_command=False, language=None, language_prob=0.0):
-        # 1. Pre-processing Guardrail: Skip LLM for very short or empty inputs
-        # (Unless it's a known keyword in the custom dictionary)
-        clean_text = text.strip()
-        if not self.model or not clean_text:
-            return _finalize_refiner_text(text, self.use_simplified_chinese_output)
-            
-        if len(clean_text) < 8 and clean_text.lower() not in [d.lower() for d in self.custom_dictionary]:
-            log_transcription(f" [Short Input Skip] Input too short ({len(clean_text)} chars). Mirroring.")
-            return _finalize_refiner_text(text, self.use_simplified_chinese_output)
-
-        lang_effective, prob_effective = language, language_prob
-        if (not lang_effective or prob_effective <= 0.4) and clean_text:
-            inf_lang, inf_prob = _infer_language_from_transcript(clean_text)
-            if inf_prob >= 0.72:
-                lang_effective = inf_lang
-                prob_effective = max(prob_effective, inf_prob)
-                log_transcription(f" Refiner language hint (script inference): {lang_effective} (p={prob_effective:.2f})")
-
-        try:
-            prompt_type = self.profile.get("prompt_type", "llama")
-
-            if is_command:
-                # Agent Mode
-                system_prompt = self.command_prompt or (
-                    "You are Privox, an intelligent assistant. Execute the user's instruction perfectly. "
-                    "Output ONLY the result inside <refined> and </refined> tags. Do not chat."
-                )
-                user_content = text
-            else:
-                # Use the new robust Wrapper Structure
-                core_directive = self.get_effective_prompt(
-                    language=lang_effective,
-                    language_prob=prob_effective,
-                    transcript=clean_text,
-                )
-                # Dynamically select few-shot examples + INJECT PERSONA into System Prompt identity
-                system_prompt = models_config.get_system_formatter_for_transcript(
-                    language=lang_effective, 
-                    transcript_char_len=len(clean_text),
-                    persona_mission=core_directive
-                )
-                user_content = (
-                    f"[Core Directive]: {core_directive}\n"
-                    f"[Transcript]: {text}\n"
-                    "Do not repeat the Core Directive, rules, or examples. "
-                    "Write only the opening tag <refined>, the cleaned transcript, and </refined>.\n"
-                    "Output: "
-                )
-
-            # Format based on model type
-            if prompt_type == "t5":
-                # CoEdit / T5 style
-                action = "Polish" if self.tone != "Natural" else "Fix grammar"
-                prompt = f"{action}: {text}"
-                stop_tokens = ["\n"]
-            elif prompt_type == "chatml":
-                # Qwen / ChatML style format
-                prompt = (
-                    f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
-                    f"<|im_start|>user\n{user_content}<|im_end|>\n"
-                    "<|im_start|>assistant\n"
-                )
-                stop_tokens = ["<|im_end|>"]
-            elif prompt_type == "gemma":
-                # Fold system into one user message for create_chat_completion(chat_format=gemma).
-                combined_user = f"{system_prompt}\n\n{user_content}"
-                prompt = ""
-                stop_tokens = []
-            else:
-                # Llama 3 / Mistral style format
-                prompt = (
-                    f"<|start_header_id|>system<|end_header_id|>\n\n{system_prompt}<|eot_id|>"
-                    f"<|start_header_id|>user<|end_header_id|>\n\n{user_content}<|eot_id|>"
-                    "<|start_header_id|>assistant<|end_header_id|>\n\n"
-                )
-                stop_tokens = ["<|eot_id|>"]
-            
-            # 2. Proportional max_tokens: CJK-heavy text needs ~1 token/char of headroom; cap runaway at 4096.
-            char_n = len(clean_text)
-            word_n = len(clean_text.split())
-            input_tokens_est = max(char_n // 2, word_n * 3, char_n // 4 + 200)
-            max_tokens = min(8192, max(256, int(char_n * 1.3) + 512, input_tokens_est * 3))
-
-            raw_response = ""
-            gemma_degenerate = False
-            if prompt_type == "gemma":
-                raw_response, gemma_degenerate = self._run_gemma_chat_completion(
-                    combined_user, max_tokens
-                )
+        with self.lock:
+            # 1. Pre-processing Guardrail: Skip LLM for very short or empty inputs
+            # (Unless it's a known keyword in the custom dictionary)
+            clean_text = text.strip()
+            if not self.model or not clean_text:
+                return _finalize_refiner_text(text, self.use_simplified_chinese_output)
+                
+            if len(clean_text) < 8 and clean_text.lower() not in [d.lower() for d in self.custom_dictionary]:
+                log_transcription(f" [Short Input Skip] Input too short ({len(clean_text)} chars). Mirroring.")
+                return _finalize_refiner_text(text, self.use_simplified_chinese_output)
+    
+            lang_effective, prob_effective = language, language_prob
+            if (not lang_effective or prob_effective <= 0.4) and clean_text:
+                inf_lang, inf_prob = _infer_language_from_transcript(clean_text)
+                if inf_prob >= 0.72:
+                    lang_effective = inf_lang
+                    prob_effective = max(prob_effective, inf_prob)
+                    log_transcription(f" Refiner language hint (script inference): {lang_effective} (p={prob_effective:.2f})")
+    
+            try:
+                prompt_type = self.profile.get("prompt_type", "llama")
+    
+                if is_command:
+                    # Agent Mode
+                    system_prompt = self.command_prompt or (
+                        "You are Privox, an intelligent assistant. Execute the user's instruction perfectly. "
+                        "Output ONLY the result inside <refined> and </refined> tags. Do not chat."
+                    )
+                    user_content = text
+                else:
+                    # Use the new robust Wrapper Structure
+                    core_directive = self.get_effective_prompt(
+                        language=lang_effective,
+                        language_prob=prob_effective,
+                        transcript=clean_text,
+                    )
+                    # Dynamically select few-shot examples + INJECT PERSONA into System Prompt identity
+                    system_prompt = models_config.get_system_formatter_for_transcript(
+                        language=lang_effective, 
+                        transcript_char_len=len(clean_text),
+                        persona_mission=core_directive
+                    )
+                    user_content = (
+                        f"[Core Directive]: {core_directive}\n"
+                        f"[Transcript]: {text}\n"
+                        "Do not repeat the Core Directive, rules, or examples. "
+                        "Write only the opening tag <refined>, the cleaned transcript, and </refined>.\n"
+                        "Output: "
+                    )
+    
+                # Format based on model type
+                if prompt_type == "t5":
+                    # CoEdit / T5 style
+                    action = "Polish" if self.tone != "Natural" else "Fix grammar"
+                    prompt = f"{action}: {text}"
+                    stop_tokens = ["\n"]
+                elif prompt_type == "chatml":
+                    # Qwen / ChatML style format
+                    prompt = (
+                        f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
+                        f"<|im_start|>user\n{user_content}<|im_end|>\n"
+                        "<|im_start|>assistant\n"
+                    )
+                    stop_tokens = ["<|im_end|>"]
+                elif prompt_type == "gemma":
+                    # Fold system into one user message for create_chat_completion(chat_format=gemma).
+                    combined_user = f"{system_prompt}\n\n{user_content}"
+                    prompt = ""
+                    stop_tokens = []
+                else:
+                    # Llama 3 / Mistral style format
+                    prompt = (
+                        f"<|start_header_id|>system<|end_header_id|>\n\n{system_prompt}<|eot_id|>"
+                        f"<|start_header_id|>user<|end_header_id|>\n\n{user_content}<|eot_id|>"
+                        "<|start_header_id|>assistant<|end_header_id|>\n\n"
+                    )
+                    stop_tokens = ["<|eot_id|>"]
+                
+                # 2. Proportional max_tokens: CJK-heavy text needs ~1 token/char of headroom; cap runaway at 4096.
+                char_n = len(clean_text)
+                word_n = len(clean_text.split())
+                input_tokens_est = max(char_n // 2, word_n * 3, char_n // 4 + 200)
+                max_tokens = min(8192, max(256, int(char_n * 1.3) + 512, input_tokens_est * 3))
+    
+                raw_response = ""
+                gemma_degenerate = False
+                if prompt_type == "gemma":
+                    raw_response, gemma_degenerate = self._run_gemma_chat_completion(
+                        combined_user, max_tokens
+                    )
+                    if gemma_degenerate:
+                        log_transcription(
+                            " Gemma: chat path degenerate; retrying two-turn system/user template..."
+                        )
+                        prompt_fb = (
+                            f"<start_of_turn>system\n{system_prompt}<end_of_turn>\n"
+                            f"<start_of_turn>user\n{user_content}<end_of_turn>\n"
+                            "<start_of_turn>model\n"
+                        )
+                        raw_response, gemma_degenerate = self._run_gemma_raw_prompt_stream(
+                            prompt_fb, max_tokens, ["<end_of_turn>"]
+                        )
+                else:
+                    raw_response, gemma_degenerate = self._run_refiner_completion(
+                        prompt, prompt_type, max_tokens, stop_tokens
+                    )
                 if gemma_degenerate:
                     log_transcription(
-                        " Gemma: chat path degenerate; retrying two-turn system/user template..."
+                        " Gemma refiner degeneracy (<unused*> / bad distribution). Using ASR transcript."
                     )
-                    prompt_fb = (
-                        f"<start_of_turn>system\n{system_prompt}<end_of_turn>\n"
-                        f"<start_of_turn>user\n{user_content}<end_of_turn>\n"
-                        "<start_of_turn>model\n"
-                    )
-                    raw_response, gemma_degenerate = self._run_gemma_raw_prompt_stream(
-                        prompt_fb, max_tokens, ["<end_of_turn>"]
-                    )
-            else:
-                raw_response, gemma_degenerate = self._run_refiner_completion(
-                    prompt, prompt_type, max_tokens, stop_tokens
-                )
-            if gemma_degenerate:
-                log_transcription(
-                    " Gemma refiner degeneracy (<unused*> / bad distribution). Using ASR transcript."
-                )
-                return _finalize_refiner_text(clean_text, self.use_simplified_chinese_output)
-
-            raw_for_extract = self._strip_critical_rules_echo(raw_response)
-
-            # Diagnostic: full LLM string often starts with an ASR echo or filler BEFORE <refined>;
-            # the pasted text comes from inside <refined> only — do not read this prefix as final output.
-            if raw_response:
-                prev_n = min(140, len(raw_response))
-                tail = "..." if len(raw_response) > prev_n else ""
-                log_transcription(
-                    f" LLM response length={len(raw_response)}; start of string (may differ from pasted text): "
-                    f"'{raw_response[:prev_n]}{tail}'"
-                )
-            else:
-                log_transcription(" Warning: LLM returned empty response.")
-                
-            # If standard instruction model (T5), just return the raw string
-            if prompt_type == "t5":
-                # self.context_buffer = (self.context_buffer + " " + raw_response).strip()[-2000:]  # [DISABLED]
-                return _finalize_refiner_text(raw_response, self.use_simplified_chinese_output)
-
-            # If Llama/Qwen, extract text from <refined> tags (strict, then partial/unclosed).
-            match = re.search(r"<refined>(.*?)</refined>", raw_for_extract, flags=re.DOTALL | re.IGNORECASE)
-            if not match:
-                match = re.search(
-                    r"<\s*refined\s*>(.*?)(?:<\s*/\s*refined\s*>|$)",
-                    raw_for_extract,
-                    flags=re.DOTALL | re.IGNORECASE,
-                )
-
-            result = None
-            if match:
-                log_transcription(" Regex extracted <refined> block successfully.")
-                result = match.group(1).strip()
-                result = re.sub(r"<\s*/?\s*refined\s*>", "", result, flags=re.IGNORECASE).strip()
-                if result:
-                    pv_n = min(320, len(result))
-                    pv_tail = "..." if len(result) > pv_n else ""
+                    return _finalize_refiner_text(clean_text, self.use_simplified_chinese_output)
+    
+                raw_for_extract = self._strip_critical_rules_echo(raw_response)
+    
+                # Diagnostic: full LLM string often starts with an ASR echo or filler BEFORE <refined>;
+                # the pasted text comes from inside <refined> only — do not read this prefix as final output.
+                if raw_response:
+                    prev_n = min(140, len(raw_response))
+                    tail = "..." if len(raw_response) > prev_n else ""
                     log_transcription(
-                        f" <refined> inner preview ({len(result)} chars; paste also runs digit/zh finalize): "
-                        f"'{result[:pv_n]}{pv_tail}'"
+                        f" LLM response length={len(raw_response)}; start of string (may differ from pasted text): "
+                        f"'{raw_response[:prev_n]}{tail}'"
                     )
-            else:
-                log_transcription(" Warning: Model failed to use <refined> tags.")
-                fb = self._fallback_extract_refined_body(raw_for_extract, clean_text)
-                if fb:
-                    log_transcription(f" Fallback extraction recovered {len(fb)} chars (heuristic, no tags).")
-                    result = fb
-                elif "[Transcript]:" in raw_response:
-                    log_transcription("  Detected prompt echo in raw response. Attempting legacy strip...")
-                    parts = re.split(r"\[Transcript\]:.*?\n", raw_response, flags=re.DOTALL | re.IGNORECASE)
-                    if len(parts) > 1:
-                        result = parts[-1].strip()
-                        log_transcription(f"  Stripped echo. New candidate length: {len(result)}")
-                    else:
-                        result = raw_response
-                elif self._looks_like_prompt_echo(raw_response):
-                    log_transcription(" Raw response looks like prompt echo only. Using ASR transcript (no refiner output).")
-                    result = clean_text
                 else:
-                    result = raw_for_extract or raw_response
-
-            if prompt_type == "gemma" and result:
-                stripped = self._strip_gemma_turn_markup(result)
-                if self._gemma_refined_body_is_invalid(stripped, clean_text):
-                    log_transcription(
-                        " Gemma: refined text was only turn/markup tokens; trying fallback or ASR transcript."
+                    log_transcription(" Warning: LLM returned empty response.")
+                    
+                # If standard instruction model (T5), just return the raw string
+                if prompt_type == "t5":
+                    # self.context_buffer = (self.context_buffer + " " + raw_response).strip()[-2000:]  # [DISABLED]
+                    return _finalize_refiner_text(raw_response, self.use_simplified_chinese_output)
+    
+                # If Llama/Qwen, extract text from <refined> tags (strict, then partial/unclosed).
+                match = re.search(r"<refined>(.*?)</refined>", raw_for_extract, flags=re.DOTALL | re.IGNORECASE)
+                if not match:
+                    match = re.search(
+                        r"<\s*refined\s*>(.*?)(?:<\s*/\s*refined\s*>|$)",
+                        raw_for_extract,
+                        flags=re.DOTALL | re.IGNORECASE,
                     )
+    
+                result = None
+                if match:
+                    log_transcription(" Regex extracted <refined> block successfully.")
+                    result = match.group(1).strip()
+                    result = re.sub(r"<\s*/?\s*refined\s*>", "", result, flags=re.IGNORECASE).strip()
+                    if result:
+                        pv_n = min(320, len(result))
+                        pv_tail = "..." if len(result) > pv_n else ""
+                        log_transcription(
+                            f" <refined> inner preview ({len(result)} chars; paste also runs digit/zh finalize): "
+                            f"'{result[:pv_n]}{pv_tail}'"
+                        )
+                else:
+                    log_transcription(" Warning: Model failed to use <refined> tags.")
                     fb = self._fallback_extract_refined_body(raw_for_extract, clean_text)
-                    fb2 = self._strip_gemma_turn_markup((fb or "").strip()) if fb else ""
-                    if fb2 and not self._gemma_refined_body_is_invalid(fb2, clean_text):
-                        result = fb2
-                    else:
+                    if fb:
+                        log_transcription(f" Fallback extraction recovered {len(fb)} chars (heuristic, no tags).")
+                        result = fb
+                    elif "[Transcript]:" in raw_response:
+                        log_transcription("  Detected prompt echo in raw response. Attempting legacy strip...")
+                        parts = re.split(r"\[Transcript\]:.*?\n", raw_response, flags=re.DOTALL | re.IGNORECASE)
+                        if len(parts) > 1:
+                            result = parts[-1].strip()
+                            log_transcription(f"  Stripped echo. New candidate length: {len(result)}")
+                        else:
+                            result = raw_response
+                    elif self._looks_like_prompt_echo(raw_response):
+                        log_transcription(" Raw response looks like prompt echo only. Using ASR transcript (no refiner output).")
                         result = clean_text
-                else:
-                    result = stripped
-
-            # 3a. Strip trailing meta-commentary ("Note:", "I've preserved...", etc.)
-            result = self._strip_meta_commentary(result)
-
-            # 3b. Post-generation Hallucination Validator
-            result = self._validate_output(clean_text, result)
-
-            return _finalize_refiner_text(result, self.use_simplified_chinese_output)
-        except Exception as e:
-            log_print(f"Grammar Check Error: {e}")
-            return _finalize_refiner_text(text, self.use_simplified_chinese_output)
+                    else:
+                        result = raw_for_extract or raw_response
+    
+                if prompt_type == "gemma" and result:
+                    stripped = self._strip_gemma_turn_markup(result)
+                    if self._gemma_refined_body_is_invalid(stripped, clean_text):
+                        log_transcription(
+                            " Gemma: refined text was only turn/markup tokens; trying fallback or ASR transcript."
+                        )
+                        fb = self._fallback_extract_refined_body(raw_for_extract, clean_text)
+                        fb2 = self._strip_gemma_turn_markup((fb or "").strip()) if fb else ""
+                        if fb2 and not self._gemma_refined_body_is_invalid(fb2, clean_text):
+                            result = fb2
+                        else:
+                            result = clean_text
+                    else:
+                        result = stripped
+    
+                # 3a. Strip trailing meta-commentary ("Note:", "I've preserved...", etc.)
+                result = self._strip_meta_commentary(result)
+    
+                # 3b. Post-generation Hallucination Validator
+                result = self._validate_output(clean_text, result)
+    
+                return _finalize_refiner_text(result, self.use_simplified_chinese_output)
+            except Exception as e:
+                log_print(f"Grammar Check Error: {e}")
+                return _finalize_refiner_text(text, self.use_simplified_chinese_output)
 
     # --- LLM self-commentary patterns that get embedded inside <refined> output ---
     _META_COMMENTARY_PATTERNS = [
@@ -1941,14 +1944,15 @@ class GrammarChecker:
         return refined
 
     def unload_model(self):
-        if self.model:
-            try:
-                self.model.close()
-            except Exception:
-                pass
-            del self.model
-            self.model = None
-            log_print("Grammar Model Unloaded.")
+        with self.lock:
+            if self.model:
+                try:
+                    self.model.close()
+                except Exception:
+                    pass
+                del self.model
+                self.model = None
+                log_print("Grammar Model Unloaded.")
 
 
 def _ensure_packaging_for_silero():
@@ -2050,7 +2054,7 @@ class VoiceInputApp:
         self.last_activity_time = time.time()
         self.heavy_models_loaded = False
         self._asr_loaded_key = None  # (ASR_BACKEND, WHISPER_SIZE) after successful ASR load
-        self.model_lock = threading.Lock()
+        self.model_lock = threading.RLock()
         self._paste_clipboard_lock = threading.Lock()
         self._paste_anchor_lock = threading.Lock()
         self._paste_anchor_timer = None  # threading.Timer for deferred HWND capture
@@ -2547,10 +2551,11 @@ class VoiceInputApp:
                 self.model_load_started_at = 0.0
                 self.model_load_stage = "ready"
                 self.loading_status = "Ready" if results[0] else "ASR Only"
-                # Do not clobber RECORDING: user may have started the mic while models were still loading.
+                # Do not clobber RECORDING/PROCESSING: user may have started the mic 
+                # or a transcription may be running while models were still loading.
                 if self.is_listening:
                     self.update_status("RECORDING")
-                else:
+                elif self.ui_state != "PROCESSING":
                     self.update_status("READY")
 
                 # Reset activity timer so we don't immediately unload
@@ -3547,244 +3552,245 @@ class VoiceInputApp:
                 raise TimeoutError(self.last_model_error)
 
     def transcribe(self, audio_data, task_id=None):
-        try:
-            duration = len(audio_data) / SAMPLE_RATE
-            max_amp = np.max(np.abs(audio_data))
-            rms = np.sqrt(np.mean(audio_data**2))
-            
-            log_transcription(f"\n--- Transcription Diagnostic ---")
-            log_transcription(f"Audio Stats - Duration: {duration:.2f}s, Max Amp: {max_amp:.4f}, RMS: {rms:.4f}")
-            
-            if duration < (MIN_SPEECH_DURATION_MS / 1000):
-                log_transcription(f" [Audio too short - Ignored]")
-                self.update_status("READY")
-                return
-
-            if max_amp < 0.001: 
-                log_transcription(f" [Audio too quiet - Ignored]")
-                self.update_status("READY")
-                return
-
-            # Ensure models are loaded before transcribing
-            if not self.heavy_models_loaded:
-                log_print("Waiting for models to load...")
-                self.load_heavy_models()
-                if not self.asr_model:
-                     log_print("ASR Model still missing after lazy load attempt.")
-                     self.update_status("READY")
-                     return
-
-            _asr_label = getattr(self, "active_asr_name", None) or (
-                WHISPER_SIZE
-                if ASR_BACKEND == "whisper"
-                else WHISPER_REPO
-            )
-            log_transcription(f" Transcribing Using Backend: {ASR_BACKEND} (Model: {_asr_label})...", flush=True)
-            t0 = time.time()
-            
-            raw_text = ""
-            info = None
-            if ASR_BACKEND == "sensevoice":
-                # SenseVoice/funasr
-                results = self._run_with_timeout(
-                    lambda: self.asr_model.generate(
-                        input=audio_data.flatten().astype(np.float32),
-                        cache={},
-                        language="auto", # SenseVoice handles LID well
-                        use_itn=True,
-                        batch_size_s=60,
-                        merge_vad=True,
-                        merge_length_s=15,
-                    ),
-                    timeout_s=120,
-                    label="ASR generate",
+        with self.model_lock:
+            try:
+                duration = len(audio_data) / SAMPLE_RATE
+                max_amp = np.max(np.abs(audio_data))
+                rms = np.sqrt(np.mean(audio_data**2))
+                
+                log_transcription(f"\n--- Transcription Diagnostic ---")
+                log_transcription(f"Audio Stats - Duration: {duration:.2f}s, Max Amp: {max_amp:.4f}, RMS: {rms:.4f}")
+                
+                if duration < (MIN_SPEECH_DURATION_MS / 1000):
+                    log_transcription(f" [Audio too short - Ignored]")
+                    self.update_status("READY")
+                    return
+    
+                if max_amp < 0.001: 
+                    log_transcription(f" [Audio too quiet - Ignored]")
+                    self.update_status("READY")
+                    return
+    
+                # Ensure models are loaded before transcribing
+                if not self.heavy_models_loaded:
+                    log_print("Waiting for models to load...")
+                    self.load_heavy_models()
+                    if not self.asr_model:
+                         log_print("ASR Model still missing after lazy load attempt.")
+                         self.update_status("READY")
+                         return
+    
+                _asr_label = getattr(self, "active_asr_name", None) or (
+                    WHISPER_SIZE
+                    if ASR_BACKEND == "whisper"
+                    else WHISPER_REPO
                 )
+                log_transcription(f" Transcribing Using Backend: {ASR_BACKEND} (Model: {_asr_label})...", flush=True)
+                t0 = time.time()
                 
-                # funasr output is a list of dicts: [{'text': '...', 'key': '...'}]
-                if results and len(results) > 0:
-                    raw_text = results[0].get('text', '')
-                    # Clean up emotion/event tags like <|HAPPY|>, <|ENTHUSIASTIC|>, etc.
-                    raw_text = re.sub(r'<\|.*?\|>', '', raw_text).strip()
-                
-                log_transcription(f" SenseVoice Result - Raw: '{raw_text}'")
-                
-
-
-            elif ASR_BACKEND == "qwen_asr":
-                # Pre-transcription check: ensure model is on CUDA (if available) before proceeding
-                if cuda_is_available() and getattr(self.asr_model.model, "device", type("D", (), {"type": "cpu"})).type != "cuda":
-                    # Fast RAM -> VRAM transfer
-                    self.asr_model.model.to("cuda")
-
-                # Slicing logic strictly derived from ONNX build to prevent OOM
-                CHUNK_SIZE = 30 * 16000 # 30 seconds at 16kHz
-                audio_np = audio_data.astype(np.float32)
-                chunks = [audio_np[i:i + CHUNK_SIZE] for i in range(0, len(audio_np), CHUNK_SIZE)]
-                
-                seg_texts = []
-                for idx, chunk in enumerate(chunks):
-                    if len(chunks) > 1: log_transcription(f"  Transcribing chunk {idx+1}/{len(chunks)}...")
+                raw_text = ""
+                info = None
+                if ASR_BACKEND == "sensevoice":
+                    # SenseVoice/funasr
                     results = self._run_with_timeout(
-                        lambda c=chunk: self.asr_model.transcribe(
-                            audio=(c, 16000),
-                            language=None, # Auto-detect
-                            return_time_stamps=False # DISABLE forced alignment
+                        lambda: self.asr_model.generate(
+                            input=audio_data.flatten().astype(np.float32),
+                            cache={},
+                            language="auto", # SenseVoice handles LID well
+                            use_itn=True,
+                            batch_size_s=60,
+                            merge_vad=True,
+                            merge_length_s=15,
                         ),
                         timeout_s=120,
-                        label=f"ASR transcribe chunk {idx+1}",
+                        label="ASR generate",
                     )
+                    
+                    # funasr output is a list of dicts: [{'text': '...', 'key': '...'}]
                     if results and len(results) > 0:
-                        txt = results[0].get('text', '') if isinstance(results[0], dict) else getattr(results[0], 'text', str(results[0]))
-                        if txt: seg_texts.append(txt)
-                
-                raw_text = " ".join(seg_texts).strip()
-                log_transcription(f" Qwen3-ASR Result: '{raw_text}'")
-                
-            else:
-                # Faster-Whisper: `multilingual=True` runs language ID per segment so code-switched
-                # speech (e.g. EN phrases in a ZH-dominant clip) is less often forced into one script.
-                # Disable with PRIVOX_WHISPER_PER_SEGMENT_LANGUAGE=0 if you see unstable LID.
-                _seg_lid = (os.environ.get("PRIVOX_WHISPER_PER_SEGMENT_LANGUAGE") or "").strip().lower()
-                _use_per_segment_lang = _seg_lid not in ("0", "false", "no", "off")
-                _asr_kw: dict = dict(
-                    audio=audio_data.astype(np.float32),
-                    task="transcribe",
-                    beam_size=5,
-                    vad_filter=True,
-                    vad_parameters=dict(min_silence_duration_ms=500),
-                )
-                # Library may pin decoding language (e.g. yue for Cantonese CT2). Do not combine with
-                # per-segment LID — faster-whisper would override the pinned language each segment.
-                if WHISPER_TRANSCRIBE_LANGUAGE:
-                    _asr_kw["language"] = WHISPER_TRANSCRIBE_LANGUAGE
-                elif _use_per_segment_lang:
-                    _asr_kw["multilingual"] = True
-                    _asr_kw["initial_prompt"] = (
-                        "Transcript may mix English and Chinese; keep each language in its usual spelling."
+                        raw_text = results[0].get('text', '')
+                        # Clean up emotion/event tags like <|HAPPY|>, <|ENTHUSIASTIC|>, etc.
+                        raw_text = re.sub(r'<\|.*?\|>', '', raw_text).strip()
+                    
+                    log_transcription(f" SenseVoice Result - Raw: '{raw_text}'")
+                    
+    
+    
+                elif ASR_BACKEND == "qwen_asr":
+                    # Pre-transcription check: ensure model is on CUDA (if available) before proceeding
+                    if cuda_is_available() and getattr(self.asr_model.model, "device", type("D", (), {"type": "cpu"})).type != "cuda":
+                        # Fast RAM -> VRAM transfer
+                        self.asr_model.model.to("cuda")
+    
+                    # Slicing logic strictly derived from ONNX build to prevent OOM
+                    CHUNK_SIZE = 30 * 16000 # 30 seconds at 16kHz
+                    audio_np = audio_data.astype(np.float32)
+                    chunks = [audio_np[i:i + CHUNK_SIZE] for i in range(0, len(audio_np), CHUNK_SIZE)]
+                    
+                    seg_texts = []
+                    for idx, chunk in enumerate(chunks):
+                        if len(chunks) > 1: log_transcription(f"  Transcribing chunk {idx+1}/{len(chunks)}...")
+                        results = self._run_with_timeout(
+                            lambda c=chunk: self.asr_model.transcribe(
+                                audio=(c, 16000),
+                                language=None, # Auto-detect
+                                return_time_stamps=False # DISABLE forced alignment
+                            ),
+                            timeout_s=120,
+                            label=f"ASR transcribe chunk {idx+1}",
+                        )
+                        if results and len(results) > 0:
+                            txt = results[0].get('text', '') if isinstance(results[0], dict) else getattr(results[0], 'text', str(results[0]))
+                            if txt: seg_texts.append(txt)
+                    
+                    raw_text = " ".join(seg_texts).strip()
+                    log_transcription(f" Qwen3-ASR Result: '{raw_text}'")
+                    
+                else:
+                    # Faster-Whisper: `multilingual=True` runs language ID per segment so code-switched
+                    # speech (e.g. EN phrases in a ZH-dominant clip) is less often forced into one script.
+                    # Disable with PRIVOX_WHISPER_PER_SEGMENT_LANGUAGE=0 if you see unstable LID.
+                    _seg_lid = (os.environ.get("PRIVOX_WHISPER_PER_SEGMENT_LANGUAGE") or "").strip().lower()
+                    _use_per_segment_lang = _seg_lid not in ("0", "false", "no", "off")
+                    _asr_kw: dict = dict(
+                        audio=audio_data.astype(np.float32),
+                        task="transcribe",
+                        beam_size=5,
+                        vad_filter=True,
+                        vad_parameters=dict(min_silence_duration_ms=500),
                     )
-                segments, info = self._run_with_timeout(
-                    lambda kw=_asr_kw: self.asr_model.transcribe(**kw),
-                    timeout_s=120,
-                    label="ASR transcribe",
-                )
+                    # Library may pin decoding language (e.g. yue for Cantonese CT2). Do not combine with
+                    # per-segment LID — faster-whisper would override the pinned language each segment.
+                    if WHISPER_TRANSCRIBE_LANGUAGE:
+                        _asr_kw["language"] = WHISPER_TRANSCRIBE_LANGUAGE
+                    elif _use_per_segment_lang:
+                        _asr_kw["multilingual"] = True
+                        _asr_kw["initial_prompt"] = (
+                            "Transcript may mix English and Chinese; keep each language in its usual spelling."
+                        )
+                    segments, info = self._run_with_timeout(
+                        lambda kw=_asr_kw: self.asr_model.transcribe(**kw),
+                        timeout_s=120,
+                        label="ASR transcribe",
+                    )
+                    
+                    log_transcription(f" ASR Result - Language Detected: {info.language} ({info.language_probability:.2f})")
+                    
+                    # Collect segments and log each one
+                    seg_results = []
+                    for segment in segments:
+                        log_transcription(f"  Segment: [{segment.start:.2f}s -> {segment.end:.2f}s] ({len(segment.text)} chars)")
+                        seg_results.append(segment.text)
+                    
+                    raw_text = " ".join(seg_results).strip()
                 
-                log_transcription(f" ASR Result - Language Detected: {info.language} ({info.language_probability:.2f})")
+                t1 = time.time()
+                log_transcription(f" [ASR Total Time: {t1 - t0:.3f}s] Result: {len(raw_text)} chars")
+                # Always log full ASR (preview) via log_print — refiner detail may be off in packaged builds.
+                _asr_pv = raw_text[:400].replace("\n", " ").strip()
+                if len(raw_text) > 400:
+                    _asr_pv += "..."
+                log_print(f"ASR text ({len(raw_text)} chars, preview): {_asr_pv!r}")
                 
-                # Collect segments and log each one
-                seg_results = []
-                for segment in segments:
-                    log_transcription(f"  Segment: [{segment.start:.2f}s -> {segment.end:.2f}s] ({len(segment.text)} chars)")
-                    seg_results.append(segment.text)
-                
-                raw_text = " ".join(seg_results).strip()
-            
-            t1 = time.time()
-            log_transcription(f" [ASR Total Time: {t1 - t0:.3f}s] Result: {len(raw_text)} chars")
-            # Always log full ASR (preview) via log_print — refiner detail may be off in packaged builds.
-            _asr_pv = raw_text[:400].replace("\n", " ").strip()
-            if len(raw_text) > 400:
-                _asr_pv += "..."
-            log_print(f"ASR text ({len(raw_text)} chars, preview): {_asr_pv!r}")
-            
-            if not raw_text:
-                log_transcription(" [Empty Transcription Result]")
-                self.update_status("READY")
-                return
-
-            # --- Logic for Command Mode (DISABLED FOR NOW) ---
-            is_command = False
-            command_text = raw_text
-            
-            # if raw_text.lower().startswith("privox"):
-            #     is_command = True
-            #     command_text = re.sub(r'^(privox)\s*,?\s*', '', raw_text, flags=re.IGNORECASE)
-            #     log_print(f" [Command Mode Detected] Input: {command_text}")
-            
-
-
-            import gc
-            gc.collect()
-            time.sleep(0.5) 
-            
-            # Since we aggressively skip loading the grammar model during init for ONNX,
-            # we must explicitly trigger it here now that the ASR is purged from VRAM.
-            if getattr(self, "current_refiner", ""):
-                self.grammar_checker.load_model()
-            
-            log_transcription(f" Refining format ({self.current_refiner})...")
-            t2 = time.time()
-            detected_lang = info.language if (info and ASR_BACKEND == 'whisper') else None
-            detected_prob = info.language_probability if (info and ASR_BACKEND == 'whisper') else 0.0
-            final_text = self._run_with_timeout(
-                lambda: self.grammar_checker.correct(
-                    command_text,
-                    is_command=is_command,
-                    language=detected_lang,
-                    language_prob=detected_prob,
-                ),
-                timeout_s=90,
-                label="Refiner processing",
-            )
-            t3 = time.time()
-            log_transcription(f" [Grammar Time: {t3 - t2:.3f}s]")
-            
-            log_transcription(f" [Refined Output: {len(final_text)} chars]")
-            log_transcription(f" [Total Time: {t3 - t0:.3f}s]")
-            ft_str = str(final_text) if final_text is not None else ""
-            _ref_pv = ft_str[:400].replace("\n", " ").strip()
-            if len(ft_str) > 400:
-                _ref_pv += "..."
-            log_print(f"Refiner output ({len(ft_str)} chars, preview): {_ref_pv!r}")
-            _asr_n = " ".join(raw_text.split())
-            _ref_n = " ".join(ft_str.split())
-            if _asr_n == _ref_n:
-                log_print(
-                    "Refiner: same as ASR after whitespace normalize — model applied little/no surface edit "
-                    "(expected for clean English; rules ask not to invent content)."
-                )
-            else:
-                log_print(
-                    f"Refiner: text differs from ASR (ASR {len(raw_text)} chars → refined {len(ft_str)} chars)."
-                )
-            
-            if final_text is None or not str(final_text).strip():
-                log_transcription(" [Skip paste: empty refined output]")
-            else:
-                ft = str(final_text)
-                cap = 500
-                log_transcription(
-                    f" [Pasted text preview] ({len(ft)} chars): "
-                    f"'{ft[:cap]}{'...' if len(ft) > cap else ''}'"
-                )
-                try:
-                    self.paste_text(final_text)
-                except Exception as e:
-                    log_print(f"Typing Error: {e}")
-                    self.sound_manager.play_error()
-                
-
-                
-        except Exception as e:
-            log_print(f"ASR Error: {e}")
-            self.loading_status = "ASR Error"
-            self.sound_manager.play_error()
-        finally:
-            try:
-                self._cancel_paste_anchor_timer()
-            except Exception:
-                pass
-            try:
-                with self._paste_anchor_lock:
-                    self._paste_anchor_hwnd = None
-            except Exception:
-                pass
-            if task_id is None or task_id == getattr(self, "_transcribe_task_id", 0):
-                # Always leave PROCESSING: on error show ERROR tray state (was: stuck spinner forever).
-                if self.loading_status in ["ASR Error", "Refiner Error"]:
-                    self.update_status("ERROR")
-                elif self.ui_state != "RECORDING":
+                if not raw_text:
+                    log_transcription(" [Empty Transcription Result]")
                     self.update_status("READY")
-                self.update_tray_tooltip()
+                    return
+    
+                # --- Logic for Command Mode (DISABLED FOR NOW) ---
+                is_command = False
+                command_text = raw_text
+                
+                # if raw_text.lower().startswith("privox"):
+                #     is_command = True
+                #     command_text = re.sub(r'^(privox)\s*,?\s*', '', raw_text, flags=re.IGNORECASE)
+                #     log_print(f" [Command Mode Detected] Input: {command_text}")
+                
+    
+    
+                import gc
+                gc.collect()
+                time.sleep(0.5) 
+                
+                # Since we aggressively skip loading the grammar model during init for ONNX,
+                # we must explicitly trigger it here now that the ASR is purged from VRAM.
+                if getattr(self, "current_refiner", ""):
+                    self.grammar_checker.load_model()
+                
+                log_transcription(f" Refining format ({self.current_refiner})...")
+                t2 = time.time()
+                detected_lang = info.language if (info and ASR_BACKEND == 'whisper') else None
+                detected_prob = info.language_probability if (info and ASR_BACKEND == 'whisper') else 0.0
+                final_text = self._run_with_timeout(
+                    lambda: self.grammar_checker.correct(
+                        command_text,
+                        is_command=is_command,
+                        language=detected_lang,
+                        language_prob=detected_prob,
+                    ),
+                    timeout_s=90,
+                    label="Refiner processing",
+                )
+                t3 = time.time()
+                log_transcription(f" [Grammar Time: {t3 - t2:.3f}s]")
+                
+                log_transcription(f" [Refined Output: {len(final_text)} chars]")
+                log_transcription(f" [Total Time: {t3 - t0:.3f}s]")
+                ft_str = str(final_text) if final_text is not None else ""
+                _ref_pv = ft_str[:400].replace("\n", " ").strip()
+                if len(ft_str) > 400:
+                    _ref_pv += "..."
+                log_print(f"Refiner output ({len(ft_str)} chars, preview): {_ref_pv!r}")
+                _asr_n = " ".join(raw_text.split())
+                _ref_n = " ".join(ft_str.split())
+                if _asr_n == _ref_n:
+                    log_print(
+                        "Refiner: same as ASR after whitespace normalize — model applied little/no surface edit "
+                        "(expected for clean English; rules ask not to invent content)."
+                    )
+                else:
+                    log_print(
+                        f"Refiner: text differs from ASR (ASR {len(raw_text)} chars → refined {len(ft_str)} chars)."
+                    )
+                
+                if final_text is None or not str(final_text).strip():
+                    log_transcription(" [Skip paste: empty refined output]")
+                else:
+                    ft = str(final_text)
+                    cap = 500
+                    log_transcription(
+                        f" [Pasted text preview] ({len(ft)} chars): "
+                        f"'{ft[:cap]}{'...' if len(ft) > cap else ''}'"
+                    )
+                    try:
+                        self.paste_text(final_text)
+                    except Exception as e:
+                        log_print(f"Typing Error: {e}")
+                        self.sound_manager.play_error()
+                
+
+                
+            except Exception as e:
+                log_print(f"ASR Error: {e}")
+                self.loading_status = "ASR Error"
+                self.sound_manager.play_error()
+            finally:
+                try:
+                    self._cancel_paste_anchor_timer()
+                except Exception:
+                    pass
+                try:
+                    with self._paste_anchor_lock:
+                        self._paste_anchor_hwnd = None
+                except Exception:
+                    pass
+                if task_id is None or task_id == getattr(self, "_transcribe_task_id", 0):
+                    # Always leave PROCESSING: on error show ERROR tray state (was: stuck spinner forever).
+                    if self.loading_status in ["ASR Error", "Refiner Error"]:
+                        self.update_status("ERROR")
+                    elif self.ui_state != "RECORDING":
+                        self.update_status("READY")
+                    self.update_tray_tooltip()
 
     def _notify_tray(self, title: str, body: str):
         try:

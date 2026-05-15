@@ -1,4 +1,5 @@
 @echo off
+:: Privox Uninstaller v1.1
 setlocal
 :: Privox Silent Uninstaller
 :: This script handles the automated removal of Privox triggered by Windows Settings.

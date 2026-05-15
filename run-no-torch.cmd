@@ -1,5 +1,6 @@
 @echo off
 setlocal
+:: v1.1 Environment Entry
 cd /d "%~dp0"
 if not exist ".pixi\envs\default\python.exe" (
   echo Missing .pixi\envs\default\python.exe — run: pixi install

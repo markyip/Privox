@@ -1,4 +1,4 @@
-version: 6
+version: 6 # v1.1
 environments:
   default:
     channels:
@@ -1191,7 +1191,6 @@ packages:
   - pytest>=4.6 ; extra == 'develop'
   - pycodestyle ; extra == 'develop'
   - pytest-cov ; extra == 'develop'
-  - codecov ; extra == 'develop'
   - wheel ; extra == 'develop'
   - sphinx ; extra == 'docs'
   - gmpy2>=2.1.0a4 ; platform_python_implementation != 'PyPy' and extra == 'gmpy'

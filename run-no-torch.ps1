@@ -1,5 +1,5 @@
 # Start no-torch mode without `pixi run` (skips Pixi PyPI sync). Use when another process holds
-# onnxruntime DLLs and `pixi run no-torch` fails with WinError 32 on copy.
+# onnxruntime DLLs and `pixi run no-torch` fails with WinError 32 on copy. (v1.1)
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $Root

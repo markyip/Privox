@@ -1096,8 +1096,9 @@ class SettingsGUI(QMainWindow):
             "sound_enabled": self.check_sound.isChecked(),
             "startup_enabled": self.check_startup.isChecked(),
             "use_simplified_chinese_output": self.check_simplified_chinese.isChecked(),
-            "vram_timeout_s": self.vram_spin.value(),
+            "vram_timeout": self.vram_spin.value(),
             "auto_stop_s": self.stop_spin.value(),
+            "eager_model_load": self.check_eager_load.isChecked(),
             "hotkey_pref": (self.prefs.get("hotkey", "f8") or "f8").lower(),
             "hotkey_display": self._hotkey_display_label(),
             "prompt_editor_text": self.prompt_editor.toPlainText(),
@@ -1238,6 +1239,7 @@ class SettingsGUI(QMainWindow):
         self.check_sound.setChecked(self.config.get("sound_enabled", True))
         self.check_startup.setChecked(self.check_startup_status())
         self.check_simplified_chinese.setChecked(bool(self.config.get("use_simplified_chinese_output", False)))
+        self.check_eager_load.setChecked(bool(self.config.get("eager_model_load", False)))
         self.vram_spin.setValue(max(5, int(self.config.get("vram_timeout", 60))))
         
         # Auto-stop conversion display (ms to s)
@@ -1479,13 +1481,20 @@ class SettingsGUI(QMainWindow):
         self.check_startup = QCheckBox("Launch Privox at Startup")
         
         self.check_simplified_chinese = QCheckBox("Simplified Chinese output (简体中文)")
+        self.check_eager_load = QCheckBox("Pre-warm Models on Startup (Faster First Use)")
+        self.check_eager_load.setToolTip(
+            "On: Loads ASR and Refiner models immediately when Privox starts.\n"
+            "Off (default): Models are only loaded when you first use the hotkey.\n"
+            "Enable this to avoid the multi-second delay on your first transcription."
+        )
         self.check_simplified_chinese.setToolTip(
             "Off (default): all Chinese in the final output is normalized to Traditional (繁體中文).\n"
             "On: all Chinese is normalized to Simplified (简体中文).\n"
             "Applies regardless of whether dictation was Traditional or Simplified; uses zhconv when available."
         )
-        for chk in [self.check_sound, self.check_startup, self.check_simplified_chinese]:
+        for chk in [self.check_sound, self.check_startup, self.check_simplified_chinese, self.check_eager_load]:
             chk.setStyleSheet("QCheckBox::indicator { width: 40px; height: 20px; } padding: 4px;")
+            chk.clicked.connect(self.mark_dirty) # Ensure all checkboxes trigger dirty state
             layout.addWidget(chk)
             
         self.check_startup.clicked.connect(self.toggle_startup)
@@ -1493,7 +1502,8 @@ class SettingsGUI(QMainWindow):
         # Timeouts
         timeout_layout = QHBoxLayout()
         self.vram_spin = QSpinBox()
-        self.vram_spin.setMinimum(5)
+        self.vram_spin.setMinimum(0)
+        self.vram_spin.setSpecialValueText("Never")
         self.vram_spin.setMaximum(3600)
         self.vram_spin.setFixedWidth(80)
         self.vram_spin.setSuffix(" s")

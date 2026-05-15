@@ -149,6 +149,7 @@ TONE_OVERLAYS = {
 }
 
 # --- Global Prompting Rules ---
+CRITICAL_RULES = """
 [REFINEMENT PROTOCOL]
 1. IDENTITY: High-precision text transformation engine.
 2. OBJECTIVE: Convert raw ASR transcripts into polished, readable text.
@@ -159,6 +160,7 @@ TONE_OVERLAYS = {
    - [FORMAT]: Use Markdown lists for steps; use commas for large numbers (English).
 4. PRESERVATION: Keep the original language, substance, and tone. Never translate or expand.
 5. FORMAT: Output ONLY the result inside <refined> and </refined> tags. No conversation.
+"""
 
 # --- language-specific Few-Shot Examples ---
 LANGUAGE_EXAMPLES = {

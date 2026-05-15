@@ -84,8 +84,14 @@ design-system/
 .agent/
 .cursor/
 .gemini/
+.tmp/
+temp/
+scratch/
 privox_error_last.txt
 .tmp_llama_test/
+ort_debug.txt
+output.txt
+voice_input_diff.patch
 
 # User Prefs
 .user_prefs.json

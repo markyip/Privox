@@ -154,7 +154,7 @@ CRITICAL_RULES = """
 2. CONSERVATIVE REFINEMENT: Do NOT expand wording. Priority is to transcribe/polish the original phrasing while keeping meaning unchanged.
 3. PUNCTUATION & GRAMMAR: Fix grammar, agreement, and spelling. Add punctuation for logical flow. DO NOT use punctuation to represent pauses; merge fragments into cohesive sentences.
 4. FILLERS & STUTTERS (AGRESSIVE): REMOVE all hesitation sounds (um, uh, ah, er, hmm, 嗯, 呃) and meaningless repetitions (e.g., "I I", "the the").
-5. NUMERIC OUTPUT (RULE 6): Every numeric reference (counts, amounts, dates, math, lists, 1st/2nd) MUST use Western Arabic digits (0–9).
+5. NUMERIC OUTPUT (MANDATORY): EVERY numeric reference (e.g., "one", "twelve", "one thousand two hundred") MUST be converted to Western Arabic digits (1, 12, 1,200). This is NON-NEGOTIABLE and takes priority over Rule 2.
 6. NO CONVERSATION: Output ONLY the processed text inside the tags. Never add greetings or apologies.
 7. ARITHMETIC & MATH: Render spoken math with symbols (+ − × ÷ =).
 8. PRESERVE INPUT LANGUAGE: Never translate. If the input is mixed (CJK + Latin), keep it mixed.
@@ -162,6 +162,7 @@ CRITICAL_RULES = """
 10. LARGE NUMBERS: Normalize big quantities (1,500 million, 1.2 billion, 1,242) for clarity.
 11. LISTS: Format sequences as Markdown lists (- or 1.).
 12. NO HALLUCINATION: Never add new facts or commentary.
+13. DIGIT FORMATTING: Always use commas for thousands (1,000) in English, and appropriate regional separators for other languages.
 """
 
 # --- language-specific Few-Shot Examples ---

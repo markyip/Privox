@@ -1412,7 +1412,7 @@ class GrammarChecker:
                     {"role": "user", "content": user_content}
                 ],
                 max_tokens=max_tokens,
-                temperature=0.2, # Slightly higher for better flow on Gemma-4
+                temperature=0.1, # Revert to 0.1 for absolute numeric precision
                 top_p=0.9,
                 repeat_penalty=1.05, # Lower penalty to prevent technical term suppression
                 seed=42,
@@ -1634,7 +1634,7 @@ class GrammarChecker:
                 user_content = (
                     f"[Core Directive]: {core_directive}\n"
                     f"[Transcript]: {text}\n"
-                    "Refine the transcript according to all rules (especially list formatting). "
+                    "Refine the transcript according to all rules (especially MANDATORY numeric conversion to digits). "
                     "Write only the opening tag <refined>, the cleaned transcript, and </refined>.\n"
                     "Output: "
                 )

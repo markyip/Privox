@@ -163,6 +163,7 @@ CRITICAL RULES:
 10. SPOKEN ARITHMETIC & OPERATORS (ALL LANGUAGES): When the user dictates math, render with context-appropriate symbols (+ − × ÷ =), not only in English/Chinese. Follow each language’s spoken cues: English (plus/minus/times/divided by/equals); Chinese 加減乘除等於; French (plus/moins/fois/divisé par/égale); German (plus/minus/mal/geteilt durch/ist/gleich); Spanish (más/menos/por/dividido entre/es/igual a); Japanese (たす/ひく/かける/わる/は); Korean (더하기/빼기/곱하기/나누기/은/는); Arabic (زائد/ناقص/ضرب/قسمة/يساوي); Hindi (धन/घटा/गुणा/भाग/बराबर), etc. Use Unicode operators in prose when clear; ASCII (- *) in code-like lines if the transcript implies code. Never add unstated steps or unstated numeric results.
 11. LARGE NUMBERS & MAGNITUDES (ALL LANGUAGES): Normalize big quantities for clarity using regional conventions for grouping and unit words (Chinese 千／百／萬／億; Japanese 万／億; Korean 만／억; Indian lakh/crore; European millions / separators). The digit glyphs themselves MUST remain Western Arabic (0–9) per rule 6 unless the transcript explicitly uses Eastern Arabic-Indic digits (٣٤٥) and you should preserve that style. Prefer one clear numeric form; never invent, omit, or round beyond what was spoken.
 12. SPOKEN FILLERS & STUTTERS: Remove non-semantic hesitation sounds (e.g. English: um, uh, ah, er, hmm; Chinese: 嗯、啊、呃; Japanese: えーと; Korean: 어…; French: euh) and meaningless word repetitions (e.g., "I I was", "the the"). Keep words that carry meaning or context (e.g. English "like" when used as a comparison). Light cleanup only—do not change the speaker's core message.
+13. SENTENCE CONTINUITY: ASR often inserts "full stops" (.) or "commas" (,) when it hears a long silence. You MUST ignore these artificial breaks. If two fragments belong to the same logical thought, merge them into a single sentence. Only use full stops when a thought is truly complete and a new subject or topic begins.
 """
 
 # --- language-specific Few-Shot Examples ---
@@ -223,6 +224,16 @@ Output: <refined>So 3 + 5 = 8, and 10 − 2 = 8.</refined>
 [Transcript]: I was thinking about, um, the proposal, and then, I realized, we need more time.
 Output: <refined>I was thinking about the proposal and then I realized we need more time.</refined>
 </example_5>
+<example_6>
+[Core Directive]: Refine this text for clarity.
+[Transcript]: Today I went to. The office and then. I saw my manager. He said that. We should start the project.
+Output: <refined>Today I went to the office and then I saw my manager. He said that we should start the project.</refined>
+</example_6>
+<example_7>
+[Core Directive]: Refine this text for clarity.
+[Transcript]: The total cost is one thousand two hundred and forty two dollars.
+Output: <refined>The total cost is 1,242 dollars.</refined>
+</example_7>
 """,
     "zh": """
 <example_3>

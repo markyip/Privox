@@ -1268,9 +1268,9 @@ class GrammarChecker:
         elif language == "en" and language_prob > 0.4:
             directive += (
                 "\nENGLISH SPOKEN NUMBERS & MATH: Same global policy as all languages (CRITICAL RULE 6): "
-                "any numeric meaning → Western Arabic digits (0–9)—cardinal lists ('one, two, three, four' → '1, 2, 3, 4'), "
-                "including space-separated runs like 'one two three'. "
-                "Spoken arithmetic (plus, minus, times, multiplied by, divided by, equals) → +, −, ×, ÷, = with digits per CRITICAL RULE 10 (choose − vs - and ÷ vs / by context)."
+                "any numeric meaning → Western Arabic digits (0–9)—cardinal lists ('one, two, three, four' → '1, 2, 3, 4') and "
+                "large compound numbers ('one thousand two hundred and forty two' → '1,242'). "
+                "Spoken arithmetic (plus, minus, times, multiplied by, divided by, equals) → +, −, ×, ÷, = with digits per CRITICAL RULE 10."
             )
             if _mixed_cjk_lat:
                 directive += (
@@ -1569,14 +1569,20 @@ class GrammarChecker:
         # 2. Chinese fillers
         zh_fillers = r"[嗯呃][，。]?"
         text = re.sub(zh_fillers, "", text)
-        # 3. Cleanup redundant commas (often caused by ASR pauses)
+        # 3. Cleanup redundant commas/periods (often caused by ASR pauses)
         text = re.sub(r",\s*,", ",", text)
+        text = re.sub(r"\.\s*\.", ".", text)
         text = re.sub(r"\s+,\s+", ", ", text)
-        # 4. Simple stutters: "I I", "the the"
+        # 4. Heal mid-sentence breaks: ". the" -> " the" (ASR often splits on pauses)
+        # We look for a period followed by a lowercase letter
+        text = re.sub(r"\.\s+([a-z])", r" \1", text)
+        text = re.sub(r",\s+([a-z])", r" \1", text) # Optional: commas too? User said commas also break it.
+        # 5. Simple stutters: "I I", "the the"
         text = re.sub(r"\b(\w+)\s+\1\b", r"\1", text, flags=re.IGNORECASE)
-        # 5. Clean up spacing and orphaned punctuation
+        # 6. Clean up spacing and orphaned punctuation
         text = " ".join(text.split()).strip()
         text = re.sub(r"^,\s*", "", text) # Leading comma
+        text = re.sub(r"^\.\s*", "", text) # Leading period
         return text
 
     def correct(self, text, is_command=False, language=None, language_prob=0.0):

@@ -1412,9 +1412,9 @@ class GrammarChecker:
                     {"role": "user", "content": user_content}
                 ],
                 max_tokens=max_tokens,
-                temperature=0.1,
-                top_p=0.95,
-                repeat_penalty=1.2,
+                temperature=0.2, # Slightly higher for better flow on Gemma-4
+                top_p=0.9,
+                repeat_penalty=1.05, # Lower penalty to prevent technical term suppression
                 seed=42,
                 stop=extra_stop,
                 stream=True,

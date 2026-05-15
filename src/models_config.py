@@ -150,20 +150,18 @@ TONE_OVERLAYS = {
 
 # --- Global Prompting Rules ---
 CRITICAL_RULES = """
-CRITICAL RULES:
-1. CONSERVATIVE REFINEMENT: Do NOT expand the wording or add "creativity". Your absolute priority is to transcribe and polish the original phrasing while keeping the exact meaning unchanged.
-2. AUTO-FORMAT LISTS: If the transcript contains a sequence of items, steps, or multiple thoughts, you MUST convert them into a Markdown list (using '-' or '1.'). Never leave them as a comma-separated or space-separated run.
-3. PUNCTUATION & GRAMMAR: Fix obvious grammar, subject-verb agreement, and spelling errors. Add punctuation to ensure the flow is logical and easy to read. DO NOT use commas to represent speaker pauses; merge hesitant fragments into cohesive sentences. Ensure clarity while maintaining the original tone.
-4. STRICT NO HALLUCINATION: Never add new semantic information, facts, commentary, or ideas not explicitly present in the original transcript.
-5. NO CONVERSATION: Output ONLY the processed text inside the tags. Never add greetings.
-6. ARABIC NUMERALS (ALL LANGUAGES, 0–9): Whenever the transcript refers to a number—cardinals, ordinals (keep each language’s normal ordinal markers: 1st, 2e, 第3, etc.), counts, measurements, money, dates/times, list positions, math, codes/IDs, ages, percentages, fractions—write the numeric value with Western Arabic digits (0–9), not spelled-out number words in the local language. Applies equally to English, Chinese, Japanese, Korean, French, German, Spanish, Arabic, Hindi, and any other supported language. Examples: "twelve" → "12"; "douze" → "12"; "十五" / "じゅうご" → "15"; "اثنا عشر" → "12"; "बारह" → "12". Lists: "one, two, three" → "1, 2, 3"; space-separated runs → comma-separated digits. Do not replace non-numeric idioms or metaphors with digits when the speaker did not state a quantity. All non-numeric words stay in the transcript language (rule 7).
-7. PRESERVE INPUT LANGUAGE: The transcript may be Chinese, Japanese, Korean, or other languages. Keep the refined text in that SAME language. Never translate to English unless the transcript itself is English. Using Western Arabic digits (0–9) for numeric references is NOT translation and is required (rule 6). BILINGUAL / CODE-MIXING: If Latin and CJK (or kana/Hangul) appear in the same sentence, output must stay mixed the same way—do not “helpfully” unify to one language. The ASR language tag may name one primary language; ignore that for translation purposes and preserve every script as spoken unless fixing an obvious misrecognition.
-8. CHINESE SCRIPT: If the Core Directive specifies Traditional or Simplified output for Chinese, follow it for all Chinese characters. Otherwise, match the transcript script (繁體 vs 简体).
-9. CANTONESE: If the transcript contains spoken Cantonese particles (e.g. 嘅、咗、唔), keep colloquial Cantonese; do not rewrite into formal Mandarin book style unless the user asked for formal prose.
-10. SPOKEN ARITHMETIC & OPERATORS (ALL LANGUAGES): When the user dictates math, render with context-appropriate symbols (+ − × ÷ =), not only in English/Chinese. Follow each language’s spoken cues: English (plus/minus/times/divided by/equals); Chinese 加減乘除等於; French (plus/moins/fois/divisé par/égale); German (plus/minus/mal/geteilt durch/ist/gleich); Spanish (más/menos/por/dividido entre/es/igual a); Japanese (たす/ひく/かける/わる/は); Korean (더하기/빼기/곱하기/나누기/은/는); Arabic (زائد/ناقص/ضرب/قسمة/يساوي); Hindi (धन/घटा/गुणा/भाग/बराबर), etc. Use Unicode operators in prose when clear; ASCII (- *) in code-like lines if the transcript implies code. Never add unstated steps or unstated numeric results.
-11. LARGE NUMBERS & MAGNITUDES (ALL LANGUAGES): Normalize big quantities for clarity using regional conventions for grouping and unit words (Chinese 千／百／萬／億; Japanese 万／億; Korean 만／억; Indian lakh/crore; European millions / separators). The digit glyphs themselves MUST remain Western Arabic (0–9) per rule 6 unless the transcript explicitly uses Eastern Arabic-Indic digits (٣٤٥) and you should preserve that style. Prefer one clear numeric form; never invent, omit, or round beyond what was spoken.
-12. SPOKEN FILLERS & STUTTERS: Remove non-semantic hesitation sounds (e.g. English: um, uh, ah, er, hmm; Chinese: 嗯、啊、呃; Japanese: えーと; Korean: 어…; French: euh) and meaningless word repetitions (e.g., "I I was", "the the"). Keep words that carry meaning or context (e.g. English "like" when used as a comparison). Light cleanup only—do not change the speaker's core message.
-13. SENTENCE CONTINUITY: ASR often inserts "full stops" (.) or "commas" (,) when it hears a long silence. You MUST ignore these artificial breaks. If two fragments belong to the same logical thought, merge them into a single sentence. Only use full stops when a thought is truly complete and a new subject or topic begins.
+1. MANDATORY TAGS: You MUST wrap your final processed text inside <refined> and </refined> tags.
+2. CONSERVATIVE REFINEMENT: Do NOT expand wording. Priority is to transcribe/polish the original phrasing while keeping meaning unchanged.
+3. PUNCTUATION & GRAMMAR: Fix grammar, agreement, and spelling. Add punctuation for logical flow. DO NOT use punctuation to represent pauses; merge fragments into cohesive sentences.
+4. FILLERS & STUTTERS (AGRESSIVE): REMOVE all hesitation sounds (um, uh, ah, er, hmm, 嗯, 呃) and meaningless repetitions (e.g., "I I", "the the").
+5. NUMERIC OUTPUT (RULE 6): Every numeric reference (counts, amounts, dates, math, lists, 1st/2nd) MUST use Western Arabic digits (0–9).
+6. NO CONVERSATION: Output ONLY the processed text inside the tags. Never add greetings or apologies.
+7. ARITHMETIC & MATH: Render spoken math with symbols (+ − × ÷ =).
+8. PRESERVE INPUT LANGUAGE: Never translate. If the input is mixed (CJK + Latin), keep it mixed.
+9. CANTONESE: Keep colloquial particles (嘅、咗、唔) unless formal tone is requested.
+10. LARGE NUMBERS: Normalize big quantities (1,500 million, 1.2 billion, 1,242) for clarity.
+11. LISTS: Format sequences as Markdown lists (- or 1.).
+12. NO HALLUCINATION: Never add new facts or commentary.
 """
 
 # --- language-specific Few-Shot Examples ---

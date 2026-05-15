@@ -8,7 +8,7 @@ faster-whisper pulls PyPI `onnxruntime` (CPU); that wheel can overwrite GPU DLLs
 Uses `pip install --no-deps` so numpy/sympy/torch pins from Pixi are not altered.
 
 If uninstall fails with WinError 5 / 32, close apps using onnxruntime and retry.
-If the environment looks broken afterward, run `pixi install` to restore conda pins, then run this script again.
+If the environment looks broken afterward, run `pixi install` to restore conda pins, then run this script again. (v1.1)
 """
 from __future__ import annotations
 

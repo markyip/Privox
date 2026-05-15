@@ -5,7 +5,7 @@
     processorArchitecture="*"
     name="Privox.PrivoxApp"
     type="win32"
-  />
+  /> <!-- v1.1 -->
   <description>Privox - Private AI Voice Input Assistant</description>
   
   <!-- Request elevated DPI awareness -->

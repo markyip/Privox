@@ -583,7 +583,7 @@ class SettingsGUI(QMainWindow):
                 self.setWindowIcon(QIcon(icon_path))
                 # Set App ID for Windows Taskbar Grouping
                 if sys.platform == 'win32':
-                    myappid = u'markyip.privox.settings.1.2'
+                    myappid = u'markyip.privox.settings.1.1'
                     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
         except: pass
 

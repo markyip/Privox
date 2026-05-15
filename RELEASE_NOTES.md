@@ -1,197 +1,20 @@
 # Privox Release Notes
 
-## v1.2.8
+## v1.1 (Windows Experience Update)
 
 **Release date:** 2026-05-15
 
-### Persona & Prompt Engineering
-- **Prompt Conflict Resolution**: Implemented dynamic rule relaxation for "Concise" and "Summarize" tones. The system now intelligently adjusts the system prompt to allow for brevity when requested, preventing model hallucinations caused by contradictory instructions.
-- **Library Tidy**: 
-    - Removed the **"Personal Buddy"** persona to maintain a professional product focus.
-    - Removed the **"Aggressive"** tone across all personas.
-    - Updated **"Code Expert"** and **"Academic"** prompts for improved clarity and precision.
-- **Numerical Protocol Validation**: Finalized the decommissioning of the Python-based "Digit Guard" in favor of full LLM-based reasoning, now that GPU acceleration is stable.
+This update focuses on making Privox faster, more reliable, and easier to use on Windows. We've combined several recent improvements into this single "v1.1" release to ensure the best experience for all users.
 
-## v1.2.7
+### 🚀 Performance & Speed
+- **Lightning Fast AI**: We've optimized the app to take full advantage of modern NVIDIA graphics cards (including the RTX 40 and 50 series). This allows the AI to process your speech almost instantly without slowing down your computer.
+- **Smoother Transcription**: The system is now much more efficient at turning your voice into text, providing a snappier feel especially on newer hardware.
 
-**Release date:** 2026-05-15
+### 🛠️ Reliability & "Just Works"
+- **Fixed Startup Issues**: We resolved a common technical problem that caused the app to occasionally fail to start on certain Windows systems. It should now launch reliably every time.
+- **Better Typing & Pasting**: When you finish speaking, Privox is now smarter about finding your active window and pasting your text exactly where your cursor is.
+- **Cleaner Installation**: The app now does a better job of keeping your computer tidy by automatically cleaning up temporary background files.
 
-### High-Fidelity Refinement & Performance
-- **Full GPU Acceleration**: Enabled full 42-layer offloading for Gemma-4 on RTX 4070 (12GB) GPUs. This eliminates the CPU bottleneck, improving generation speed by up to 50x.
-- **Numerical Protocol v2**: Restored the high-precision numerical conversion rules to the LLM. Complex dictations like "Three billion and two million" are now handled with mathematical accuracy.
-- **Hybrid Optimization (Decommissioned)**: Reverted the experimental Python "Digit Guard" in favor of full LLM-based logic now that performance is optimized.
-- **Generative Safety Guards**: Implemented **Time Guards** (15s limit) and **Length Guards** (4x multiplier) to prevent model stalling and hallucination loops in complex languages like Chinese.
-
-### Fixes & Stability
-- **ASR Loading Fix**: Resolved a critical "Offline Mode" crash where Qwen-ASR failed to load from the local `models/` directory.
-- **Gemma Handler Refactor**: Transitioned to a more stable completion handler with native stop tokens for improved structural reliability.
-- **Cleanup**: Purged temporary `.tmp` and `.tmp_llama_test` directories and legacy scratch scripts.
-
-## v1.2.4
-
-**Release date:** 2026-05-15
-
-### ASR/Refiner Stability & performance
-- **Environment Isolation**: Forced `PYTHONNOUSERSITE=1` across all Pixi tasks to prevent global Python packages from interfering with `onnxruntime` and CUDA dependencies.
-- **Fixed DLL Discovery**: Resolved a critical startup crash in `onnxruntime-gpu` by adding `torch/lib` to the CUDA DLL search path.
-- **Gemma 4 Full Offloading**: Enabled full GPU offloading (42 layers) for Gemma 4 models on cards with >= 12GB VRAM (e.g., RTX 4070), maximizing inference speed.
-- **Qwen-ASR SDPA**: Enabled **Scaled Dot Product Attention (SDPA)** for Qwen-ASR, providing a significant speedup on RTX 40-series cards.
-- **Local Model Priority**: Refactored loading logic to prioritize local files in the `models/` directory, ensuring reliable offline operation once models are downloaded.
-
-### Refiner Quality & Formatting
-- **Enhanced Formatting Rules**: Strengthened prompt engineering for **Markdown list conversion**. Gemma 4 now reliably formats sequences into bulleted or numbered lists.
-- **Improved Role Handling**: Switched to separate **System/User roles** for Gemma completions, reducing instruction-drift in long transcripts.
-- **Sampling Tuning**: Optimized temperature and repeat penalty for better structural adherence in small models.
-
-### Startup & Onboarding
-- **Silero VAD Offline Fix**: Resolved `504 Gateway Time-out` by prioritizing the local Silero VAD cache.
-- **New Task**: Added `pixi run download-models` to allow users to pre-cache all AI weights before going offline.
-- **Better Error Messaging**: Added clear, actionable hints in the logs when model files are missing.
-
-### Maintenance
-- Removed unused benchmark and test scripts (`test_qwen3_asr_onnx.py`, `benchmark_prefs_polling.py`).
-- Cleaned up root directory from temporary patch and ONNX files.
-- Versioned all metadata to **1.2.7**.
-
-
-## v1.2.3
-
-**Release date:** 2026-04-19
-
-### Release summary
-- Refiner prompting and language hints are tuned for **Qwen ASR** and other backends without per-utterance LID, reducing cases where English dictation was pushed toward Chinese-style rewriting.
-- **Code-mixing** (Latin + Chinese / kana / Hangul in the same sentence) is called out explicitly in the refiner core directive and **CRITICAL_RULES** so the model keeps the mix instead of “helpfully” unifying to one language.
-- **Spoken fillers** (e.g. English *um* / *uh*) are reinforced via **CRITICAL RULE 12** and English-specific prompt hints where applicable.
-
-### Settings and preferences
-- The **Transcript delivery** UI block is **removed**. Behavior is fixed to the previous **Instant** path on Windows: deferred capture of the foreground window at end of recording, comparison at paste time, **Ctrl+V** when the target matches, otherwise **clipboard + tray notification**. The legacy preference key **`paste_delivery`** is scrubbed from `.user_prefs.json` on load/save (same mechanism as other obsolete keys).
-
-### Versioning
-- Application metadata at **1.2.7**: `APP_VERSION` in `src/bootstrap.py`, Settings footer, Windows `version_info.txt` / `assets/privox.manifest`, and grammar download `User-Agent` in `src/download_models.py`.
-
-## v1.2.2
-
-**Release date:** 2026-04-15
-
-### Release summary
-- Stabilization release for the current codebase snapshot that finalizes the **v1.2.2** cut.
-- Versioned metadata and docs are aligned for release packaging and GitHub distribution.
-
-### Packaged executable (logging & diagnostics)
-- **No `privox_app.log` in the built exe**: frozen builds use a **null logging root** only (no log file on disk, no stdout/stderr capture into Privox’s logging pipeline).
-- **Development unchanged**: `pixi run` / `python src/voice_input.py` still writes **`privox_app.log`** next to the repo for troubleshooting.
-- **Transcript diagnostics**: `PRIVOX_LOG_TRANSCRIPTION=1` is documented for **source / Pixi** runs where `privox_app.log` exists; the silent exe build does not persist those lines to disk.
-
-### Reliability (VAD / stderr)
-- **Fixed** a `NameError` (`msg` undefined) in **`LoggerWriter._stderr_downgrade`** that could surface while loading **Silero VAD** (e.g. tqdm/hub stderr) and was mis-reported as **VAD load failure** when stdout/stderr capture was active.
-- **Silero → WebRTC VAD fallback**: if Silero cannot load, Privox tries **`webrtcvad`** (`WebRtcVadAdapter`) when available; VRAM unload avoids calling **`.cpu()`** on non-module VAD sentinels.
-
-### Hotkey (first press vs model wake)
-- **First hotkey** when the app is **not** ready (e.g. VAD missing or mic stream not up) **does not** set **`pending_wakeup`** auto-start, avoiding a “phantom” recording session after load.
-
-### Versioning
-- Application metadata at **1.2.7**: `APP_VERSION` in `src/bootstrap.py`, Settings footer, Windows `version_info.txt` / `assets/privox.manifest`, and model-setup download `User-Agent`.
-
-### Long transcripts and `<refined>` (follow-up to v1.2.1)
-- **v1.2.1** raised Gemma **`n_ctx` to 6144**, compact system prompts for long inputs, and scaled **`max_tokens`** — this release hardens **Gemma 4 E2B/E4B** in production: **chat-native inference** via `create_chat_completion` with **`chat_format="gemma"`** so tokenization matches official templates (adds BOS correctly) and avoids **`<unused*>` degeneracy** from raw completion.
-- **Fallbacks**: folded **system + user** in one turn; streaming **early-abort** on `<unused*>` spam; optional **two-turn system/user** raw prompt retry with stronger `repeat_penalty`.
-- **Transcription logs** (when `PRIVOX_LOG_TRANSCRIPTION=1` or non-frozen dev): clarify that the **LLM string prefix** may still look like ASR; log **`<refined>` inner preview** and **pasted-text preview** so diagnostics align with final output.
-
-### VRAM saver and wake performance
-- **Idle unload** always releases **both ASR and refiner** (removed `unload_asr_on_idle`); ASR is cleared with **`del`** plus existing GC/CUDA cache flush.
-- After VRAM-saver wake, **Grammar and Qwen-ASR load in parallel** by default (wall time ≈ max of the two). Set **`PRIVOX_SEQUENTIAL_QWEN_LOAD=1`** if you need strict sequential load (e.g. CUDA OOM).
-- **Prefs hot-reload** is paused while heavy models initialize; after load, **prefs poll baseline** is synced so **`track_model_usage`** does not trigger a spurious **`load_config`**.
-
-### Hotkey / VRAM-saver race
-- If recording stops (toggle or auto-stop) while models are still loading after wake, **pending auto-start is cancelled** so Privox does not start a second phantom session when loading finishes.
-
-### Settings (model setup)
-- Saving **only ASR** or **only refiner** shows a **model-setup** dialog that lists **just the changed model**, not both.
-
-## v1.2.1
-
-### Versioning
-- Application metadata at **1.2.1**: `APP_VERSION` in `src/bootstrap.py`, Settings footer, Windows `version_info.txt` / `assets/privox.manifest`, and installer download `User-Agent`.
-
-### Refiner: long transcripts and context
-- **Gemma 4 E2B / E4B (TurboQuant)** default **`n_ctx` increased from 3072 to 6144** so refinement sees more of long dictation before hitting context limits.
-- **Long transcripts (> ~300 characters)** use **`get_system_formatter_for_transcript`**: shorter system prompt (still includes **`CRITICAL_RULES`**) and explicit **no summarization / no shortening**, instead of the full few-shot formatter that could crowd out the transcript.
-- **Grammar refinement `max_tokens`** scaled up for long inputs (including CJK-length heuristics, capped at 4096) so outputs are not cut off prematurely.
-
-### Config reload robustness
-- **`load_config`** reads JSON with **`utf-8-sig`** and **`_safe_json_load`**: on **`JSONDecodeError`**, logs the **file path** and a **short preview** of the contents, returns empty dicts where appropriate, and avoids noisy tracebacks when a file is mid-save or malformed.
-
-### Documentation
-- **README** updated: TurboQuant / VRAM notes, **`n_ctx` 6144**, compact-prompt behavior, config safety, and LLM library example aligned with current defaults.
-
-## v1.2.0
-
-This section rolls up everything that shipped across the **1.1.0** / **1.1.1** line plus the **1.2.0** release (version bump and refiner prompting). Older **v1.1.x** headings are folded in here so there is a single current changelog entry.
-
-### Versioning
-- Application metadata at **1.2.0**: `APP_VERSION` in `src/bootstrap.py`, Settings footer, Windows `version_info.txt` / `assets/privox.manifest`, and installer download `User-Agent`.
-
-### Refiner model library
-- Removed legacy refiners: `CoEdit Large (T5)`, `Llama 3.2 3B Instruct`, `Qwen 3.5 9B`, and `Qwen 2.5 7B`.
-- Kept and tuned active refiners:
-  - `Multilingual (Qwen 3.5 4B)` with TurboQuant load settings.
-  - `Gemma 4 E2B (TurboQuant)`.
-  - `Gemma 4 E4B (TurboQuant)`.
-- Updated migration logic to auto-redirect removed refiner names to the current default.
-
-### Performance and VRAM
-- TurboQuant profile support for Qwen 3.5 4B (`n_ctx`, `n_gpu_layers`, tuned `n_batch` behavior).
-- Improved low-VRAM stability with safer GPU layer fallback behavior in `GrammarChecker`.
-- Default refiner remains `Gemma 4 E2B (TurboQuant)` for balanced quality vs VRAM.
-
-### Installer and downloads
-- Hugging Face downloads use `huggingface_hub` (and related dependencies); large repos may benefit from optional `hf_xet` where the environment provides it.
-- `hf_xet` is **not** a direct `pixi.toml` dependency; it may still appear transitively via the Hugging Face stack.
-
-### Logging and environment hygiene
-- Reduced noisy llama.cpp diagnostics being reported as hard errors in app logs.
-- Improved GPU backend detection wording for newer llama.cpp system info format.
-- Sanitized user-level `site-packages` paths on startup to reduce environment contamination.
-- Hugging Face **tqdm** “Loading checkpoint shards” lines on stderr are downgraded so they are not mislabeled as hard errors in the app log.
-
-### Project cleanup
-- Removed stale `refiner_profiles` block from `config.json`.
-- Cleaned `.gitignore` JSON preference rules for clearer behavior.
-- Updated documentation to reflect current TurboQuant-based refiner strategy.
-- Dev utility **`check_gpu.py`** moved from `src/` to **`scripts/check_gpu.py`** (Torch CUDA + llama-cpp import smoke check; run inside the Pixi environment).
-
-### Documentation and ASR catalog
-- README aligned with the current ASR catalog (faster-whisper + Qwen-ASR; removed references to retired per-language Whisper Large entries).
-- Documented Python **3.10–3.12** (per `pixi.toml`) and refiner `<refined>`-tag behavior with fallback when models do not comply.
-
-### ASR model list
-- Removed separate **Whisper Large v3 Turbo** presets per language (Cantonese, Korean, German, French, Japanese, Hindi); use **Whisper Large v3 Turbo (Multilingual)** or **Qwen-ASR** for those use cases.
-
-### ASR defaults and catalog (documentation update)
-- **Default speech model** is **Qwen-ASR v3 1.7B** (`whisper_model` id `qwen3-asr-1.7b`). Shipped `config.json`, installer verification, and model-setup defaults use this id consistently with `whisper_repo` **Qwen/Qwen3-ASR-1.7B**.
-- **Qwen2-Audio 7B** is **removed** from the ASR library and Settings picker. Users who still had that preset are migrated to the new default.
-- Settings loads **`whisper_model` ids** from `config.json` into the ASR combo by resolving them to the matching library **display name**; prefs and technical config stay in sync after migrations.
-
-### Output / paste behavior (documentation update)
-- After refinement, paste uses a **single serialized clipboard workflow**: the clipboard is **verified** to contain the intended text before simulating **Ctrl+V**, reducing cases where unrelated previously copied text was inserted.
-
-### Refiner robustness
-- Stronger handling when the refiner omits `<refined>` tags (strip prompt/`CRITICAL RULES` echo; fall back to transcription when appropriate).
-- **Cantonese oral** wording is preserved when the transcript looks like spoken Cantonese. **Output script** (繁體 vs 简体) is controlled by the General setting, not by copying ASR’s mix of scripts.
-
-### Chinese output (Settings → General)
-- **Default (checkbox off)**: All Chinese in the **final output** is steered toward **Traditional (繁體中文)** and post-processed with **zhconv** (`zh-hant`) when available, **regardless of ASR script**.
-- **Simplified Chinese output (简体中文) enabled**: Same pipeline targets **Simplified (简体)** (`zh-hans`).
-- Preference is stored as `use_simplified_chinese_output` in `.user_prefs.json`.
-
-### Privacy / logging (frozen executable)
-- Transcription-related log lines (diagnostics, ASR/refiner text snippets, etc.) are **suppressed** when `sys.frozen` (PyInstaller build). Set **`PRIVOX_LOG_TRANSCRIPTION=1`** to re-enable for support.
-
-### Voice capture
-- Auto-stop uses **VAD** plus a **mic energy** fallback for quiet microphones; Silero **end-of-speech** silence uses a shorter internal window than the user **Auto-Stop** seconds so stopping after you finish talking behaves more naturally.
-
-### Refiner prompting (multilingual, 1.2.0)
-- **Arabic numerals (0–9)** for any numeric reference across **all** supported languages (counts, money, dates, math, lists, etc.), while keeping non-numeric wording in the transcript language (`CRITICAL_RULES` 6–7, 11).
-- **Spoken arithmetic and large numbers** guidance extended to all languages (operators + − × ÷ =; locale-aware magnitudes such as 萬/億, 万/億, 만/억, lakh/crore, millions / grouping).
-- **Language-specific few-shot examples** for numbers and math (e.g. ja, ko, fr, de, es, ar, hi) plus a generic fallback when the detected locale has no dedicated block.
-- **User prompt layer**: base directive and high-confidence language hints reinforce digits and math rules for non-English as well as English.
+### 🛡️ Privacy & Security
+- **Strictly Local**: We've further enhanced our privacy protections to ensure that your dictation never leaves your computer.
+- **Silent & Unobtrusive**: The app now runs more smoothly in the background, keeping itself out of your way while you work.

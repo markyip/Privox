@@ -13,7 +13,11 @@ This update focuses on making Privox faster, more reliable, and easier to use on
 ### 🛠️ Reliability & "Just Works"
 - **Fixed Startup Issues**: We resolved a common technical problem that caused the app to occasionally fail to start on certain Windows systems. It should now launch reliably every time.
 - **Better Typing & Pasting**: When you finish speaking, Privox is now smarter about finding your active window and pasting your text exactly where your cursor is.
+- **Modern AI Engine**: Upgraded core transcription engine (llama-cpp-python) to **v0.3.23**, enabling official Windows binary support and faster, more stable AI operations.
 - **Cleaner Installation**: The app now does a better job of keeping your computer tidy by automatically cleaning up temporary background files.
+- **Refined Installer UI**: Unified fonts and styling across the installer, and implemented correct taskbar icon association for a more professional look.
+- **Improved Hotkey Reliability**: Implemented physical key-state verification to prevent the hotkey from getting "stuck" or missed during high system load.
+- **Pre-warm Models**: Added a new "Pre-warm Models on Startup" feature (enabled by default) so the AI is ready to transcribe instantly without a first-use delay.
 
 ### 🛡️ Privacy & Security
 - **Strictly Local**: We've further enhanced our privacy protections to ensure that your dictation never leaves your computer.

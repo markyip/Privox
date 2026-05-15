@@ -5,5 +5,6 @@
     "grammar_file": "gemma-4-E4B-it-Q4_K_M.gguf",
     "active_character": "Professional Refiner",
     "log_transcription": false,
+    "eager_model_load": true,
     "version": "1.1"
 }

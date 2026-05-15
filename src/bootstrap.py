@@ -17,6 +17,13 @@ import site
 site.ENABLE_USER_SITE = False
 
 if sys.platform == 'win32':
+    # Ensure taskbar shows correct icon by setting AppUserModelID
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("markyip.privox.installer.v1")
+    except Exception:
+        pass
+
     # Inject pixi environment DLL paths if already present
     env_path = os.path.join(os.getcwd(), ".pixi", "envs", "default")
     dll_path = os.path.join(env_path, "Library", "bin")
@@ -294,7 +301,7 @@ class ModernDialog(QDialog):
         
         close_btn = QPushButton("✕")
         close_btn.setFixedSize(24, 24)
-        close_btn.setStyleSheet("QPushButton { border: none; color: #666666; font-size: 16px; background: transparent; } QPushButton:hover { color: #ffffff; }")
+        close_btn.setStyleSheet("QPushButton { border: none; color: #666666; font-size: 14px; font-family: 'Segoe UI Symbol', 'Arial', sans-serif; background: transparent; } QPushButton:hover { color: #ffffff; }")
         close_btn.clicked.connect(self.reject)
         title_bar.addWidget(close_btn)
         container_layout.addLayout(title_bar)
@@ -416,9 +423,9 @@ class InstallerGUI(QMainWindow):
         title_layout.addWidget(win_title)
         title_layout.addStretch()
         
-        btn_close = QPushButton("×")
+        btn_close = QPushButton("✕")
         btn_close.setFixedSize(30, 30)
-        btn_close.setStyleSheet("QPushButton { background: transparent; color: white; border: none; font-size: 20px; } QPushButton:hover { color: #ff5555; }")
+        btn_close.setStyleSheet("QPushButton { background: transparent; color: rgba(255, 255, 255, 0.4); border: none; font-size: 14px; font-family: 'Segoe UI Symbol', 'Arial', sans-serif; } QPushButton:hover { color: #ff5555; }")
         btn_close.clicked.connect(self.close)
         title_layout.addWidget(btn_close)
         
@@ -455,14 +462,14 @@ class InstallerGUI(QMainWindow):
         self.btn_cancel = QPushButton("CANCEL")
         self.btn_cancel.setObjectName("btn_cancel")
         self.btn_cancel.setFixedSize(120, 44)
-        self.btn_cancel.clicked.connect(self.close)
         self.btn_cancel.setCursor(Qt.PointingHandCursor)
+        self.btn_cancel.setStyleSheet("QPushButton#btn_cancel { background-color: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1); color: #ffffff; border-radius: 6px; font-weight: 800; font-size: 12px; } QPushButton#btn_cancel:hover { background-color: rgba(255, 255, 255, 0.1); }")
         
         self.btn_next = QPushButton("INSTALL")
         self.btn_next.setObjectName("btn_next")
         self.btn_next.setFixedSize(140, 44)
         self.btn_next.setCursor(Qt.PointingHandCursor)
-        self.btn_next.setStyleSheet("QPushButton#btn_next { background-color: #ffffff; color: #000000; border-radius: 6px; font-weight: 900; }")
+        self.btn_next.setStyleSheet("QPushButton#btn_next { background-color: #ffffff; color: #000000; border-radius: 6px; font-weight: 800; font-size: 12px; } QPushButton#btn_next:hover { background-color: rgba(255, 255, 255, 0.9); }")
         self.btn_next.clicked.connect(self.start_install)
         
         self.btn_cancel.clicked.disconnect()

@@ -304,8 +304,8 @@ def main() -> None:
     )
     ap.add_argument(
         "--version",
-        default="0.3.20",
-        help="llama-cpp-python version to build/install (default: 0.3.20)",
+        default="0.3.23",
+        help="llama-cpp-python version to build/install (default: 0.3.23)",
     )
     args = ap.parse_args()
 
@@ -409,11 +409,12 @@ def main() -> None:
             "wheel",
             "--no-deps",
             "--no-cache-dir",
-            "--no-binary",
             "llama-cpp-python",
             "-w",
             str(out),
             f"llama-cpp-python=={ver}",
+            "--extra-index-url",
+            "https://abetlen.github.io/llama-cpp-python/whl/cu124",
         ]
         print(f"Building wheel (CUDA) into {out} ...", flush=True)
     else:

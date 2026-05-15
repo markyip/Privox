@@ -28,7 +28,7 @@ bench-ct2 = "python src/voice_input.py --benchmark-ct2-asr"
 # Pre-download all models for offline use.
 download-models = { cmd = "python src/download_models.py", env = { PYTHONNOUSERSITE = "1" } }
 build = { cmd = "python build_app.py", env = { PYTHONNOUSERSITE = "1" } }
-# Refiner (Gemma 4): needs llama-cpp-python >=0.3.20 with CUDA. Optional: copy the built wheel to wheels/ before `pixi run build` to ship it in the installer.
+# Refiner (Gemma 4): needs llama-cpp-python >=0.3.23 with CUDA. Optional: copy the built wheel to wheels/ before `pixi run build` to ship it in the installer.
 install-llama-cuda = "python scripts/install_llama_cuda.py"
 # Same env as install-llama-cuda (CUDA CMAKE_ARGS, Ninja, /utf-8). Do not use bare `pixi run pip wheel` for CUDA.
 wheel-llama-cuda = "python scripts/install_llama_cuda.py --wheel"

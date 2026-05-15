@@ -1729,6 +1729,7 @@ class SettingsGUI(QMainWindow):
         self.prefs["current_refiner"] = self.llm_combo.currentText()
         self.prefs["sound_enabled"] = self.check_sound.isChecked()
         self.prefs["use_simplified_chinese_output"] = self.check_simplified_chinese.isChecked()
+        self.prefs["eager_model_load"] = self.check_eager_load.isChecked()
         self.prefs["auto_stop_enabled"] = True 
         
         # Capture current prompt edits before saving

@@ -570,7 +570,8 @@ def resource_path(relative_path):
         # PyInstaller creates a temp folder and stores path in _MEIPASS
         base_path = sys._MEIPASS
     except Exception:
-        base_path = os.path.abspath(".")
+        # Fall back to the pre-calculated BASE_DIR instead of relative "."
+        base_path = globals().get("BASE_DIR", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     return os.path.join(base_path, relative_path)
 try:
     import sys
@@ -1985,16 +1986,6 @@ def _privox_vad_prefers_cuda() -> bool:
     return v in ("1", "true", "yes", "on")
 
 
-def _defer_heavy_models_until_first_use() -> bool:
-    """Frozen exe or Privox.exe --run (pythonw + voice_input): skip upfront ASR/refiner load."""
-    if getattr(sys, "frozen", False):
-        return True
-    return (os.environ.get("PRIVOX_PACKAGED_LAUNCH") or "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
 
 
 class VoiceInputApp:
@@ -2062,6 +2053,7 @@ class VoiceInputApp:
         self.vram_timeout = 60 # Seconds before unloading
         # Idle unload policy: unload ASR with refiner after VRAM Saver timeout (wake-up reload is fast enough).
         self.use_simplified_chinese_output = False
+        self.eager_model_load = True 
         self.pending_wakeup = False # Auto-start recording after loading?
         # If True, user stopped recording (toggle or auto-stop) while ASR/LLM were still loading —
         # do not auto-start again when load finishes (avoids phantom sessions after VRAM saver wake).
@@ -2163,9 +2155,8 @@ class VoiceInputApp:
         self.update_tray_tooltip()
         self.load_vad()
         
-        # Packaged installs (frozen exe or --run → pythonw): prefer lazy heavy-model loading to avoid
-        # long boot + startup hangs from ASR/refiner init while Windows is still busy at logon.
-        if _defer_heavy_models_until_first_use():
+        # Eager vs Lazy Loading
+        if not self.eager_model_load:
             self.loading_status = "Ready (Lazy Model Warmup)"
             self.update_tray_tooltip()
             self.update_status("READY")
@@ -2311,6 +2302,11 @@ class VoiceInputApp:
             try:
                 log_print("Loading Heavy Models (Wake up)...")
                 self.loading_status = "Loading Models..."
+                
+                # Signal RECORDING immediately if user already hit hotkey during wake-up
+                if self.is_listening:
+                    self.update_status("RECORDING")
+                
                 self.update_tray_tooltip()
                 self.model_load_started_at = time.time()
                 self.model_load_timed_out = False
@@ -2837,6 +2833,8 @@ class VoiceInputApp:
             self.custom_dictionary = prefs.get("custom_dictionary", [])
             self.vram_timeout = max(5, prefs.get("vram_timeout", 60))
             self.use_simplified_chinese_output = bool(prefs.get("use_simplified_chinese_output", False))
+            # Eager load defaults to True for a premium "ready-to-go" experience
+            self.eager_model_load = bool(prefs.get("eager_model_load", config.get("eager_model_load", True)))
             self.character = prefs.get("character", "Writing Assistant")
             self.tone = prefs.get("tone", "Natural")
             self.custom_prompts = prefs.get("custom_prompts", {})
@@ -3205,137 +3203,103 @@ class VoiceInputApp:
 
     def animation_loop(self):
         frame = 0
+        # Pre-cache the base image to avoid constant I/O in the loop
+        icon_path = resource_path("assets/icon.png")
+        base_img = None
+        try:
+            if os.path.exists(icon_path):
+                base_img = Image.open(icon_path).convert("RGBA")
+        except Exception as e:
+            log_print(f"Warning: Could not load base icon: {e}")
+
         while self.running:
             try:
                 if not self.icon:
                     time.sleep(1)
                     continue
 
-                # Default static icon path
-                icon_path = resource_path("assets/icon.png")
-                base_img = None
-                if os.path.exists(icon_path):
-                     base_img = Image.open(icon_path).convert("RGBA")
-                
-                # If static state, just ensure base icon is set once (to avoid cpu usage)
-                # But here we want custom static states too (e.g. ready = normal)
-                
                 new_icon = None
                 
                 if self.ui_state == "RECORDING":
-                    # Waveform Animation
+                    # Waveform Animation (12fps)
                     new_icon = self.draw_waveform(frame, base_img)
                     frame += 1
-                    time.sleep(0.08) # 12fps
-                    
+                    sleep_time = 0.08
                 elif self.ui_state in ["PROCESSING", "DOWNLOADING", "INITIALIZING"]:
-                    # Spinner Animation for processing, downloading, and initializing
+                    # Spinner Animation (12fps)
                     new_icon = self.draw_spinner(frame, base_img)
                     frame += 1
-                    time.sleep(0.08)
-                    
+                    sleep_time = 0.08
                 elif self.ui_state == "SLEEP":
-                    # Flat Line (Static or slow pulse?) -> Let's do static flat line
-                    # Only update if current icon is not already it? 
-                    # Simpler to re-draw for now, optimization later if needed.
+                    # Flat Line (Slow Update)
                     new_icon = self.draw_flat_line(base_img)
-                    time.sleep(0.5) # Slow update
-                    
+                    sleep_time = 0.2 # Improved wake-up responsiveness
                 elif self.ui_state == "ERROR":
-                    # Error Dot (Static - Monotone White)
-                    # Maybe draw an "!" or solid circle
+                    # Error State
                     if base_img:
                         new_icon = base_img.copy()
                         d = ImageDraw.Draw(new_icon)
-                        # Draw "!" or white dot
                         d.ellipse((48, 48, 60, 60), fill="white", outline="white")
-                    time.sleep(0.5)
-                    
-                else: # READY or LOADING
-                    # Just the base icon (Normal)
-                    # Maybe clear any overlays
-                    if base_img: new_icon = base_img
-                    time.sleep(0.5)
+                    else:
+                        new_icon = self.draw_flat_line(None, color="white")
+                    sleep_time = 0.4
+                else: # READY
+                    # Reset to base icon (Normal)
+                    if base_img:
+                        new_icon = base_img
+                    else:
+                        # Fallback to a clean flat line if no icon file exists
+                        new_icon = self.draw_flat_line(None)
+                    sleep_time = 0.2 # Improved responsiveness for hotkey detection
 
                 if new_icon:
                     self.icon.icon = new_icon
+                
+                time.sleep(sleep_time)
                     
             except Exception as e:
                 log_print(f"Anim Error: {e}")
                 time.sleep(1)
 
     def draw_waveform(self, frame, base_img):
-        # Draw dynamic waveform bars on top of base or instead of?
-        # User said "waveform as icon". Our icon IS a waveform.
-        # So we should animate the bars of the icon itself? 
-        # But we loaded a PNG. We can't easily animate components of a flat PNG.
-        # OPTION: Draw the waveform procedurally from scratch (like generate_icon.py).
-        
         size = (64, 64)
-        bg_color = (25, 25, 35, 255) 
+        bg_color = (25, 25, 35, 255) # Solid background
         bar_color = (255, 255, 255, 255)
         
         img = Image.new("RGBA", size, bg_color)
         draw = ImageDraw.Draw(img)
         
-        # 4 Bars
-        import random
-        import math
-        
-        bar_w = 8
-        gap = 4
-        total_w = (4 * bar_w) + (3 * gap)
-        start_x = (64 - total_w) // 2
-        center_y = 32
-        
         # Animate heights based on sine wave + noise
+        import math, random
+        bar_w, gap = 8, 4
+        total_w = (4 * bar_w) + (3 * gap)
+        start_x, center_y = (64 - total_w) // 2, 32
+        
         for i in range(4):
-            # Phase shift for each bar
-            # Time varying
             t = frame * 0.5
-            
-            # Base height + sin wave
-            # random noise to look like voice
-            noise = random.randint(-5, 5)
-            h = 20 + int(15 * math.sin(t + i)) + noise
+            h = 20 + int(15 * math.sin(t + i)) + random.randint(-5, 5)
             h = max(4, min(60, h))
-            
             x = start_x + i * (bar_w + gap)
-            y1 = center_y - (h // 2)
-            y2 = center_y + (h // 2)
-            
-            draw.rectangle((x, y1, x+bar_w, y2), fill=bar_color)
-            
-        # Monotone: No Red Dot
-        # draw.ellipse((50, 50, 60, 60), fill="#ff4444", outline="white")
-            
+            draw.rectangle((x, center_y - (h // 2), x + bar_w, center_y + (h // 2)), fill=bar_color)
         return img
 
     def draw_spinner(self, frame, base_img):
-        # Processing: Rotating Circle (Monotone White)
         size = (64, 64)
-        bg_color = (25, 25, 35, 255) 
+        bg_color = (25, 25, 35, 255) # Solid background
         img = Image.new("RGBA", size, bg_color)
         draw = ImageDraw.Draw(img)
         
-        # Draw Arc
         start_angle = (frame * 30) % 360
         end_angle = (start_angle + 270) % 360
-        
         draw.arc((12, 12, 52, 52), start=start_angle, end=end_angle, fill="white", width=4)
-        
         return img
 
-    def draw_flat_line(self, base_img):
-        # Sleep Mode (Monotone White)
+    def draw_flat_line(self, base_img, color="white"):
         size = (64, 64)
-        bg_color = (25, 25, 35, 255) 
+        bg_color = (25, 25, 35, 255) # Solid background
         img = Image.new("RGBA", size, bg_color)
         draw = ImageDraw.Draw(img)
-        
-        # Flat Line
-        draw.line((10, 32, 54, 32), fill="white", width=3) # Changed from grey to white for visibility
-        
+        draw.line((10, 32, 54, 32), fill=color, width=3)
         return img
 
     def audio_callback(self, indata, frames, time, status):
@@ -3396,35 +3360,26 @@ class VoiceInputApp:
 
         # 3. Check Match
         if key_name == self.target_key:
-            # OS key-repeat sends repeated key-down without key-up; first down toggles, repeats must not
-            # (otherwise: stop session -> repeat arrives after debounce -> starts a phantom session).
+            # OS key-repeat sends repeated key-down without key-up; first down toggles, repeats must not.
+            # However, if we missed a release event (e.g. during high CPU load), reset the state.
             if self._hotkey_primary_down:
-                return
-
-            # Win32 Robustness: Check for "Stuck" modifiers using ctypes
-            if sys.platform == 'win32' and self.active_mods != self.target_mods:
-                import ctypes
-                stuck = []
-                for mod in list(self.active_mods):
-                    vk = 0
-                    if mod == 'ctrl': vk = 0x11
-                    elif mod == 'shift': vk = 0x10
-                    elif mod == 'alt': vk = 0x12
-                    
-                    if vk and not (ctypes.windll.user32.GetAsyncKeyState(vk) & 0x8000):
-                        stuck.append(mod)
-                
-                if stuck:
-                    log_print(f" [Hotkey Diagnostic] Clearing stuck modifiers: {stuck}")
-                    for mod in stuck:
-                        self.active_mods.remove(mod)
+                if sys.platform == 'win32':
+                    k_vk = getattr(key, 'vk', None)
+                    # If pynput thinks it's down, but the OS says it's physically UP, reset.
+                    if k_vk and not (ctypes.windll.user32.GetAsyncKeyState(k_vk) & 0x8000):
+                        log_print(f" [Hotkey Diagnostic] Detected missed release for '{key_name}'. Resetting state.")
+                        self._hotkey_primary_down = False
+                    else:
+                        return # Still physically held down (actual repeat)
+                else:
+                    return
 
             if self.active_mods != self.target_mods:
                 log_print(f" [Hotkey Ignored] Key '{key_name}' pressed, but modifiers mismatch. Expected: {self.target_mods}, Actual: {self.active_mods}")
                 return
 
             now = time.time()
-            if now - self.last_toggle_time < 0.4:
+            if now - self.last_toggle_time < 0.3: # Reduced from 0.4 for better responsiveness
                 return
 
             self._hotkey_primary_down = True

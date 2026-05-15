@@ -4198,7 +4198,7 @@ class VoiceInputApp:
                     if _clipboard_only_no_restore():
                         self._notify_tray(
                             "Privox",
-                            "Could not sample the active window — transcript on clipboard. Paste with Ctrl+V.",
+                            "Window focus lost — transcript on clipboard. Please paste manually into your target field.",
                         )
                     else:
                         self.sound_manager.play_error()
@@ -4211,7 +4211,7 @@ class VoiceInputApp:
                     if _clipboard_only_no_restore():
                         self._notify_tray(
                             "Privox",
-                            "Active window changed — transcript on clipboard. Paste with Ctrl+V.",
+                            "Focus switched — transcript on clipboard. Please paste it into your original window.",
                         )
                     else:
                         self.sound_manager.play_error()

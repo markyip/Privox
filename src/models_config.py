@@ -126,11 +126,11 @@ TONE_OVERLAYS = {
         "Objective: Sound authoritative and polished."
     ),
     "Natural": (
-        "Style: Conversational. DELETE all fillers. Maintain the speaker's original flow. Fix obvious errors. "
+        "Style: Conversational. DELETE all fillers. Merge fragments caused by pauses into cohesive sentences. Fix obvious errors. "
         "Objective: Sound like a clear version of the original speaker."
     ),
     "Polite": (
-        "Style: Courteous. DELETE all fillers. Soften direct statements. Use honorifics/politeness where contextually appropriate. "
+        "Style: Courteous. DELETE all fillers. Merge fragments caused by pauses into cohesive sentences. Soften direct statements. Use honorifics/politeness where contextually appropriate. "
         "Objective: Sound respectful and considerate."
     ),
     "Casual": (
@@ -153,7 +153,7 @@ CRITICAL_RULES = """
 CRITICAL RULES:
 1. CONSERVATIVE REFINEMENT: Do NOT expand the wording or add "creativity". Your absolute priority is to transcribe and polish the original phrasing while keeping the exact meaning unchanged.
 2. AUTO-FORMAT LISTS: If the transcript contains a sequence of items, steps, or multiple thoughts, you MUST convert them into a Markdown list (using '-' or '1.'). Never leave them as a comma-separated or space-separated run.
-3. PUNCTUATION & GRAMMAR: Fix obvious grammar, subject-verb agreement, and spelling errors. Add punctuation to ensure the flow is logical and easy to read. Ensure clarity while maintaining the original tone.
+3. PUNCTUATION & GRAMMAR: Fix obvious grammar, subject-verb agreement, and spelling errors. Add punctuation to ensure the flow is logical and easy to read. DO NOT use commas to represent speaker pauses; merge hesitant fragments into cohesive sentences. Ensure clarity while maintaining the original tone.
 4. STRICT NO HALLUCINATION: Never add new semantic information, facts, commentary, or ideas not explicitly present in the original transcript.
 5. NO CONVERSATION: Output ONLY the processed text inside the tags. Never add greetings.
 6. ARABIC NUMERALS (ALL LANGUAGES, 0–9): Whenever the transcript refers to a number—cardinals, ordinals (keep each language’s normal ordinal markers: 1st, 2e, 第3, etc.), counts, measurements, money, dates/times, list positions, math, codes/IDs, ages, percentages, fractions—write the numeric value with Western Arabic digits (0–9), not spelled-out number words in the local language. Applies equally to English, Chinese, Japanese, Korean, French, German, Spanish, Arabic, Hindi, and any other supported language. Examples: "twelve" → "12"; "douze" → "12"; "十五" / "じゅうご" → "15"; "اثنا عشر" → "12"; "बारह" → "12". Lists: "one, two, three" → "1, 2, 3"; space-separated runs → comma-separated digits. Do not replace non-numeric idioms or metaphors with digits when the speaker did not state a quantity. All non-numeric words stay in the transcript language (rule 7).
@@ -218,6 +218,11 @@ Output: <refined>Okay, the steps are 1, 2, 3, 4.</refined>
 [Transcript]: so three plus five equals eight and ten minus two is also eight
 Output: <refined>So 3 + 5 = 8, and 10 − 2 = 8.</refined>
 </example_4>
+<example_5>
+[Core Directive]: Refine this text for clarity.
+[Transcript]: I was thinking about, um, the proposal, and then, I realized, we need more time.
+Output: <refined>I was thinking about the proposal and then I realized we need more time.</refined>
+</example_5>
 """,
     "zh": """
 <example_3>

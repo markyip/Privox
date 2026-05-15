@@ -1562,17 +1562,22 @@ class GrammarChecker:
             return ""
 
     def _strip_common_fillers(self, text: str) -> str:
-        """Regex-based pre-cleanup to catch obvious fillers before the LLM sees them."""
-        # 1. English fillers
-        en_fillers = r"\b(um|uh|hmm|ah|er|uhm|erm|oh)\b"
+        """Regex-based pre-cleanup to catch obvious fillers and pause artifacts."""
+        # 1. English fillers + optional trailing punctuation
+        en_fillers = r"\b(um|uh|hmm|ah|er|uhm|erm|oh)\b[.,]?"
         text = re.sub(en_fillers, "", text, flags=re.IGNORECASE)
-        # 2. Chinese fillers (be careful with these)
-        zh_fillers = r"[嗯呃]"
+        # 2. Chinese fillers
+        zh_fillers = r"[嗯呃][，。]?"
         text = re.sub(zh_fillers, "", text)
-        # 3. Simple stutters: "I I", "the the"
+        # 3. Cleanup redundant commas (often caused by ASR pauses)
+        text = re.sub(r",\s*,", ",", text)
+        text = re.sub(r"\s+,\s+", ", ", text)
+        # 4. Simple stutters: "I I", "the the"
         text = re.sub(r"\b(\w+)\s+\1\b", r"\1", text, flags=re.IGNORECASE)
-        # 4. Clean up spacing
-        return " ".join(text.split()).strip()
+        # 5. Clean up spacing and orphaned punctuation
+        text = " ".join(text.split()).strip()
+        text = re.sub(r"^,\s*", "", text) # Leading comma
+        return text
 
     def correct(self, text, is_command=False, language=None, language_prob=0.0):
         # Apply pre-processing filler removal for English/Chinese-heavy text

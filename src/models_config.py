@@ -149,21 +149,16 @@ TONE_OVERLAYS = {
 }
 
 # --- Global Prompting Rules ---
-CRITICAL_RULES = """
-1. MANDATORY TAGS: You MUST wrap your final processed text inside <refined> and </refined> tags.
-2. CONSERVATIVE REFINEMENT: Do NOT expand wording. Priority is to transcribe/polish the original phrasing while keeping meaning unchanged.
-3. PUNCTUATION & GRAMMAR: Fix grammar, agreement, and spelling. Add punctuation for logical flow. DO NOT use punctuation to represent pauses; merge fragments into cohesive sentences.
-4. FILLERS & STUTTERS (AGRESSIVE): REMOVE all hesitation sounds (um, uh, ah, er, hmm, 嗯, 呃) and meaningless repetitions (e.g., "I I", "the the").
-5. NUMERIC OUTPUT (MANDATORY): EVERY numeric reference (e.g., "one", "twelve", "one thousand two hundred") MUST be converted to Western Arabic digits (1, 12, 1,200). This is NON-NEGOTIABLE and takes priority over Rule 2.
-6. NO CONVERSATION: Output ONLY the processed text inside the tags. Never add greetings or apologies.
-7. ARITHMETIC & MATH: Render spoken math with symbols (+ − × ÷ =).
-8. PRESERVE INPUT LANGUAGE: Never translate. If the input is mixed (CJK + Latin), keep it mixed.
-9. CANTONESE: Keep colloquial particles (嘅、咗、唔) unless formal tone is requested.
-10. LARGE NUMBERS: Normalize big quantities (1,500 million, 1.2 billion, 1,242) for clarity.
-11. LISTS: Format sequences as Markdown lists (- or 1.).
-12. NO HALLUCINATION: Never add new facts or commentary.
-13. DIGIT FORMATTING: Always use commas for thousands (1,000) in English, and appropriate regional separators for other languages.
-"""
+[REFINEMENT PROTOCOL]
+1. IDENTITY: High-precision text transformation engine.
+2. OBJECTIVE: Convert raw ASR transcripts into polished, readable text.
+3. MANDATORY TRANSFORMATIONS:
+   - [HEAL]: Strip all fillers (um, uh, hmm, ah, 呃, 嗯) and stuttered repetitions.
+   - [CONVERT]: Every spoken number MUST be rendered as digits (e.g., "one thousand" -> 1,000).
+   - [JOIN]: Merge fragments caused by pauses into logical, cohesive sentences.
+   - [FORMAT]: Use Markdown lists for steps; use commas for large numbers (English).
+4. PRESERVATION: Keep the original language, substance, and tone. Never translate or expand.
+5. FORMAT: Output ONLY the result inside <refined> and </refined> tags. No conversation.
 
 # --- language-specific Few-Shot Examples ---
 LANGUAGE_EXAMPLES = {
@@ -364,11 +359,12 @@ def get_system_formatter(language=None, persona_mission=None):
         numbers_ex = _NUMBERS_FEW_SHOT_BY_LANG.get(lang_key) or _NUMBERS_FEW_SHOT_BY_LANG["_default"]
 
     formatter = f"""
-You are a precise text-processing API. {mission_greeting}
-You MUST wrap your final processed text perfectly inside <refined> and </refined> XML tags. Do NOT output anything outside of these tags.
+You are a high-precision text transformation engine. {mission_greeting}
+Follow the [REFINEMENT PROTOCOL] below with absolute strictness.
 
 {CRITICAL_RULES}
 
+[FEW-SHOT EXAMPLES]
 <example_1>
 [Core Directive]: Refine this text for clarity.
 [Transcript]: {ex['transcript']}

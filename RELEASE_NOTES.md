@@ -1,5 +1,32 @@
 # Privox Release Notes
 
+## v1.2.4
+
+**Release date:** 2026-05-15
+
+### ASR/Refiner Stability & performance
+- **Environment Isolation**: Forced `PYTHONNOUSERSITE=1` across all Pixi tasks to prevent global Python packages from interfering with `onnxruntime` and CUDA dependencies.
+- **Fixed DLL Discovery**: Resolved a critical startup crash in `onnxruntime-gpu` by adding `torch/lib` to the CUDA DLL search path.
+- **Gemma 4 Full Offloading**: Enabled full GPU offloading (42 layers) for Gemma 4 models on cards with >= 12GB VRAM (e.g., RTX 4070), maximizing inference speed.
+- **Qwen-ASR SDPA**: Enabled **Scaled Dot Product Attention (SDPA)** for Qwen-ASR, providing a significant speedup on RTX 40-series cards.
+- **Local Model Priority**: Refactored loading logic to prioritize local files in the `models/` directory, ensuring reliable offline operation once models are downloaded.
+
+### Refiner Quality & Formatting
+- **Enhanced Formatting Rules**: Strengthened prompt engineering for **Markdown list conversion**. Gemma 4 now reliably formats sequences into bulleted or numbered lists.
+- **Improved Role Handling**: Switched to separate **System/User roles** for Gemma completions, reducing instruction-drift in long transcripts.
+- **Sampling Tuning**: Optimized temperature and repeat penalty for better structural adherence in small models.
+
+### Startup & Onboarding
+- **Silero VAD Offline Fix**: Resolved `504 Gateway Time-out` by prioritizing the local Silero VAD cache.
+- **New Task**: Added `pixi run download-models` to allow users to pre-cache all AI weights before going offline.
+- **Better Error Messaging**: Added clear, actionable hints in the logs when model files are missing.
+
+### Maintenance
+- Removed unused benchmark and test scripts (`test_qwen3_asr_onnx.py`, `benchmark_prefs_polling.py`).
+- Cleaned up root directory from temporary patch and ONNX files.
+- Versioned all metadata to **1.2.4**.
+
+
 ## v1.2.3
 
 **Release date:** 2026-04-19

@@ -29,20 +29,18 @@ def get_torch():
 
 def cuda_is_available() -> bool:
     """Non-invasive CUDA check to avoid triggering DLL context conflicts early."""
+    # Check for NVIDIA driver / nvidia-smi as a passive heuristic FIRST.
+    # This avoids importing torch (slow) or llama_cpp at the top-level during boot.
+    import shutil
+    if shutil.which("nvidia-smi"):
+        return True
+        
     if not NO_TORCH:
         t = get_torch()
         if t is not None:
             try: return bool(t.cuda.is_available())
             except Exception: pass
     
-    # Check for NVIDIA driver / nvidia-smi as a passive heuristic
-    # This avoids importing llama_cpp or ctranslate2 at the top-level
-    import shutil
-    if shutil.which("nvidia-smi"):
-        return True
-        
-    # On Windows, we can also check for nvrtc64_*.dll or cublas64_*.dll presence 
-    # but nvidia-smi is usually the best indicator of a functional driver.
     return False
 
 
@@ -115,6 +113,7 @@ def pre_load_cuda_dlls() -> bool:
     search_dirs = [
         root / ".pixi" / "envs" / "default" / "bin",
         root / ".pixi" / "envs" / "default" / "Library" / "bin",
+        root / ".pixi" / "envs" / "default" / "Lib" / "site-packages" / "torch" / "lib",
         root / "bin",
     ]
     

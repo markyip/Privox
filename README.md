@@ -1,6 +1,6 @@
 # Privox 🎙️
 
-![App version](https://img.shields.io/badge/app-v1.2.3-blue)
+![App version](https://img.shields.io/badge/app-v1.2.4-blue)
 [![Python Version](https://img.shields.io/badge/python-3.10--3.12-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-Noncommercial-green.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Windows-blue?logo=windows)
@@ -28,7 +28,7 @@ A powerful, private, and fully local voice input assistant for Windows. Privox c
 
 ### 1. Installation
 
-1. Download **Privox.exe** from our [Releases](https://github.com/markyip/Privox/releases) page. The latest stable release is **v1.2.3** (2026-04-19); see [RELEASE_NOTES.md](RELEASE_NOTES.md) for full changes.
+1. Download **Privox.exe** from our [Releases](https://github.com/markyip/Privox/releases) page. The latest stable release is **v1.2.4** (2026-05-15); see [RELEASE_NOTES.md](RELEASE_NOTES.md) for full changes.
 2. Run the program and follow the simple on-screen instructions.
 3. On your first run, Privox will take a few minutes to set up its "AI Brains"—then you're ready to go!
 

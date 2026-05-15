@@ -7,24 +7,26 @@ channels = ["conda-forge", "pytorch", "nvidia"]
 platforms = ["win-64"]
 
 [tasks]
-start = "python src/voice_input.py"
-start-windowless = "pythonw src/voice_input.py"
+start = { cmd = "python src/voice_input.py", env = { PYTHONNOUSERSITE = "1" } }
+start-windowless = { cmd = "pythonw src/voice_input.py", env = { PYTHONNOUSERSITE = "1" } }
 # CTranslate2 ASR path: if .user_prefs.json chose Qwen/SenseVoice, falls back to default faster-whisper; otherwise keeps your Whisper preset (e.g. Multilingual Turbo). PyTorch still used for Silero VAD unless NO_TORCH.
-start-ct2-asr = { cmd = "python src/voice_input.py", env = { PRIVOX_CT2_ASR = "1" } }
-start-windowless-ct2-asr = { cmd = "pythonw src/voice_input.py", env = { PRIVOX_CT2_ASR = "1" } }
+start-ct2-asr = { cmd = "python src/voice_input.py", env = { PRIVOX_CT2_ASR = "1", PYTHONNOUSERSITE = "1" } }
+start-windowless-ct2-asr = { cmd = "pythonw src/voice_input.py", env = { PRIVOX_CT2_ASR = "1", PYTHONNOUSERSITE = "1" } }
 # No PyTorch: WebRTC VAD + faster-whisper (same ASR preset rule as PRIVOX_CT2_ASR for non–PyTorch backends).
-start-no-torch = { cmd = "python src/voice_input.py", env = { PRIVOX_NO_TORCH = "1", PRIVOX_CT2_ASR = "1" } }
-start-windowless-no-torch = { cmd = "pythonw src/voice_input.py", env = { PRIVOX_NO_TORCH = "1", PRIVOX_CT2_ASR = "1" } }
+start-no-torch = { cmd = "python src/voice_input.py", env = { PRIVOX_NO_TORCH = "1", PRIVOX_CT2_ASR = "1", PYTHONNOUSERSITE = "1" } }
+start-windowless-no-torch = { cmd = "pythonw src/voice_input.py", env = { PRIVOX_NO_TORCH = "1", PRIVOX_CT2_ASR = "1", PYTHONNOUSERSITE = "1" } }
 # Shorthand: same env as start-no-torch (people often try `pixi run no-torch`).
 # If Pixi panics copying onnxruntime*.dll (WinError 32): close Privox/Python using this env, or run
 #   pixi run --as-is no-torch
 # or .\run-no-torch.ps1 / run-no-torch.cmd (uses .pixi env python directly; no sync).
-no-torch = { cmd = "python src/voice_input.py", env = { PRIVOX_NO_TORCH = "1", PRIVOX_CT2_ASR = "1" } }
+no-torch = { cmd = "python src/voice_input.py", env = { PRIVOX_NO_TORCH = "1", PRIVOX_CT2_ASR = "1", PYTHONNOUSERSITE = "1" } }
 # Full app env (voice_input imports, PATH/DLL), then CT2 benchmark only — no tray. Example:
 #   pixi run bench-ct2 --from-prefs --audio sample.wav
 #   pixi run bench-ct2 --device cuda --synthetic-seconds 2
 bench-ct2 = "python src/voice_input.py --benchmark-ct2-asr"
 # PYTHONNOUSERSITE: avoid picking PyInstaller from %APPDATA%\Python\... (wrong pkg_resources / setuptools).
+# Pre-download all models for offline use.
+download-models = { cmd = "python src/download_models.py", env = { PYTHONNOUSERSITE = "1" } }
 build = { cmd = "python build_app.py", env = { PYTHONNOUSERSITE = "1" } }
 # Refiner (Gemma 4): needs llama-cpp-python >=0.3.20 with CUDA. Optional: copy the built wheel to wheels/ before `pixi run build` to ship it in the installer.
 install-llama-cuda = "python scripts/install_llama_cuda.py"

@@ -31,14 +31,26 @@ ASR_LIBRARY = [
 # --- Refiner (LLM) Library ---
 LLM_LIBRARY = [
     {
-        "name": "Gemma 4 E2B (TurboQuant)",
+        "name": "Gemma 4 E2B IT (TurboQuant)",
         "repo_id": "unsloth/gemma-4-E2B-it-GGUF",
         "file_name": "gemma-4-E2B-it-Q4_K_M.gguf",
         "prompt_type": "gemma",
         "turboquant": True,
         "n_ctx": 8192,
-        "n_gpu_layers": 20,
-        "description": "Gemma 4 E2B tuned for speed and low VRAM."
+        "n_gpu_layers": 42,
+        "description": "Gemma 4 E2B IT tuned for speed and low VRAM."
+    },
+    {
+        "name": "Gemma 4 E2B-IT-Assistant (TurboQuant)",
+        "repo_id": "unsloth/gemma-4-E2B-it-GGUF",
+        "file_name": "gemma-4-E2B-it-Q4_K_M.gguf",
+        "mmproj_repo": "ggml-org/gemma-4-E2B-it-GGUF",
+        "mmproj_file": "mmproj-gemma-4-E2B-it-f16.gguf",
+        "prompt_type": "gemma",
+        "turboquant": True,
+        "n_ctx": 8192,
+        "n_gpu_layers": 42,
+        "description": "Gemma 4 E2B Assistant with native audio processing capabilities."
     },
     {
         "name": "Gemma 4 E4B (TurboQuant)",
@@ -47,7 +59,7 @@ LLM_LIBRARY = [
         "prompt_type": "gemma",
         "turboquant": True,
         "n_ctx": 8192,
-        "n_gpu_layers": 24,
+        "n_gpu_layers": 42,
         "description": "Gemma 4 E4B tuned for speed and low VRAM usage."
     },
 ]
@@ -69,12 +81,11 @@ def refiner_gguf_min_complete_bytes(file_name: str) -> int:
 
 
 # --- Defaults ---
-# Default ASR uses faster-whisper (CTranslate2) — no PyTorch for transcription.
-# Display name as stored in .user_prefs.json / ASR combo (must match ASR_LIBRARY "name").
+# Default ASR uses Gemma 4 Assistant with native audio support.
 DEFAULT_ASR = "Distil-Whisper Large v3 (English)"
 # Folder id under models/whisper-<id> and config.json "whisper_model" (keep in sync with ASR_LIBRARY entry).
 DEFAULT_ASR_WHISPER_MODEL = "distil-large-v3"
-DEFAULT_LLM = "Gemma 4 E2B (TurboQuant)"
+DEFAULT_LLM = "Gemma 4 E2B-IT-Assistant (TurboQuant)"
 
 # --- Persona Lenses ---
 # These are the systematic instructions applied to each persona
@@ -141,7 +152,7 @@ TONE_OVERLAYS = {
 CRITICAL_RULES = """
 CRITICAL RULES:
 1. CONSERVATIVE REFINEMENT: Do NOT expand the wording or add "creativity". Your absolute priority is to transcribe and polish the original phrasing while keeping the exact meaning unchanged.
-2. AUTO-FORMAT LISTS: You MUST convert spoken sequences, steps, or multiple items into proper Markdown bullet points (-) or numbered lists (1., 2.). Add paragraphs where logical.
+2. AUTO-FORMAT LISTS: If the transcript contains a sequence of items, steps, or multiple thoughts, you MUST convert them into a Markdown list (using '-' or '1.'). Never leave them as a comma-separated or space-separated run.
 3. PUNCTUATION & GRAMMAR: Use appropriate punctuation for clarity and fix only obvious grammar/spelling errors.
 4. STRICT NO HALLUCINATION: Never add new semantic information, facts, commentary, or ideas not explicitly present in the original transcript.
 5. NO CONVERSATION: Output ONLY the processed text inside the tags. Never add greetings.

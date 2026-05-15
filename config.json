@@ -1,8 +1,8 @@
 {
     "asr_backend": "qwen_asr",
     "whisper_repo": "Qwen/Qwen3-ASR-0.6B",
-    "grammar_repo": "unsloth/gemma-4-E2B-it-GGUF",
-    "grammar_file": "gemma-4-E2B-it-Q4_K_M.gguf",
+    "grammar_repo": "unsloth/gemma-4-E4B-it-GGUF",
+    "grammar_file": "gemma-4-E4B-it-Q4_K_M.gguf",
     "active_character": "Professional Refiner",
     "log_transcription": false
 }

@@ -1,5 +1,20 @@
 # Privox Release Notes
 
+## v1.2.7
+
+**Release date:** 2026-05-15
+
+### High-Fidelity Refinement & Performance
+- **Full GPU Acceleration**: Enabled full 42-layer offloading for Gemma-4 on RTX 4070 (12GB) GPUs. This eliminates the CPU bottleneck, improving generation speed by up to 50x.
+- **Numerical Protocol v2**: Restored the high-precision numerical conversion rules to the LLM. Complex dictations like "Three billion and two million" are now handled with mathematical accuracy.
+- **Hybrid Optimization (Decommissioned)**: Reverted the experimental Python "Digit Guard" in favor of full LLM-based logic now that performance is optimized.
+- **Generative Safety Guards**: Implemented **Time Guards** (15s limit) and **Length Guards** (4x multiplier) to prevent model stalling and hallucination loops in complex languages like Chinese.
+
+### Fixes & Stability
+- **ASR Loading Fix**: Resolved a critical "Offline Mode" crash where Qwen-ASR failed to load from the local `models/` directory.
+- **Gemma Handler Refactor**: Transitioned to a more stable completion handler with native stop tokens for improved structural reliability.
+- **Cleanup**: Purged temporary `.tmp` and `.tmp_llama_test` directories and legacy scratch scripts.
+
 ## v1.2.4
 
 **Release date:** 2026-05-15
@@ -24,7 +39,7 @@
 ### Maintenance
 - Removed unused benchmark and test scripts (`test_qwen3_asr_onnx.py`, `benchmark_prefs_polling.py`).
 - Cleaned up root directory from temporary patch and ONNX files.
-- Versioned all metadata to **1.2.4**.
+- Versioned all metadata to **1.2.7**.
 
 
 ## v1.2.3
@@ -40,7 +55,7 @@
 - The **Transcript delivery** UI block is **removed**. Behavior is fixed to the previous **Instant** path on Windows: deferred capture of the foreground window at end of recording, comparison at paste time, **Ctrl+V** when the target matches, otherwise **clipboard + tray notification**. The legacy preference key **`paste_delivery`** is scrubbed from `.user_prefs.json` on load/save (same mechanism as other obsolete keys).
 
 ### Versioning
-- Application metadata at **1.2.3**: `APP_VERSION` in `src/bootstrap.py`, Settings footer, Windows `version_info.txt` / `assets/privox.manifest`, and grammar download `User-Agent` in `src/download_models.py`.
+- Application metadata at **1.2.7**: `APP_VERSION` in `src/bootstrap.py`, Settings footer, Windows `version_info.txt` / `assets/privox.manifest`, and grammar download `User-Agent` in `src/download_models.py`.
 
 ## v1.2.2
 
@@ -63,7 +78,7 @@
 - **First hotkey** when the app is **not** ready (e.g. VAD missing or mic stream not up) **does not** set **`pending_wakeup`** auto-start, avoiding a “phantom” recording session after load.
 
 ### Versioning
-- Application metadata at **1.2.2**: `APP_VERSION` in `src/bootstrap.py`, Settings footer, Windows `version_info.txt` / `assets/privox.manifest`, and model-setup download `User-Agent`.
+- Application metadata at **1.2.7**: `APP_VERSION` in `src/bootstrap.py`, Settings footer, Windows `version_info.txt` / `assets/privox.manifest`, and model-setup download `User-Agent`.
 
 ### Long transcripts and `<refined>` (follow-up to v1.2.1)
 - **v1.2.1** raised Gemma **`n_ctx` to 6144**, compact system prompts for long inputs, and scaled **`max_tokens`** — this release hardens **Gemma 4 E2B/E4B** in production: **chat-native inference** via `create_chat_completion` with **`chat_format="gemma"`** so tokenization matches official templates (adds BOS correctly) and avoids **`<unused*>` degeneracy** from raw completion.

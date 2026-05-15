@@ -105,23 +105,9 @@ from privox_runtime import (
     cuda_device_total_memory_gib,
 )
 
-# torch = get_torch() # DEFERRED to init_torch() or lazy call
-# if torch is not None:
-#     torch.set_num_threads(2)
-
-def _get_torch_lazy():
-    """Deferred torch access to avoid blocking main thread at startup."""
-    from privox_runtime import get_torch
-    t = get_torch()
-    if t is not None:
-        try:
-            # Only set threads once
-            if not hasattr(_get_torch_lazy, "_threads_set"):
-                t.set_num_threads(2)
-                _get_torch_lazy._threads_set = True
-        except Exception:
-            pass
-    return t
+torch = get_torch()
+if torch is not None:
+    torch.set_num_threads(2)  # Constrain underlying OpenMP/MKL to avoid CPU spikes on start
 
 # Downgrade noisy third-party warnings (nagisa SyntaxWarning; transformers generation hints).
 warnings.filterwarnings(
@@ -711,39 +697,37 @@ try:
     import pyperclip
     from huggingface_hub import hf_hub_download, snapshot_download
     
-    # Windows Sound (Module Level)
+    log_print(f"--- TORCH DIAGNOSTICS ---")
+    log_print(f"Python Version: {sys.version}")
+    if torch is not None:
+        log_print(f"Torch Version: {torch.__version__}")
+        log_print(f"Torch Path: {getattr(torch, '__file__', 'Unknown')}")
+        log_print(f"CUDA Available: {torch.cuda.is_available()}")
+        log_print(f"CUDA Version: {torch.version.cuda}")
+        log_print(f"CuDNN Version: {torch.backends.cudnn.version()}")
+        if torch.cuda.is_available():
+            log_print(f"Current Device: {torch.cuda.get_device_name(0)}")
+        else:
+            log_print("CUDA NOT AVAILABLE. Possible reasons:")
+            log_print("1. CPU version of Torch installed (check version above)")
+            log_print("2. Missing CUDA DLLs in PATH")
+            log_print("3. GPU driver issues")
+            if sys.platform == "win32" and not getattr(sys, "frozen", False):
+                pass
+    else:
+        log_print(
+            "PRIVOX_NO_TORCH=1: PyTorch not loaded (WebRTC VAD; ASR: faster-whisper and/or Qwen ONNX)."
+        )
+    # Before any thread imports faster_whisper/transformers (numpy metadata quirks on mixed conda/pip).
+    ensure_numpy_version_visible_to_metadata()
+
+    # Windows Sound
     try:
         import winsound
     except ImportError:
         winsound = None
-    
-    def log_torch_diagnostics():
-        torch_m = _get_torch_lazy()
-        log_print(f"--- TORCH DIAGNOSTICS ---")
-        log_print(f"Python Version: {sys.version}")
-        if torch_m is not None:
-            log_print(f"Torch Version: {torch_m.__version__}")
-            log_print(f"Torch Path: {getattr(torch_m, '__file__', 'Unknown')}")
-            log_print(f"CUDA Available: {torch_m.cuda.is_available()}")
-            log_print(f"CUDA Version: {torch_m.version.cuda}")
-            log_print(f"CuDNN Version: {torch_m.backends.cudnn.version()}")
-            if torch_m.cuda.is_available():
-                log_print(f"Current Device: {torch_m.cuda.get_device_name(0)}")
-            else:
-                log_print("CUDA NOT AVAILABLE. Possible reasons:")
-                log_print("1. CPU version of Torch installed (check version above)")
-                log_print("2. Missing CUDA DLLs in PATH")
-                log_print("3. GPU driver issues")
-                if sys.platform == "win32" and not getattr(sys, "frozen", False):
-                    pass
-        else:
-            log_print(
-                "PRIVOX_NO_TORCH=1: PyTorch not loaded (WebRTC VAD; ASR: faster-whisper and/or Qwen ONNX)."
-            )
-        # Before any thread imports faster_whisper/transformers (numpy metadata quirks on mixed conda/pip).
-        ensure_numpy_version_visible_to_metadata()
 
-        log_print("Core imports successful.")
+    log_print("Core imports successful.")
 except Exception as e:
     import traceback
     err_stack = traceback.format_exc()
@@ -767,8 +751,6 @@ if sys.platform == "win32":
 # --- 3. Configuration ---
 SAMPLE_RATE = 16000
 BLOCK_SIZE = 512
-# Keep callback backlog bounded without capping the actual recording buffer.
-AUDIO_QUEUE_MAX_CHUNKS = 256  # ~8 seconds at 16 kHz / 512-sample blocks
 # Silero probability threshold; lower = more sensitive (helps quiet mics / distant speech).
 VAD_THRESHOLD = 0.4
 MIN_SPEECH_DURATION_MS = 400
@@ -923,8 +905,6 @@ class GrammarChecker:
 
         repo_id = self.profile.get("repo_id", GRAMMAR_REPO)
         file_name = self.profile.get("file_name", GRAMMAR_FILE)
-        mmproj_repo = self.profile.get("mmproj_repo")
-        mmproj_file = self.profile.get("mmproj_file")
         profile_name = self.profile.get("name", "")
         is_reload = self._has_loaded_once  # True on wake-from-idle, False on first boot
         log_print(
@@ -984,24 +964,6 @@ class GrammarChecker:
                 if self.icon:
                      self.icon.notify(f"Error: Could not download refiner ({file_name}). Check internet or place in 'models' folder.", "Privox Error")
                 return False
-            
-            # --- Multimodal Projector Load (Optional but required for Native Audio) ---
-            self.mmproj_path = None
-            if mmproj_repo and mmproj_file:
-                try:
-                    local_mmproj = os.path.join(BASE_DIR, "models", mmproj_file)
-                    if os.path.exists(local_mmproj):
-                        self.mmproj_path = local_mmproj
-                    else:
-                        log_print(f"Checking for multimodal projector: {mmproj_file} from {mmproj_repo}...")
-                        self.mmproj_path = hf_hub_download(
-                            repo_id=mmproj_repo,
-                            filename=mmproj_file,
-                            local_dir=os.path.join(BASE_DIR, "models")
-                        )
-                    log_print(f"Multimodal projector ready: {self.mmproj_path}")
-                except Exception as mm_e:
-                    log_print(f"WARNING: Could not load multimodal projector ({mmproj_file}): {mm_e}. Native audio may fail.")
 
         try:
             # --- Optimization 2: Cache llama_cpp import, skip diagnostics on reload ---
@@ -1076,11 +1038,6 @@ class GrammarChecker:
                     # self.model(prompt) does not — causes <unused*> degeneracy on Gemma 4 GGUF.
                     if (self.profile.get("prompt_type") or "").lower() == "gemma":
                         _llama_kw["chat_format"] = "gemma"
-                    
-                    if getattr(self, "mmproj_path", None):
-                        # llama-cpp-python uses clip_model_path for multimodal projectors
-                        _llama_kw["clip_model_path"] = self.mmproj_path
-                        
                     return Llama(**_llama_kw)
                 except (AssertionError, RuntimeError, ValueError) as e:
                     last_init_error_text = str(e)
@@ -1119,19 +1076,12 @@ class GrammarChecker:
                 elif gpu_mem_gb <= 12.5:
                     n_batch = min(n_batch, 512) # High-speed batching for 4070/4070Ti
 
-            # Instead of "all layers" (-1), use bounded offload counts.
+            # Bounded offload counts for stability; allow full offload for high-end cards.
             if is_gpu:
-                preferred_layers = int(self.profile.get("n_gpu_layers", 24 if turboquant else 40))
-                
-                # Check for "small" models (2B-3B) which can easily fit in 12GB VRAM regardless of the 16-layer cap.
-                prof_name = str(self.profile.get("name", "")).lower()
-                is_small_model = "2b" in prof_name or "e2b" in prof_name or "3b" in prof_name or "e4b" in prof_name
-                
-                if gpu_mem_gb and gpu_mem_gb <= 12.5 and not is_small_model:
-                    # Conservative limit for 7B-8B models on 10GB-12GB cards to ensure stability.
-                    preferred_layers = min(preferred_layers, 16)
-                
-                layer_plan = [preferred_layers, 32, 24, 16, 8, 0]
+                preferred_layers = int(self.profile.get("n_gpu_layers", 42))
+                if gpu_mem_gb and gpu_mem_gb <= 8.5:
+                    preferred_layers = min(preferred_layers, 24)
+                layer_plan = [preferred_layers, 24, 16, 0]
             else:
                 layer_plan = [0]
 
@@ -1268,9 +1218,9 @@ class GrammarChecker:
         elif language == "en" and language_prob > 0.4:
             directive += (
                 "\nENGLISH SPOKEN NUMBERS & MATH: Same global policy as all languages (CRITICAL RULE 6): "
-                "any numeric meaning → Western Arabic digits (0–9)—cardinal lists ('one, two, three, four' → '1, 2, 3, 4') and "
-                "large compound numbers ('one thousand two hundred and forty two' → '1,242'). "
-                "Spoken arithmetic (plus, minus, times, multiplied by, divided by, equals) → +, −, ×, ÷, = with digits per CRITICAL RULE 10."
+                "any numeric meaning → Western Arabic digits (0–9)—cardinal lists ('one, two, three, four' → '1, 2, 3, 4'), "
+                "including space-separated runs like 'one two three'. "
+                "Spoken arithmetic (plus, minus, times, multiplied by, divided by, equals) → +, −, ×, ÷, = with digits per CRITICAL RULE 10 (choose − vs - and ÷ vs / by context)."
             )
             if _mixed_cjk_lat:
                 directive += (
@@ -1382,39 +1332,20 @@ class GrammarChecker:
             return True
         return len(head) >= 300 and (n * 11) > len(head) * 0.25
 
-    def _cleanup_llm_output(self, text: str) -> str:
-        """Removes thinking channels and common assistant prefixes from the output."""
-        if not text: return ""
-        # 1. Remove Thinking Tags/Sections
-        # Handles both <|channel|>thought and generic "Thinking Process:" markers
-        text = re.sub(r"<\|channel\|>thought.*?<\|channel\|>text", "", text, flags=re.DOTALL | re.IGNORECASE)
-        text = re.sub(r"<\|thought\|>.*?<\|/thought\|>", "", text, flags=re.DOTALL | re.IGNORECASE)
-        text = re.sub(r"(?i)Thinking Process:.*?\n\n", "", text, flags=re.DOTALL)
-        
-        # 2. Remove Common Assistant Prefixes (e.g. [Transcript]:)
-        text = re.sub(r"^(?i)\[Transcript\]:\s*", "", text)
-        text = re.sub(r"^(?i)Transcription:\s*", "", text)
-        text = re.sub(r"^(?i)Refined:\s*", "", text)
-        text = re.sub(r"^(?i)Transcript:\s*", "", text)
-        
-        return text.strip()
-
-    def _run_gemma_chat_completion(self, system_prompt: str, user_content: str, max_tokens: int) -> tuple[str, bool]:
+    def _run_gemma_chat_completion(self, user_content: str, max_tokens: int) -> tuple[str, bool]:
         """
-        Gemma refiner via create_chat_completion using separate system/user roles.
+        Gemma refiner via create_chat_completion so llama_cpp applies the same BOS/special
+        tokenization as format_gemma (raw self.model(str) skips that and can emit <unused*> spam).
         """
         extra_stop = ["</refined>", "<end_of_turn>", "<end_of_turn>\n", "</start_of_turn>", "</start_of_turn>\n"]
         parts: list[str] = []
         try:
             stream = self.model.create_chat_completion(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content}
-                ],
+                messages=[{"role": "user", "content": user_content}],
                 max_tokens=max_tokens,
-                temperature=0.1, # Revert to 0.1 for absolute numeric precision
-                top_p=0.9,
-                repeat_penalty=1.05, # Lower penalty to prevent technical term suppression
+                temperature=0.0,
+                top_p=1.0,
+                repeat_penalty=1.1,
                 seed=42,
                 stop=extra_stop,
                 stream=True,
@@ -1423,20 +1354,34 @@ class GrammarChecker:
             log_print(f"Gemma create_chat_completion failed: {e}")
             return "", True
 
+        import time
+        start_t = time.time()
+        input_len = len(user_content)
+        
         for chunk in stream:
+            # 1. Time Guard: Stop if generation takes too long (>15s for short bursts)
+            if time.time() - start_t > 15.0 and len(acc) > input_len:
+                log_transcription(" Gemma: Time guard triggered (>15s). Aborting.")
+                break
+
             ch0 = chunk["choices"][0]
             delta = ch0.get("delta") or {}
             piece = delta.get("content") or ""
             if piece:
                 parts.append(piece)
             acc = "".join(parts)
+            
+            # 2. Length Guard: Stop if output is suspiciously long (hallucination)
+            if len(acc) > max(400, input_len * 4):
+                log_transcription(" Gemma: Length guard triggered (potential hallucination).")
+                break
+
             if "</refined>" in acc:
                 break
             if self._is_gemma_unused_degeneracy(acc):
                 log_transcription(" Gemma refiner: early-abort on <unused*> degeneracy.")
                 return "", True
         text = "".join(parts).strip()
-        text = self._cleanup_llm_output(text)
         if text and self._is_gemma_unused_degeneracy(text):
             return "", True
         return text, False
@@ -1500,96 +1445,7 @@ class GrammarChecker:
         text = (output["choices"][0]["text"] or "").strip()
         return text, False
 
-    def transcribe_audio(self, audio_data: np.ndarray) -> str:
-        """Native audio transcription for multimodal models (e.g. Gemma 4 Assistant)."""
-        if self.model is None:
-            if not self.load_model():
-                return ""
-
-        log_print("Gemma Native Audio: Encoding audio features and performing multimodal inference...")
-        
-        # The multimodal prompt for Gemma 4 Assistant
-        # It uses the <|audio_start|> tokens as defined in the model's chat template.
-        prompt = (
-            "<|im_start|>system\n"
-            "You are a native audio transcription assistant. "
-            "Transcribe the following audio precisely. Output ONLY the transcription.\n"
-            "<|im_end|>\n"
-            "<|im_start|>user\n"
-            "<|audio_start|><|audio_pad|><|audio_end|>\n"
-            "<|im_end|>\n"
-            "<|im_start|>assistant\n"
-        )
-        
-        try:
-            # Multimodal inference: we pass the audio content as part of the message.
-            # Note: llama-cpp-python multimodal support for audio is triggered 
-            # by passing the audio data in the 'content' list.
-            
-            # Since the current runtime expects the multimodal projector (if any) to be 
-            # loaded, we ensure the model was initialized with appropriate multimodal flags.
-            
-            # For the purpose of this implementation, we utilize the create_chat_completion 
-            # API which handles the tokenization of the audio segment.
-            
-            messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "Transcribe this audio:"},
-                        {"type": "audio", "audio": audio_data.tolist()} # Pass as list for JSON-like safety
-                    ]
-                }
-            ]
-            
-            log_transcription(" [Gemma Native] Sending audio to multimodal LLM...")
-            
-            # We use the same streaming logic as refinement to prevent UI hangs
-            text, degenerate = self._run_gemma_chat_completion(
-                system_prompt="You are a precise audio transcriber. Convert audio to text perfectly.",
-                user_content="Transcribe this audio: [AUDIO DATA]", 
-                max_tokens=512
-            )
-            
-            if degenerate:
-                log_print("Gemma Native Audio: Detected degeneracy, falling back to basic transcription.")
-                return ""
-                
-            return text
-            
-        except Exception as e:
-            log_print(f"Gemma Native Audio Error: {e}")
-            return ""
-
-    def _strip_common_fillers(self, text: str) -> str:
-        """Regex-based pre-cleanup to catch obvious fillers and pause artifacts."""
-        # 1. English fillers + optional trailing punctuation
-        en_fillers = r"\b(um|uh|hmm|ah|er|uhm|erm|oh)\b[.,]?"
-        text = re.sub(en_fillers, "", text, flags=re.IGNORECASE)
-        # 2. Chinese fillers
-        zh_fillers = r"[嗯呃][，。]?"
-        text = re.sub(zh_fillers, "", text)
-        # 3. Cleanup redundant commas/periods (often caused by ASR pauses)
-        text = re.sub(r",\s*,", ",", text)
-        text = re.sub(r"\.\s*\.", ".", text)
-        text = re.sub(r"\s+,\s+", ", ", text)
-        # 4. Heal mid-sentence breaks: ". the" -> " the" (ASR often splits on pauses)
-        # We look for a period followed by a lowercase letter
-        text = re.sub(r"\.\s+([a-z])", r" \1", text)
-        text = re.sub(r",\s+([a-z])", r" \1", text) # Optional: commas too? User said commas also break it.
-        # 5. Simple stutters: "I I", "the the"
-        text = re.sub(r"\b(\w+)\s+\1\b", r"\1", text, flags=re.IGNORECASE)
-        # 6. Clean up spacing and orphaned punctuation
-        text = " ".join(text.split()).strip()
-        text = re.sub(r"^,\s*", "", text) # Leading comma
-        text = re.sub(r"^\.\s*", "", text) # Leading period
-        return text
-
     def correct(self, text, is_command=False, language=None, language_prob=0.0):
-        # Apply pre-processing filler removal for English/Chinese-heavy text
-        if not is_command:
-            text = self._strip_common_fillers(text)
-        
         # 1. Pre-processing Guardrail: Skip LLM for very short or empty inputs
         # (Unless it's a known keyword in the custom dictionary)
         clean_text = text.strip()
@@ -1634,7 +1490,7 @@ class GrammarChecker:
                 user_content = (
                     f"[Core Directive]: {core_directive}\n"
                     f"[Transcript]: {text}\n"
-                    "Refine the transcript according to all rules (especially MANDATORY numeric conversion to digits). "
+                    "Do not repeat the Core Directive, rules, or examples. "
                     "Write only the opening tag <refined>, the cleaned transcript, and </refined>.\n"
                     "Output: "
                 )
@@ -1677,7 +1533,7 @@ class GrammarChecker:
             gemma_degenerate = False
             if prompt_type == "gemma":
                 raw_response, gemma_degenerate = self._run_gemma_chat_completion(
-                    system_prompt, user_content, max_tokens
+                    combined_user, max_tokens
                 )
                 if gemma_degenerate:
                     log_transcription(
@@ -1782,7 +1638,6 @@ class GrammarChecker:
             # 3b. Post-generation Hallucination Validator
             result = self._validate_output(clean_text, result)
 
-            # self.context_buffer = (self.context_buffer + " " + result).strip()[-2000:]  # [DISABLED]
             return _finalize_refiner_text(result, self.use_simplified_chinese_output)
         except Exception as e:
             log_print(f"Grammar Check Error: {e}")
@@ -2128,21 +1983,6 @@ def _privox_vad_prefers_cuda() -> bool:
 
 def _defer_heavy_models_until_first_use() -> bool:
     """Frozen exe or Privox.exe --run (pythonw + voice_input): skip upfront ASR/refiner load."""
-    eager_env = (os.environ.get("PRIVOX_EAGER_MODEL_LOAD") or "").strip().lower()
-    if eager_env in ("1", "true", "yes", "on"):
-        return False
-    
-    # Check user prefs for persistent eager loading
-    try:
-        prefs_path = os.path.join(BASE_DIR, ".user_prefs.json")
-        if os.path.exists(prefs_path):
-            with open(prefs_path, "r") as f:
-                prefs = json.load(f)
-                if prefs.get("eager_model_load"):
-                    return False
-    except Exception:
-        pass
-
     if getattr(sys, "frozen", False):
         return True
     return (os.environ.get("PRIVOX_PACKAGED_LAUNCH") or "").strip().lower() in (
@@ -2151,25 +1991,6 @@ def _defer_heavy_models_until_first_use() -> bool:
         "yes",
         "on",
     )
-
-
-def _packaged_launch_enabled() -> bool:
-    return getattr(sys, "frozen", False) or (os.environ.get("PRIVOX_PACKAGED_LAUNCH") or "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
-
-
-def _keep_models_warm_when_idle() -> bool:
-    """Idle model warmup is opt-in only via environment variable."""
-    v = (os.environ.get("PRIVOX_KEEP_MODELS_WARM") or "").strip().lower()
-    if v in ("1", "true", "yes", "on"):
-        return True
-    if v in ("0", "false", "no", "off"):
-        return False
-    return False
 
 
 class VoiceInputApp:
@@ -2194,10 +2015,8 @@ class VoiceInputApp:
         self.sound_manager = SoundManager(self.sound_enabled)
         
         # State
-        self.q = queue.Queue(maxsize=AUDIO_QUEUE_MAX_CHUNKS)
+        self.q = queue.Queue()
         self.audio_buffer = [] 
-        self._dropped_audio_chunks = 0
-        self._last_audio_drop_log = 0.0
         self.is_listening = False
         self.is_speaking = False
         self._heard_voice_energy = False
@@ -2210,7 +2029,6 @@ class VoiceInputApp:
         self.loading_status = "Initializing..."
         self.ui_state = "LOADING"
         self._transcribe_task_id = 0
-        self._transcribe_in_progress = False
         
         # Initialize Placeholders
         self.grammar_checker = GrammarChecker(
@@ -2237,7 +2055,7 @@ class VoiceInputApp:
         self._paste_anchor_lock = threading.Lock()
         self._paste_anchor_timer = None  # threading.Timer for deferred HWND capture
         self._paste_anchor_hwnd = None
-        self.vram_timeout = 300 # Seconds before unloading
+        self.vram_timeout = 60 # Seconds before unloading
         # Idle unload policy: unload ASR with refiner after VRAM Saver timeout (wake-up reload is fast enough).
         self.use_simplified_chinese_output = False
         self.pending_wakeup = False # Auto-start recording after loading?
@@ -2265,8 +2083,7 @@ class VoiceInputApp:
         self._hf_repo_verify_cache = {}  # repo_id -> (monotonic_ts, ok: bool); avoids HF spam on reload
 
         # Load Config (FINAL STEP of init to prevent overwriting by defaults)
-        # Initial load skips network verification to ensure fast tray icon appearance.
-        self.load_config(skip_network=True)
+        self.load_config()
         
         # Set initial state to show loading spinner
         self.update_status("INITIALIZING")
@@ -2327,15 +2144,6 @@ class VoiceInputApp:
                 pass
 
     def initial_load(self):
-        # Log diagnostics in background
-        try: log_torch_diagnostics()
-        except: pass
-
-        # Allow Windows to settle if launched at system startup
-        if "--startup" in sys.argv:
-            log_print("Auto-launch detected via --startup flag. Waiting 15 seconds for system to settle...")
-            time.sleep(15)
-
         # Run model cleanup FIRST to avoid race conditions with loading
         try:
             prefs_path = os.path.join(BASE_DIR, ".user_prefs.json")
@@ -2346,10 +2154,6 @@ class VoiceInputApp:
                 if cleanup_days > 0:
                     self.cleanup_stale_models(cleanup_days)
         except: pass
-
-        # Now perform a full config reload WITH network verification in the background
-        log_print("Performing background model verification...")
-        self.load_config(skip_network=False)
 
         self.loading_status = "Loading VAD..."
         self.update_tray_tooltip()
@@ -2411,31 +2215,16 @@ class VoiceInputApp:
             hub_dir = os.path.join(BASE_DIR, "models", "hub")
             if not os.path.exists(hub_dir):
                 os.makedirs(hub_dir, exist_ok=True)
+            torch.hub.set_dir(hub_dir)
             
-            torch_m = _get_torch_lazy()
-            torch_m.hub.set_dir(hub_dir)
-            
-            repo_dir = os.path.join(hub_dir, "snakers4_silero-vad_master")
-            if os.path.exists(repo_dir):
-                # Load from local cache to avoid 504 Gateway Time-out/GitHub downtime
-                self.vad_model, utils = torch_m.hub.load(
-                    repo_or_dir=repo_dir,
-                    model="silero_vad",
-                    source="local",
-                    force_reload=False,
-                    onnx=False,
-                    trust_repo=True,
-                )
-            else:
-                self.vad_model, utils = torch_m.hub.load(
-                    repo_or_dir="snakers4/silero-vad",
-                    model="silero_vad",
-                    force_reload=False,
-                    onnx=False,
-                    trust_repo=True,
-                )
-            torch_m = _get_torch_lazy()
-            if _privox_vad_prefers_cuda() and torch_m.cuda.is_available():
+            self.vad_model, utils = torch.hub.load(
+                repo_or_dir="snakers4/silero-vad",
+                model="silero_vad",
+                force_reload=False,
+                onnx=False,
+                trust_repo=True,  # headless / PyTorch 2.x hub security prompt
+            )
+            if _privox_vad_prefers_cuda() and torch.cuda.is_available():
                 try:
                     self.vad_model = self.vad_model.cuda()
                 except Exception as _cuda_vad_err:
@@ -2583,8 +2372,6 @@ class VoiceInputApp:
                         return success
                     except Exception as e:
                         log_print(f"Parallel Load Error (Grammar): {e}")
-                        if "local_files_only" in str(e).lower() or "offline-mode" in str(e).lower() or "not find" in str(e).lower():
-                            log_print("  HINT: Grammar model files are missing or offline. Try: pixi run download-models")
                         self.last_model_error = f"Grammar: {e}"
                         return False
 
@@ -2599,12 +2386,6 @@ class VoiceInputApp:
                             )
                         is_gpu = cuda_is_available()
                         device_str = "cuda" if is_gpu else "cpu"
-
-                        if ASR_BACKEND == "gemma_audio":
-                            log_print("ASR Diagnostic - Native Audio Input (Gemma 4 Assistant) selected. ASR handled by LLM backend.")
-                            self.asr_model = "gemma_native"  # Sentinel for native audio
-                            self._asr_loaded_key = (ASR_BACKEND, WHISPER_SIZE)
-                            return True
 
                         if ASR_BACKEND == "sensevoice":
                             sense_dir = os.path.join(BASE_DIR, "models", "SenseVoiceSmall")
@@ -2640,8 +2421,7 @@ class VoiceInputApp:
                                         cap_gib = None
                                 if cap_gib is None:
                                     try:
-                                        torch_m = _get_torch_lazy()
-                                        total_gib = torch_m.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+                                        total_gib = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
                                     except Exception:
                                         total_gib = 12.0
                                     if total_gib <= 8.5:
@@ -2651,11 +2431,10 @@ class VoiceInputApp:
                                     else:
                                         cap_gib = min(5.5, max(3.5, total_gib * 0.28))
                                 max_mem = {0: f"{cap_gib:.2f}GiB", "cpu": "12GiB"}
-                                torch_m = _get_torch_lazy()
-                                dtype = torch_m.float16
+                                dtype = torch.float16
                                 try:
-                                    if torch_m.cuda.is_bf16_supported():
-                                        dtype = torch_m.bfloat16
+                                    if torch.cuda.is_bf16_supported():
+                                        dtype = torch.bfloat16
                                 except Exception:
                                     pass
                                 log_print(
@@ -2663,33 +2442,19 @@ class VoiceInputApp:
                                 )
                             else:
                                 max_mem = None
-                                torch_m = _get_torch_lazy()
-                                dtype = torch_m.float32
+                                dtype = torch.float32
 
-                            from qwen_asr import Qwen3ASRModel
                             local_qwen = os.path.join(BASE_DIR, "models", f"whisper-{WHISPER_SIZE}")
-                            qwen_path = local_qwen if os.path.exists(os.path.join(local_qwen, "config.json")) else WHISPER_REPO
+                            model_path = local_qwen if os.path.isdir(local_qwen) else WHISPER_REPO
                             
-                            # Use SDPA (Scaled Dot Product Attention) for 2x-4x speedup on 40-series cards.
-                            # Falls back to eager attention if SDPA is not supported by the model/torch version.
                             self.asr_model = Qwen3ASRModel.from_pretrained(
-                                qwen_path,
+                                model_path,
                                 dtype=dtype,
                                 low_cpu_mem_usage=True,
-                                local_files_only=os.path.exists(local_qwen),
-                                attn_implementation="sdpa" if is_gpu else "eager",
+                                local_files_only=True if os.path.isdir(local_qwen) else False,
                             )
                             if is_gpu:
                                 self.asr_model.model.to("cuda")
-                                
-                                # Optional: Torch Compile for maximum throughput (high first-run overhead).
-                                if (os.environ.get("PRIVOX_ASR_COMPILE") or "").strip().lower() in ("1", "true", "yes", "on"):
-                                    try:
-                                        log_print("ASR: Compiling Qwen-ASR model (this may take a few minutes on first use)...")
-                                        torch_m = _get_torch_lazy()
-                                        self.asr_model.model = torch_m.compile(self.asr_model.model)
-                                    except Exception as _comp_err:
-                                        log_print(f"ASR: Torch compile failed (skipping): {_comp_err}")
                             log_print("Qwen3ASRModel initialized successfully.")
                         else:
                             # int8_float16 cuts VRAM vs pure float16 on CUDA with small quality cost.
@@ -2722,8 +2487,6 @@ class VoiceInputApp:
                         return True
                     except Exception as e:
                         log_print(f"Parallel Load Error (ASR): {e}")
-                        if "local_files_only" in str(e).lower() or "offline-mode" in str(e).lower() or "not find" in str(e).lower():
-                            log_print("  HINT: ASR model files are missing or offline. Try: pixi run download-models")
                         self.last_model_error = f"ASR: {e}\n{traceback.format_exc()}"
                         self.loading_status = "Error Loading ASR"
                         return False
@@ -2732,11 +2495,9 @@ class VoiceInputApp:
                     v = (os.environ.get("PRIVOX_SEQUENTIAL_QWEN_LOAD") or "").strip().lower()
                     return v in ("1", "true", "yes", "on")
 
-                use_parallel_load = ASR_BACKEND == "qwen_asr" and not _env_sequential_qwen()
-                if use_parallel_load:
-                    log_print("Using Parallel Load Strategy for Qwen-ASR wake-up...")
-                else:
-                    log_print("Using Sequential Load Strategy to prevent CPU spikes...")
+                # Sequential vs Parallel loading strategy
+                # Forcing Sequential Mode for all backends to prevent severe CPU saturation and OOMs.
+                log_print("Using Sequential Load Strategy to prevent CPU spikes...")
                 
                 old_threads = 4  # Fallback
                 _t = get_torch()
@@ -2748,21 +2509,13 @@ class VoiceInputApp:
                         pass
 
                 try:
-                    if use_parallel_load:
-                        with concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="privox-model-load") as ex:
-                            grammar_fut = ex.submit(load_grammar)
-                            asr_fut = ex.submit(load_asr)
-                            res_grammar = grammar_fut.result()
-                            res_asr = asr_fut.result()
-                    else:
-                        res_grammar = load_grammar()
-                        res_asr = load_asr()
+                    res_grammar = load_grammar()
+                    res_asr = load_asr()
 
                 finally:
-                    torch_m = _get_torch_lazy()
-                    if torch_m is not None:
+                    if _t is not None:
                         try:
-                            torch_m.set_num_threads(old_threads)
+                            _t.set_num_threads(old_threads)
                         except Exception:
                             pass
                         
@@ -2844,10 +2597,6 @@ class VoiceInputApp:
     def unload_heavy_models(self):
         with self.model_lock:
             if not self.heavy_models_loaded:
-                return
-            if _keep_models_warm_when_idle():
-                self.last_activity_time = time.time()
-                log_print("VRAM Saver unload skipped (PRIVOX_KEEP_MODELS_WARM policy).")
                 return
             
             idle_time = time.time() - self.last_activity_time
@@ -2954,7 +2703,7 @@ class VoiceInputApp:
         except Exception as e:
             log_print(f"Error tracking usage: {e}")
 
-    def load_config(self, skip_network=False):
+    def load_config(self):
         """Unified configuration loader with split protection and migration."""
         global _cached_transcription_log
         try:
@@ -3007,15 +2756,9 @@ class VoiceInputApp:
                 "Multilingual (Qwen 3.5 9B)",
                 "Multilingual (Qwen 2.5 7B)",
                 "Multilingual (Qwen 3.5 4B)",
-                "Gemma 4 E2B (TurboQuant)",
-                "Gemma 4 E2B IT (TurboQuant)",
             }
-            if prefs.get("current_refiner") in removed_refiners or not prefs.get("current_refiner"):
+            if prefs.get("current_refiner") in removed_refiners:
                 prefs["current_refiner"] = models_config.DEFAULT_LLM
-                # Also migrate ASR to native audio if it's the new default
-                if "assistant" in models_config.DEFAULT_ASR.lower():
-                    prefs["whisper_model"] = models_config.DEFAULT_ASR
-                    
                 with open(prefs_path, "w", encoding="utf-8") as f:
                     json.dump(prefs, f, indent=4)
 
@@ -3087,11 +2830,7 @@ class VoiceInputApp:
                     )
 
             self.custom_dictionary = prefs.get("custom_dictionary", [])
-            v_to = prefs.get("vram_timeout", 300)
-            if v_to <= 0:
-                self.vram_timeout = 2147483647 # Essentially Never (approx 68 years)
-            else:
-                self.vram_timeout = max(5, v_to)
+            self.vram_timeout = max(5, prefs.get("vram_timeout", 60))
             self.use_simplified_chinese_output = bool(prefs.get("use_simplified_chinese_output", False))
             self.character = prefs.get("character", "Writing Assistant")
             self.tone = prefs.get("tone", "Natural")
@@ -3106,7 +2845,7 @@ class VoiceInputApp:
 
             # Filter ASR library only. For LLM/refiner, keep source-of-truth entries
             # even if network verification is temporarily unavailable.
-            self.asr_library = [m for m in self.asr_library if self.verify_model(m, "asr", skip_network=skip_network)]
+            self.asr_library = [m for m in self.asr_library if self.verify_model(m, "asr")]
 
             # Sync Current Profile from Library
             profile = {}
@@ -3248,30 +2987,6 @@ class VoiceInputApp:
                         WHISPER_TRANSCRIBE_LANGUAGE = (_wl or "").strip() or None
                         self.active_asr_name = asr["name"]
                         break
-            
-            # --- 4b. Forced ASR Migration for Assistant update ---
-            # Native Audio for Gemma 4 is currently unsupported in the Python bindings;
-            # force users back to a reliable Whisper/Qwen-ASR backend.
-            _broken_asrs = {"Gemma 4 E2B-IT-Assistant (Native Audio)"}
-            if prefs.get("whisper_model") in _broken_asrs or not prefs.get("whisper_model"):
-                log_print(f"Migrating ASR preference back to {models_config.DEFAULT_ASR} for reliability.")
-                prefs["whisper_model"] = models_config.DEFAULT_ASR
-                # Save immediately to prevent reload loop issues
-                try:
-                    with open(prefs_path, "w", encoding="utf-8") as f:
-                        json.dump(prefs, f, indent=4)
-                except OSError: pass
-                
-                # Re-resolve backend for current session
-                for asr in self.asr_library:
-                    if asr["name"] == models_config.DEFAULT_ASR:
-                        WHISPER_REPO = asr.get("whisper_repo") or asr.get("repo")
-                        WHISPER_SIZE = asr.get("whisper_model") or asr.get("name")
-                        ASR_BACKEND = asr.get("backend", "whisper")
-                        _wl = asr.get("whisper_language")
-                        WHISPER_TRANSCRIBE_LANGUAGE = (_wl or "").strip() or None
-                        self.active_asr_name = asr["name"]
-                        break
 
             if NO_TORCH and ASR_BACKEND in ("qwen_asr", "sensevoice"):
                 log_print(
@@ -3310,7 +3025,7 @@ class VoiceInputApp:
             log_print(f"Error loading config: {e}")
             _tb.print_exc()
 
-    def verify_model(self, model_data, model_type, skip_network=False):
+    def verify_model(self, model_data, model_type):
         """Verifies if a model repository or local path exists."""
         repo = model_data.get("repo")
         local_path = model_data.get("local_path")
@@ -3353,7 +3068,7 @@ class VoiceInputApp:
                 return True
 
         # 3. Check HuggingFace Repo (Fast head request) - Fallback for un-downloaded models
-        if repo and not skip_network:
+        if repo:
             ttl = 120.0
             now = time.monotonic()
             hit = self._hf_repo_verify_cache.get(repo)
@@ -3618,38 +3333,9 @@ class VoiceInputApp:
         
         return img
 
-    def _drain_audio_queue(self):
-        try:
-            while True:
-                self.q.get_nowait()
-        except queue.Empty:
-            pass
-
-    def audio_callback(self, indata, frames, callback_time, status):
-        if not (self.running and self.mic_active and self.models_ready and self.is_listening):
-            return
-
-        chunk = indata.copy()
-        try:
-            self.q.put_nowait(chunk)
-        except queue.Full:
-            try:
-                self.q.get_nowait()
-            except queue.Empty:
-                pass
-            try:
-                self.q.put_nowait(chunk)
-            except queue.Full:
-                pass
-
-            self._dropped_audio_chunks += 1
-            now = time.monotonic()
-            if now - self._last_audio_drop_log > 5.0:
-                self._last_audio_drop_log = now
-                log_print(
-                    f"Audio queue backlog full; dropped {self._dropped_audio_chunks} old chunk(s) "
-                    "to keep live recording responsive."
-                )
+    def audio_callback(self, indata, frames, time, status):
+        if self.running and self.mic_active and self.models_ready:
+            self.q.put(indata.copy())
 
     def _listener_key_token(self, key):
         """Normalize pynput key to the same token used for self.target_key (e.g. 'f8', 'space')."""
@@ -3806,8 +3492,6 @@ class VoiceInputApp:
         self._heard_voice_energy = False
         self._last_loud_chunk_time = time.time()
         self.audio_buffer = []
-        self._drain_audio_queue()
-        self._dropped_audio_chunks = 0
         if self.vad_iterator:
             self.vad_iterator.reset_states()
         self.update_status("RECORDING")
@@ -3837,7 +3521,7 @@ class VoiceInputApp:
                 )
                 self._paste_anchor_timer.daemon = True
                 self._paste_anchor_timer.start()
-            audio_segment = np.concatenate(self.audio_buffer).astype(np.float32, copy=False)
+            audio_segment = np.array(self.audio_buffer)
             # Run transcription in a separate thread so we don't block the keyboard listener!
             threading.Thread(target=self.transcribe, args=(audio_segment, task_id), daemon=True).start()
         else:
@@ -3863,7 +3547,6 @@ class VoiceInputApp:
                 raise TimeoutError(self.last_model_error)
 
     def transcribe(self, audio_data, task_id=None):
-        self._transcribe_in_progress = True
         try:
             duration = len(audio_data) / SAMPLE_RATE
             max_amp = np.max(np.abs(audio_data))
@@ -3924,26 +3607,8 @@ class VoiceInputApp:
                     raw_text = re.sub(r'<\|.*?\|>', '', raw_text).strip()
                 
                 log_transcription(f" SenseVoice Result - Raw: '{raw_text}'")
+                
 
-            elif ASR_BACKEND == "gemma_audio":
-                # Native Audio Input Mode (Gemma 4 Assistant)
-                log_transcription(" [Gemma Native Audio Mode] Utilizing Assistant model for transcription.")
-                
-                # Ensure the LLM model is ready
-                if not self.grammar_checker.model:
-                    self.grammar_checker.load_model()
-                
-                # Use the native audio transcription method
-                raw_text = self._run_with_timeout(
-                    lambda: self.grammar_checker.transcribe_audio(audio_data),
-                    timeout_s=120,
-                    label="Gemma Native Audio Transcribe"
-                )
-                
-                if not raw_text:
-                    log_transcription(" [Gemma Native] Transcription failed or returned empty result.")
-                else:
-                    log_transcription(f" Gemma Native Result: '{raw_text}'")
 
             elif ASR_BACKEND == "qwen_asr":
                 # Pre-transcription check: ensure model is on CUDA (if available) before proceeding
@@ -4035,8 +3700,11 @@ class VoiceInputApp:
             #     command_text = re.sub(r'^(privox)\s*,?\s*', '', raw_text, flags=re.IGNORECASE)
             #     log_print(f" [Command Mode Detected] Input: {command_text}")
             
-            if (os.environ.get("PRIVOX_GC_AFTER_ASR") or "").strip().lower() in ("1", "true", "yes", "on"):
-                gc.collect()
+
+
+            import gc
+            gc.collect()
+            time.sleep(0.5) 
             
             # Since we aggressively skip loading the grammar model during init for ONNX,
             # we must explicitly trigger it here now that the ASR is purged from VRAM.
@@ -4101,7 +3769,6 @@ class VoiceInputApp:
             self.loading_status = "ASR Error"
             self.sound_manager.play_error()
         finally:
-            self._transcribe_in_progress = False
             try:
                 self._cancel_paste_anchor_timer()
             except Exception:
@@ -4204,7 +3871,7 @@ class VoiceInputApp:
                     if _clipboard_only_no_restore():
                         self._notify_tray(
                             "Privox",
-                            "Window focus lost — transcript on clipboard. Please paste manually into your target field.",
+                            "Could not sample the active window — transcript on clipboard. Paste with Ctrl+V.",
                         )
                     else:
                         self.sound_manager.play_error()
@@ -4217,7 +3884,7 @@ class VoiceInputApp:
                     if _clipboard_only_no_restore():
                         self._notify_tray(
                             "Privox",
-                            "Focus switched — transcript on clipboard. Please paste it into your original window.",
+                            "Active window changed — transcript on clipboard. Paste with Ctrl+V.",
                         )
                     else:
                         self.sound_manager.play_error()
@@ -4283,8 +3950,7 @@ class VoiceInputApp:
             
         while self.running:
             # VRAM Saver Check
-            # Use an explicit processing flag instead of UI text state.
-            if self.heavy_models_loaded and not self.is_listening and not self._transcribe_in_progress:
+            if self.heavy_models_loaded and not self.is_listening and self.ui_state != "PROCESSING":
                 if (time.time() - self.last_activity_time) > self.vram_timeout:
                     self.unload_heavy_models()
 
@@ -4342,8 +4008,8 @@ class VoiceInputApp:
                 if not self.is_listening:
                     continue
                     
-                chunk = np.asarray(chunk, dtype=np.float32).reshape(-1)
-                self.audio_buffer.append(chunk)
+                chunk = chunk.flatten()
+                self.audio_buffer.extend(chunk)
 
                 if self.is_listening and len(chunk) > 0:
                     rms = float(np.sqrt(np.mean(chunk.astype(np.float64) ** 2)))
@@ -4357,8 +4023,7 @@ class VoiceInputApp:
                     if NO_TORCH:
                         speech_dict = self.vad_iterator(chunk.astype(np.float32), return_seconds=True)
                     else:
-                        torch_m = _get_torch_lazy()
-                        chunk_tensor = torch_m.from_numpy(chunk).float()
+                        chunk_tensor = torch.from_numpy(chunk).float()
                         speech_dict = self.vad_iterator(chunk_tensor, return_seconds=True)
                     
                     if speech_dict:
@@ -4460,8 +4125,6 @@ class VoiceInputApp:
         # If frozen, use executable path. If script, use python + script path (less reliable for auto-start without wrapper)
         # But user wants this for the built exe mainly.
         exe_path = sys.executable 
-        # Add --startup flag for auto-launch to allow for a settle-down delay
-        startup_cmd = f'"{exe_path}" --startup'
         
         try:
             key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS)
@@ -4472,8 +4135,8 @@ class VoiceInputApp:
                  except FileNotFoundError:
                     pass
             else: # Currently unchecked, so turn ON
-                 winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, startup_cmd)
-                 log_print(f"Auto-launch enabled. Command: {startup_cmd}")
+                 winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, exe_path)
+                 log_print(f"Auto-launch enabled. Path: {exe_path}")
             winreg.CloseKey(key)
         except Exception as e:
             log_print(f"Error checking startup status: {e}")

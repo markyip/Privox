@@ -31,26 +31,14 @@ ASR_LIBRARY = [
 # --- Refiner (LLM) Library ---
 LLM_LIBRARY = [
     {
-        "name": "Gemma 4 E2B IT (TurboQuant)",
+        "name": "Gemma 4 E2B (TurboQuant)",
         "repo_id": "unsloth/gemma-4-E2B-it-GGUF",
         "file_name": "gemma-4-E2B-it-Q4_K_M.gguf",
         "prompt_type": "gemma",
         "turboquant": True,
         "n_ctx": 8192,
-        "n_gpu_layers": 42,
-        "description": "Gemma 4 E2B IT tuned for speed and low VRAM."
-    },
-    {
-        "name": "Gemma 4 E2B-IT-Assistant (TurboQuant)",
-        "repo_id": "unsloth/gemma-4-E2B-it-GGUF",
-        "file_name": "gemma-4-E2B-it-Q4_K_M.gguf",
-        "mmproj_repo": "ggml-org/gemma-4-E2B-it-GGUF",
-        "mmproj_file": "mmproj-gemma-4-E2B-it-f16.gguf",
-        "prompt_type": "gemma",
-        "turboquant": True,
-        "n_ctx": 8192,
-        "n_gpu_layers": 42,
-        "description": "Gemma 4 E2B Assistant with native audio processing capabilities."
+        "n_gpu_layers": 20,
+        "description": "Gemma 4 E2B tuned for speed and low VRAM."
     },
     {
         "name": "Gemma 4 E4B (TurboQuant)",
@@ -61,6 +49,16 @@ LLM_LIBRARY = [
         "n_ctx": 8192,
         "n_gpu_layers": 42,
         "description": "Gemma 4 E4B tuned for speed and low VRAM usage."
+    },
+    {
+        "name": "Gemma 4 E4B-IT-Assistant (TurboQuant)",
+        "repo_id": "unsloth/gemma-4-E4B-it-GGUF",
+        "file_name": "gemma-4-E4B-it-Q4_K_M.gguf",
+        "prompt_type": "gemma",
+        "turboquant": True,
+        "n_ctx": 8192,
+        "n_gpu_layers": 42,
+        "description": "Gemma 4 E4B Assistant with native multimodal and audio processing capabilities."
     },
 ]
 
@@ -77,15 +75,18 @@ def refiner_gguf_min_complete_bytes(file_name: str) -> int:
         return int(2.7 * gib)  # catalog ~3.11 GiB
     if key == "gemma-4-e4b-it-q4_k_m.gguf":
         return int(4.3 * gib)  # catalog ~4.98 GiB
+    if key == "gemma-4-e4b-it-q4_k_m.gguf":
+        return int(4.3 * gib)  # catalog ~4.98 GiB
     return 256 * 1024 * 1024
 
 
 # --- Defaults ---
-# Default ASR uses Gemma 4 Assistant with native audio support.
+# Default ASR uses faster-whisper (CTranslate2) — no PyTorch for transcription.
+# Display name as stored in .user_prefs.json / ASR combo (must match ASR_LIBRARY "name").
 DEFAULT_ASR = "Distil-Whisper Large v3 (English)"
 # Folder id under models/whisper-<id> and config.json "whisper_model" (keep in sync with ASR_LIBRARY entry).
 DEFAULT_ASR_WHISPER_MODEL = "distil-large-v3"
-DEFAULT_LLM = "Gemma 4 E2B-IT-Assistant (TurboQuant)"
+DEFAULT_LLM = "Gemma 4 E2B (TurboQuant)"
 
 # --- Persona Lenses ---
 # These are the systematic instructions applied to each persona
@@ -122,15 +123,15 @@ CHARACTER_LENSES = {
 # These are the stylistic instructions applied to each tone
 TONE_OVERLAYS = {
     "Professional": (
-        "Style: Formal. DELETE all fillers (uh, um, etc.). Replace casual words with professional alternatives. Use complex, well-structured sentences. "
+        "Style: Formal. Replace casual words with professional alternatives. Use complex, well-structured sentences. "
         "Objective: Sound authoritative and polished."
     ),
     "Natural": (
-        "Style: Conversational. DELETE all fillers. Merge fragments caused by pauses into cohesive sentences. Fix obvious errors. "
+        "Style: Conversational. Maintain the speaker's original cadence. Fix only obvious errors. "
         "Objective: Sound like a clear version of the original speaker."
     ),
     "Polite": (
-        "Style: Courteous. DELETE all fillers. Merge fragments caused by pauses into cohesive sentences. Soften direct statements. Use honorifics/politeness where contextually appropriate. "
+        "Style: Courteous. Soften direct statements. Use honorifics/politeness where contextually appropriate. "
         "Objective: Sound respectful and considerate."
     ),
     "Casual": (
@@ -150,28 +151,30 @@ TONE_OVERLAYS = {
 
 # --- Global Prompting Rules ---
 CRITICAL_RULES = """
-[REFINEMENT PROTOCOL]
-1. IDENTITY: High-precision text transformation engine.
-2. OBJECTIVE: Convert raw ASR transcripts into polished, readable text.
-3. [CRITICAL CONSTRAINT]: **DIGITS ONLY FOR NUMBERS**. Spelled-out words like "one", "ten", or "thousand" must **NEVER** appear in the output when representing quantities.
-4. MANDATORY TRANSFORMATIONS:
-   - [HEAL]: Strip all fillers (um, uh, hmm, ah, 呃, 嗯) and stuttered repetitions.
-   - [CONVERT]: **Every** spoken number MUST be rendered as digits (e.g., "one thousand" -> 1,000).
-   - [JOIN]: Merge fragments caused by pauses into logical, cohesive sentences.
-   - [FORMAT]: Use Markdown lists for steps; use commas for large numbers (English).
-5. PRESERVATION: Keep the original language, substance, and tone. Never translate or expand.
-6. FORMAT: Output ONLY the result inside <refined> and </refined> tags. No conversation.
+CRITICAL RULES:
+1. CONSERVATIVE REFINEMENT: Do NOT expand the wording or add "creativity". Your absolute priority is to transcribe and polish the original phrasing while keeping the exact meaning unchanged.
+2. AUTO-FORMAT LISTS: You MUST convert spoken sequences, steps, or multiple items into proper Markdown bullet points (-) or numbered lists (1., 2.). Add paragraphs where logical.
+3. PUNCTUATION & GRAMMAR: Use appropriate punctuation for clarity and fix only obvious grammar/spelling errors.
+4. STRICT NO HALLUCINATION: Never add new semantic information, facts, commentary, or ideas not explicitly present in the original transcript.
+5. NO CONVERSATION: Output ONLY the processed text inside the tags. Never add greetings.
+6. ARABIC NUMERALS (ALL LANGUAGES, 0–9): Whenever the transcript refers to a number—cardinals, ordinals, counts, measurements, money, dates/times, list positions, math, codes/IDs, ages, percentages, fractions—write the numeric value with Western Arabic digits (0–9), not spelled-out number words in the local language. Examples: "twelve" → "12"; "three billion and two million" → "3,002,000,000".
+7. PRESERVE INPUT LANGUAGE: The transcript may be Chinese, Japanese, Korean, or other languages. Keep the refined text in that SAME language. Never translate to English unless the transcript itself is English. Using Western Arabic digits (0–9) for numeric references is NOT translation and is required (rule 6). BILINGUAL / CODE-MIXING: If Latin and CJK (or kana/Hangul) appear in the same sentence, output must stay mixed the same way—do not “helpfully” unify to one language. The ASR language tag may name one primary language; ignore that for translation purposes and preserve every script as spoken unless fixing an obvious misrecognition.
+8. CHINESE SCRIPT: If the Core Directive specifies Traditional or Simplified output for Chinese, follow it for all Chinese characters. Otherwise, match the transcript script (繁體 vs 简体).
+9. CANTONESE: If the transcript contains spoken Cantonese particles (e.g. 嘅、咗、唔), keep colloquial Cantonese; do not rewrite into formal Mandarin book style unless the user asked for formal prose.
+10. SPOKEN ARITHMETIC & OPERATORS (ALL LANGUAGES): When the user dictates math, render with context-appropriate symbols (+ − × ÷ =), not only in English/Chinese. Follow each language’s spoken cues: English (plus/minus/times/divided by/equals); Chinese 加減乘除等於; French (plus/moins/fois/divisé par/égale); German (plus/minus/mal/geteilt durch/ist/gleich); Spanish (más/menos/por/dividido entre/es/igual a); Japanese (たす/ひく/かける/わる/は); Korean (더하기/빼기/곱하기/나누기/은/는); Arabic (زائد/ناقص/ضرب/قسمة/يساوي); Hindi (धन/घटा/गुणा/भाग/बराबर), etc. Use Unicode operators in prose when clear; ASCII (- *) in code-like lines if the transcript implies code. Never add unstated steps or unstated numeric results.
+11. LARGE NUMBERS & MAGNITUDES (ALL LANGUAGES): Normalize big quantities for clarity using regional conventions for grouping and unit words (Chinese 千／百／萬／億; Japanese 万／億; Korean 만／억; Indian lakh/crore; European millions / separators). The digit glyphs themselves MUST remain Western Arabic (0–9) per rule 6 unless the transcript explicitly uses Eastern Arabic-Indic digits (٣٤٥) and you should preserve that style. Prefer one clear numeric form; never invent, omit, or round beyond what was spoken.
+12. SPOKEN FILLERS / HESITATION: Remove non-semantic hesitation sounds (um, uh, ah, er, hmm). Keep all meaningful words but ensure a clean, professional flow.
 """
 
 # --- language-specific Few-Shot Examples ---
 LANGUAGE_EXAMPLES = {
     "en": {
-        "transcript": "um, so basically, uh, I think we should, you know, start the the project hmm tomorrow.",
-        "output": "I think we should start the project tomorrow."
+        "transcript": "uhh i think i wanna go to the the store",
+        "output": "I think I want to go to the store."
     },
     "zh": {
-        "transcript": "呃... 我覺得嗰個 project 應該咁樣做，係咪呀？嗯。",
-        "output": "我覺得那個 project 應該這樣做，對吧？"
+        "transcript": "測試中文輸入 唔該",
+        "output": "測試中文輸入，唔該。"
     },
     "ja": {
         "transcript": "あー、えーと、今日はいい天気ですね",
@@ -216,21 +219,6 @@ Output: <refined>Okay, the steps are 1, 2, 3, 4.</refined>
 [Transcript]: so three plus five equals eight and ten minus two is also eight
 Output: <refined>So 3 + 5 = 8, and 10 − 2 = 8.</refined>
 </example_4>
-<example_5>
-[Core Directive]: Refine this text for clarity.
-[Transcript]: I was thinking about, um, the proposal, and then, I realized, we need more time.
-Output: <refined>I was thinking about the proposal and then I realized we need more time.</refined>
-</example_5>
-<example_6>
-[Core Directive]: Refine this text for clarity.
-[Transcript]: Today I went to. The office and then. I saw my manager. He said that. We should start the project.
-Output: <refined>Today I went to the office and then I saw my manager. He said that we should start the project.</refined>
-</example_6>
-<example_7>
-[Core Directive]: Refine this text for clarity.
-[Transcript]: The total cost is one thousand two hundred and forty two dollars.
-Output: <refined>The total cost is 1,242 dollars.</refined>
-</example_7>
 """,
     "zh": """
 <example_3>
@@ -362,14 +350,11 @@ def get_system_formatter(language=None, persona_mission=None):
         numbers_ex = _NUMBERS_FEW_SHOT_BY_LANG.get(lang_key) or _NUMBERS_FEW_SHOT_BY_LANG["_default"]
 
     formatter = f"""
-You are a high-precision text transformation engine. {mission_greeting}
-Follow the [REFINEMENT PROTOCOL] below with absolute strictness.
-
-IMPORTANT: If you output a number as a word (like "one") instead of a digit ("1"), YOU HAVE FAILED THE TASK.
+You are a precise text-processing API. {mission_greeting}
+You MUST wrap your final processed text perfectly inside <refined> and </refined> XML tags. Do NOT output anything outside of these tags.
 
 {CRITICAL_RULES}
 
-[FEW-SHOT EXAMPLES]
 <example_1>
 [Core Directive]: Refine this text for clarity.
 [Transcript]: {ex['transcript']}

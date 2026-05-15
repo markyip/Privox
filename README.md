@@ -1,6 +1,6 @@
 # Privox 🎙️
 
-![App version](https://img.shields.io/badge/app-v1.2.7-blue)
+![App version](https://img.shields.io/badge/app-v1.2.8-blue)
 [![Python Version](https://img.shields.io/badge/python-3.10--3.12-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-Noncommercial-green.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Windows-blue?logo=windows)

@@ -1339,11 +1339,11 @@ class SettingsGUI(QMainWindow):
         # Persona Group
         persona_layout = QHBoxLayout()
         self.char_combo = ModernComboBox()
-        self.char_combo.addItems(["Writing Assistant", "Code Expert", "Academic", "Executive Secretary", "Personal Buddy", "Custom"])
+        self.char_combo.addItems(["Writing Assistant", "Code Expert", "Academic", "Executive Secretary", "Custom"])
         self.char_combo.currentTextChanged.connect(self.on_prompt_change)
         
         self.tone_combo = ModernComboBox()
-        self.tone_combo.addItems(["Professional", "Natural", "Polite", "Casual", "Aggressive", "Concise", "Custom"])
+        self.tone_combo.addItems(["Professional", "Natural", "Polite", "Casual", "Concise", "Custom"])
         self.tone_combo.currentTextChanged.connect(self.on_prompt_change)
 
         persona_layout.addWidget(self.create_field("Persona", self.char_combo))

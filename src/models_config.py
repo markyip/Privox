@@ -334,6 +334,15 @@ def get_system_formatter(language=None, persona_mission=None):
     # Mission override for Persona/Tone enforcement
     mission_greeting = f"Your specific mission is: {persona_mission}" if persona_mission else "Your job is to process the user's transcript according to the Core Directive."
     
+    # Logic to avoid contradiction: If the mission is to summarize/be concise, relax the "no-summarize" rule.
+    is_summary_mission = any(w in (persona_mission or "").lower() for w in ["summarize", "concise", "distill", "axiom"])
+    
+    summarization_rule = (
+        "Do NOT summarize, shorten, skip paragraphs, or omit sentences — keep the same substance and coverage as the input."
+        if not is_summary_mission else
+        "Be concise and remove exploratory fluff, but ensure the core technical substance is preserved."
+    )
+    
     # Common structural example
     struct_ex = {
         "transcript": "our grocery list is apples and then some milk and also we need eggs and bread",
@@ -352,6 +361,7 @@ def get_system_formatter(language=None, persona_mission=None):
     formatter = f"""
 You are a precise text-processing API. {mission_greeting}
 You MUST wrap your final processed text perfectly inside <refined> and </refined> XML tags. Do NOT output anything outside of these tags.
+{summarization_rule}
 
 {CRITICAL_RULES}
 
@@ -370,16 +380,25 @@ Output: <refined>{struct_ex['output']}</refined>
 
 
 def get_system_formatter_for_transcript(language=None, transcript_char_len=0, persona_mission=None):
-    """Shorter system prompt for long transcripts so prompt+text fits n_ctx; forbids summarization."""
+    """Shorter system prompt for long transcripts so prompt+text fits n_ctx; forbids summarization unless mission asks."""
     if transcript_char_len <= 300:
         return get_system_formatter(language=language, persona_mission=persona_mission)
     
     mission_greeting = f"Your specific mission is: {persona_mission}" if persona_mission else "Refine the user's transcript per the Core Directive."
     
+    # Logic to avoid contradiction: If the mission is to summarize/be concise, relax the "no-summarize" rule.
+    is_summary_mission = any(w in (persona_mission or "").lower() for w in ["summarize", "concise", "distill", "axiom"])
+    
+    summarization_rule = (
+        "Do NOT summarize, shorten, skip paragraphs, or omit sentences — keep the same substance and coverage as the input."
+        if not is_summary_mission else
+        "Be concise and remove exploratory fluff, but ensure the core technical substance is preserved."
+    )
+
     return f"""
 You are a precise text-processing API. {mission_greeting}
 You MUST put the COMPLETE refined transcript inside one pair of <refined> and </refined> tags.
-Do NOT summarize, shorten, skip paragraphs, or omit sentences — keep the same substance and coverage as the input.
+{summarization_rule}
 
 {CRITICAL_RULES}
 """
@@ -411,7 +430,6 @@ DEFAULT_PROMPTS = {
     "Writing Assistant|Natural": "Refine the provided transcript into clean, professional, and grammatically correct text, while maintaining a natural and conversational flow.",
     "Writing Assistant|Polite": "Refine the text to be courteous and respectful. Ensure grammar is perfect while maintaining a soft, considerate approach.",
     "Writing Assistant|Casual": "Clean up the grammar but keep the text relaxed and conversational. Maintain everyday vocabulary.",
-    "Writing Assistant|Aggressive": "Refine the text into a bold, highly confident statement. Fix grammar but use strong, decisive language.",
     "Writing Assistant|Concise": "Summarize the provided transcript into the most essential points, removing all fluff and redundancy while ensuring logical flow.",
     
     # Code Expert
@@ -419,7 +437,6 @@ DEFAULT_PROMPTS = {
     "Code Expert|Natural": "Refine this code description. Keep the language natural but ensure variables, acronyms, and technical jargon are explicitly correct.",
     "Code Expert|Polite": "Provide a helpful, respectful refinement of this technical issue. Format it clearly for a colleague or junior developer.",
     "Code Expert|Casual": "Clean up this dev talk. Keep it relaxed, like explaining a codebase issue to a coworker over Slack.",
-    "Code Expert|Aggressive": "Refine this into a direct, no-nonsense technical directive. Strip out uncertainty and state the architecture or code changes forcefully.",
     "Code Expert|Concise": "Convert this technical speech into a concise summary. Use markdown where helpful to highlight key terms, functions, or snippets.",
 
     # Academic
@@ -427,7 +444,6 @@ DEFAULT_PROMPTS = {
     "Academic|Natural": "Refine this exploration of ideas into a flowing, articulate reflection. Keep the intellectual depth but make it readable.",
     "Academic|Polite": "Present these deep thoughts with humility and intellectual respect. Refine the language to be sophisticated yet inviting.",
     "Academic|Casual": "Clean up this deep thinking into a relaxed, armchair-academic discussion. Keep the concepts intact but the vibe chill.",
-    "Academic|Aggressive": "Refine this into a sharp, assertive scholarly argument. State the concepts with absolute conviction and elevated vocabulary.",
     "Academic|Concise": "Distill this academic thought into its absolute core axiom or maxim. Remove all exploratory fluff.",
 
     # Executive Secretary
@@ -435,15 +451,7 @@ DEFAULT_PROMPTS = {
     "Executive Secretary|Natural": "Refine this into a clear, articulate business message that sounds human but remains completely appropriate for the workplace.",
     "Executive Secretary|Polite": "Draft a formal and highly respectful response based on this transcript. Organize the thoughts into a polished executive format with maximum courtesy.",
     "Executive Secretary|Casual": "Clean up this internal team update. Make it professional but relaxed, suitable for an internal company chat.",
-    "Executive Secretary|Aggressive": "Refine this into a firm, non-negotiable business directive. Use authoritative executive language.",
     "Executive Secretary|Concise": "Condense this business transcript into brief, actionable bullet points or a short executive summary.",
 
-    # Personal Buddy
-    "Personal Buddy|Professional": "Refine this text to be clean and structured, but keep a warm, supportive undertone as if coming from a mentor.",
-    "Personal Buddy|Natural": "Clean up the grammar but preserve the exact friendly, everyday voice of the speaker. Do not make it sound bureaucratic.",
-    "Personal Buddy|Polite": "Refine this into a very kind, supportive, and gentle message. Ensure perfect grammar without losing the warmth.",
-    "Personal Buddy|Casual": "Fix the obvious mistakes but keep the vibe totally chill. Use slang naturally if it fits the context.",
-    "Personal Buddy|Aggressive": "Refine this into a high-energy, hyped-up, enthusiastic message. Fix the grammar but keep the bold buddy energy.",
-    "Personal Buddy|Concise": "Trim this down to just the core friendly message. Keep it short, sweet, and grammatically correct.",
 }
 

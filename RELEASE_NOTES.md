@@ -1,5 +1,17 @@
 # Privox Release Notes
 
+## v1.2.8
+
+**Release date:** 2026-05-15
+
+### Persona & Prompt Engineering
+- **Prompt Conflict Resolution**: Implemented dynamic rule relaxation for "Concise" and "Summarize" tones. The system now intelligently adjusts the system prompt to allow for brevity when requested, preventing model hallucinations caused by contradictory instructions.
+- **Library Tidy**: 
+    - Removed the **"Personal Buddy"** persona to maintain a professional product focus.
+    - Removed the **"Aggressive"** tone across all personas.
+    - Updated **"Code Expert"** and **"Academic"** prompts for improved clarity and precision.
+- **Numerical Protocol Validation**: Finalized the decommissioning of the Python-based "Digit Guard" in favor of full LLM-based reasoning, now that GPU acceleration is stable.
+
 ## v1.2.7
 
 **Release date:** 2026-05-15

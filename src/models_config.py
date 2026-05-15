@@ -122,15 +122,15 @@ CHARACTER_LENSES = {
 # These are the stylistic instructions applied to each tone
 TONE_OVERLAYS = {
     "Professional": (
-        "Style: Formal. Replace casual words with professional alternatives. Use complex, well-structured sentences. "
+        "Style: Formal. DELETE all fillers (uh, um, etc.). Replace casual words with professional alternatives. Use complex, well-structured sentences. "
         "Objective: Sound authoritative and polished."
     ),
     "Natural": (
-        "Style: Conversational. Maintain the speaker's original cadence. Fix only obvious errors. "
+        "Style: Conversational. DELETE all fillers. Maintain the speaker's original flow. Fix obvious errors. "
         "Objective: Sound like a clear version of the original speaker."
     ),
     "Polite": (
-        "Style: Courteous. Soften direct statements. Use honorifics/politeness where contextually appropriate. "
+        "Style: Courteous. DELETE all fillers. Soften direct statements. Use honorifics/politeness where contextually appropriate. "
         "Objective: Sound respectful and considerate."
     ),
     "Casual": (
@@ -168,12 +168,12 @@ CRITICAL RULES:
 # --- language-specific Few-Shot Examples ---
 LANGUAGE_EXAMPLES = {
     "en": {
-        "transcript": "uhh i think i wanna go to the the store",
-        "output": "I think I want to go to the store."
+        "transcript": "um, so basically, uh, I think we should, you know, start the the project hmm tomorrow.",
+        "output": "I think we should start the project tomorrow."
     },
     "zh": {
-        "transcript": "測試中文輸入 唔該",
-        "output": "測試中文輸入，唔該。"
+        "transcript": "呃... 我覺得嗰個 project 應該咁樣做，係咪呀？嗯。",
+        "output": "我覺得那個 project 應該這樣做，對吧？"
     },
     "ja": {
         "transcript": "あー、えーと、今日はいい天気ですね",

@@ -1561,7 +1561,24 @@ class GrammarChecker:
             log_print(f"Gemma Native Audio Error: {e}")
             return ""
 
+    def _strip_common_fillers(self, text: str) -> str:
+        """Regex-based pre-cleanup to catch obvious fillers before the LLM sees them."""
+        # 1. English fillers
+        en_fillers = r"\b(um|uh|hmm|ah|er|uhm|erm|oh)\b"
+        text = re.sub(en_fillers, "", text, flags=re.IGNORECASE)
+        # 2. Chinese fillers (be careful with these)
+        zh_fillers = r"[嗯呃]"
+        text = re.sub(zh_fillers, "", text)
+        # 3. Simple stutters: "I I", "the the"
+        text = re.sub(r"\b(\w+)\s+\1\b", r"\1", text, flags=re.IGNORECASE)
+        # 4. Clean up spacing
+        return " ".join(text.split()).strip()
+
     def correct(self, text, is_command=False, language=None, language_prob=0.0):
+        # Apply pre-processing filler removal for English/Chinese-heavy text
+        if not is_command:
+            text = self._strip_common_fillers(text)
+        
         # 1. Pre-processing Guardrail: Skip LLM for very short or empty inputs
         # (Unless it's a known keyword in the custom dictionary)
         clean_text = text.strip()

@@ -1,6 +1,6 @@
 # Privox 🎙️
 
-![App version](https://img.shields.io/badge/app-v1.1-blue)
+![App version](https://img.shields.io/badge/app-v1.2-blue)
 [![Python Version](https://img.shields.io/badge/python-3.10--3.12-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-Noncommercial-green.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Windows-blue?logo=windows)
@@ -28,7 +28,7 @@ A powerful, private, and fully local voice input assistant for Windows. Privox c
 
 ### 1. Installation
 
-1. Download **Privox.exe** from our [Releases](https://github.com/markyip/Privox/releases) page. The latest stable release is **v1.1** (2026-05-15); see [RELEASE_NOTES.md](RELEASE_NOTES.md) for full changes.
+1. Download **Privox.exe** from our [Releases](https://github.com/markyip/Privox/releases) page. The latest stable release is **v1.2** (2026-05-21); see [RELEASE_NOTES.md](RELEASE_NOTES.md) for full changes.
 2. Run the program and follow the simple on-screen instructions.
 3. On your first run, Privox will take a few minutes to set up its "AI Brains"—then you're ready to go!
 
@@ -60,11 +60,11 @@ You don't need to be a computer expert to customize Privox. Just right-click the
 
 ## 📋 Good to Know
 
-- **VRAM usage is model-dependent**: Privox loads two local AI models (ASR + Refiner). Typical active VRAM is around 4 GB with default settings, and can vary by selected ASR backend (e.g. Qwen-ASR vs faster-whisper) and refiner model.
-- **TurboQuant refiner profiles**: Default Gemma refiners use tuned load settings (`n_ctx`, `n_gpu_layers`, `n_batch`) for a good balance on typical GPUs (e.g. **8–12 GB** VRAM gets conservative batch sizes and layer caps). **`n_ctx` is 6144** so longer dictation is less likely to be truncated during refinement; very long transcripts use a **compact system prompt** that still enforces the same critical rules but skips heavy few-shot blocks to fit context.
+- **VRAM usage is model-dependent**: Privox loads two local AI models (ASR + Refiner). Typical active VRAM is around 4–7 GB depending on your selected backend and GPU size. On **10–12 GB cards**, Privox automatically caps how many refiner layers go on GPU to leave enough headroom for the ASR model — both coexist without CUDA out-of-memory errors.
+- **TurboQuant refiner profiles**: Default Gemma refiners use tuned load settings (`n_ctx`, `n_gpu_layers`, `n_batch`) for a good balance on typical GPUs. **`n_ctx` is 8192** so longer dictation is less likely to be truncated during refinement; very long transcripts use a **compact system prompt** that still enforces the same critical rules but skips heavy few-shot blocks to fit context.
 - **Config file safety**: If `config.json` or `.user_prefs.json` is temporarily invalid JSON while you save in an editor, Privox reports a clear error (including path and a short preview) when running **from source / Pixi** (`privox_app.log`). The **packaged executable** does not write that log file; fix the file and save again to apply settings.
-- **VRAM Saver**: After idle, Privox unloads **both** the speech model (ASR) and the refiner (Grammar) to free GPU and host RAM, then reloads them on the next hotkey press.
-- **Faster wake with Qwen-ASR**: After that unload, Grammar (llama.cpp) and Qwen-ASR load **in parallel** by default (wall time closer to the slower of the two, not the sum). If you hit **CUDA OOM** or instability on wake, set environment variable **`PRIVOX_SEQUENTIAL_QWEN_LOAD=1`** to restore one-after-the-other loading.
+- **VRAM Saver**: After idle, Privox unloads **both** the speech model (ASR) and the refiner (Grammar) to completely free GPU memory, then reloads them on the next hotkey press. Idle VRAM usage should return close to zero after unloading.
+- **Qwen-ASR on mid-range GPUs**: When using Qwen-ASR on a 10–12 GB card, the ASR model is loaded with a VRAM cap (`~42%` of total, ~5 GB on 12 GB) using `device_map` to prevent out-of-memory during the transition from CPU to GPU.
 - **Very short sentences may not be refined**: To prevent hallucination, Privox will skip AI grammar correction if your spoken input is very short (roughly a few words). The original transcription will be typed out as-is. This is a deliberate safety measure to ensure quality output.
 - **Chinese output script (繁體 / 简体)**: In **Settings → General**, **Simplified Chinese output (简体中文)** is **off by default**. When it is off, any Chinese in the **final pasted text** is normalized to **Traditional Chinese** (refiner instructions plus **zhconv** when the package is installed). Turn the option **on** to normalize everything to **Simplified** instead. This applies regardless of whether the speech recognition returned Traditional or Simplified characters. Colloquial Cantonese particles are still encouraged when the transcript looks like spoken Cantonese.
 - **Logs and privacy (packaged app)**: The **built executable does not create or write `privox_app.log`** (no routine app log file on disk). Third-party libraries are **not** hooked through a stdout/stderr-to-log pipeline, which keeps installs quieter and avoids accidental capture of progress output. **Development** runs (`pixi run …` / `python src/voice_input.py`) still append to **`privox_app.log`** next to the project for troubleshooting. For **transcript-level** diagnostics (raw ASR, LLM prefix vs `<refined>`, paste preview), set **`PRIVOX_LOG_TRANSCRIPTION=1`** and run **from source**; that mode is intended for dev/debug, not the silent exe build. Severe failures may still surface via **tray notifications**, dialogs, or **`privox_error_last.txt`** when the app writes those paths.

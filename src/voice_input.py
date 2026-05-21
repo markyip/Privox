@@ -1084,6 +1084,29 @@ class GrammarChecker:
                     preferred_layers = int(self.profile.get("n_gpu_layers", 42))
                     if gpu_mem_gb and gpu_mem_gb <= 8.5:
                         preferred_layers = min(preferred_layers, 24)
+                    elif gpu_mem_gb and gpu_mem_gb <= 13.0:
+                        # Mid-range cards (10-12 GB): the ASR model also needs VRAM.
+                        # Reserve headroom based on which ASR backend is selected:
+                        #   - qwen_asr / sensevoice: Torch models, cap_gib ~ total_gib * 0.42 (~5 GiB on 12 GB)
+                        #   - faster-whisper (CT2):  int8_float16, lighter but still needs ~1.5-2 GiB
+                        # Use a conservative fraction so grammar + ASR fit together.
+                        _asr_backend = ASR_BACKEND  # module-level global updated by load_config
+                        if _asr_backend in ("qwen_asr", "sensevoice"):
+                            # Torch ASR: allocates ~42% of total VRAM; cap grammar to remaining ~50%
+                            _asr_reserve_gib = gpu_mem_gb * 0.42
+                        else:
+                            # faster-whisper CT2: lighter, reserve ~15% for ASR + CUDA overhead
+                            _asr_reserve_gib = max(1.5, gpu_mem_gb * 0.15)
+                        _grammar_budget_gib = gpu_mem_gb - _asr_reserve_gib - 0.5  # 0.5 GiB OS/driver overhead
+                        # Translate budget to a layer cap: each Gemma E4B layer ≈ 0.12 GiB at Q4_K_M
+                        # Use a safe estimate of 0.15 GiB/layer to account for KV cache.
+                        _layer_cap_budget = max(16, int(_grammar_budget_gib / 0.15))
+                        preferred_layers = min(preferred_layers, _layer_cap_budget)
+                        log_print(
+                            f"ASR VRAM headroom: reserving {_asr_reserve_gib:.1f} GiB for {_asr_backend}; "
+                            f"grammar budget {_grammar_budget_gib:.1f} GiB → max {_layer_cap_budget} layers "
+                            f"(effective cap: {preferred_layers})"
+                        )
                     layer_plan = [preferred_layers, 24, 16, 0]
                 else:
                     layer_plan = [0]
@@ -1146,6 +1169,27 @@ class GrammarChecker:
     
                 self._has_loaded_once = True
                 log_print(f"Done. (GPU Acceleration: {'ENABLED' if is_gpu else 'DISABLED'})")
+
+                # --- CUDA Graph Warmup: Run a tiny dummy inference to pre-bake GPU computation
+                # graphs so the user's FIRST real transcription doesn't pay the ~7-11s warmup
+                # penalty. This adds ~2-3s to model load time but eliminates first-use latency. ---
+                if is_gpu and (self.profile.get("prompt_type", "") or "").lower() == "gemma":
+                    try:
+                        import time as _wt
+                        _wup_start = _wt.time()
+                        log_print("Running CUDA graph warmup inference...")
+                        _warmup_msg = [{"role": "user", "content": "Hi"}]
+                        list(self.model.create_chat_completion(
+                            messages=_warmup_msg,
+                            max_tokens=4,
+                            temperature=0.0,
+                            seed=0,
+                            stream=True,
+                        ))
+                        log_print(f"CUDA graph warmup done in {_wt.time() - _wup_start:.2f}s.")
+                    except Exception as _wup_err:
+                        log_print(f"CUDA graph warmup skipped ({_wup_err}).")
+
                 return True
             except Exception as e:
                 err_trace = traceback.format_exc()
@@ -1360,6 +1404,7 @@ class GrammarChecker:
         import time
         start_t = time.time()
         input_len = len(user_content)
+        acc = ""  # Initialize before loop so time guard on first iteration doesn't NameError
         
         for chunk in stream:
             # 1. Time Guard: Stop if generation takes too long (>15s for short bursts)
@@ -2045,6 +2090,7 @@ class VoiceInputApp:
         self.last_activity_time = time.time()
         self.heavy_models_loaded = False
         self._asr_loaded_key = None  # (ASR_BACKEND, WHISPER_SIZE) after successful ASR load
+        self._asr_held_key = None   # (ASR_BACKEND, WHISPER_SIZE) representing model currently resident in RAM
         self.model_lock = threading.RLock()
         self._paste_clipboard_lock = threading.Lock()
         self._paste_anchor_lock = threading.Lock()
@@ -2387,75 +2433,150 @@ class VoiceInputApp:
                         is_gpu = cuda_is_available()
                         device_str = "cuda" if is_gpu else "cpu"
 
-                        if ASR_BACKEND == "sensevoice":
-                            sense_dir = os.path.join(BASE_DIR, "models", "SenseVoiceSmall")
-                            log_print(f"ASR Diagnostic - Initializing SenseVoiceSmall on {device_str}...")
+                        # Cleanup stale ASR model if configuration changed
+                        current_key = (ASR_BACKEND, WHISPER_SIZE)
+                        held_key = getattr(self, "_asr_held_key", None)
+                        if self.asr_model is not None and held_key != current_key:
+                            log_print(f"ASR settings changed ({held_key} -> {current_key}). Cleaning up old ASR model...")
                             try:
-                                from funasr import AutoModel
-                            except ImportError as e:
-                                log_print(
-                                    "SenseVoice requires the `funasr` package (not bundled by default). "
-                                    "Install with: pixi add --pypi funasr   or   pip install funasr"
+                                # Remove accelerate dispatch hooks before CPU offload;
+                                # plain .cpu() is a no-op on device_map="auto" models.
+                                for _m in [self.asr_model, getattr(self.asr_model, "model", None)]:
+                                    if _m is None:
+                                        continue
+                                    try:
+                                        if getattr(_m, "hf_device_map", None):
+                                            from accelerate.hooks import remove_hook_from_module
+                                            remove_hook_from_module(_m, recurse=True)
+                                    except Exception:
+                                        pass
+                                    try:
+                                        if hasattr(_m, "cpu"):
+                                            _m.cpu()
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
+                            self.asr_model = None
+                            self._asr_held_key = None
+                            import gc
+                            gc.collect()
+                            if is_gpu and torch is not None:
+                                try:
+                                    torch.cuda.empty_cache()
+                                except:
+                                    pass
+
+                        if ASR_BACKEND == "sensevoice":
+                            if self.asr_model is not None and getattr(self, "_asr_held_key", None) == (ASR_BACKEND, WHISPER_SIZE):
+                                log_print("Reusing SenseVoice model from RAM...")
+                                if is_gpu:
+                                    t_offload = time.time()
+                                    if hasattr(self.asr_model, "model"):
+                                        self.asr_model.model.to("cuda")
+                                    elif hasattr(self.asr_model, "to"):
+                                        self.asr_model.to("cuda")
+                                    log_print(f"SenseVoice transferred to GPU in {time.time() - t_offload:.2f}s.")
+                            else:
+                                sense_dir = os.path.join(BASE_DIR, "models", "SenseVoiceSmall")
+                                log_print(f"ASR Diagnostic - Initializing SenseVoiceSmall on {device_str}...")
+                                try:
+                                    from funasr import AutoModel
+                                except ImportError as e:
+                                    log_print(
+                                        "SenseVoice requires the `funasr` package (not bundled by default). "
+                                        "Install with: pixi add --pypi funasr   or   pip install funasr"
+                                    )
+                                    raise RuntimeError(
+                                        "ASR backend 'sensevoice' needs funasr. Add it to your env or switch ASR in Settings."
+                                    ) from e
+                                self.asr_model = AutoModel(
+                                    model=sense_dir if os.path.exists(sense_dir) else "iic/SenseVoiceSmall",
+                                    device=device_str,
+                                    disable_update=True
                                 )
-                                raise RuntimeError(
-                                    "ASR backend 'sensevoice' needs funasr. Add it to your env or switch ASR in Settings."
-                                ) from e
-                            self.asr_model = AutoModel(
-                                model=sense_dir if os.path.exists(sense_dir) else "iic/SenseVoiceSmall",
-                                device=device_str,
-                                disable_update=True
-                            )
-                            log_print(f"SenseVoice initialized successfully.")
+                                log_print(f"SenseVoice initialized successfully.")
 
                         elif ASR_BACKEND == "qwen_asr":
-                            log_print(f"ASR Diagnostic - Initializing Qwen3ASRModel ({WHISPER_REPO}) on {device_str}...")
-                            from qwen_asr import Qwen3ASRModel
-
-                            if is_gpu:
-                                cap_env = (os.environ.get("PRIVOX_ASR_MAX_GPU_GIB") or "").strip()
-                                cap_gib = None
-                                if cap_env:
-                                    try:
-                                        cap_gib = float(cap_env)
-                                    except ValueError:
-                                        cap_gib = None
-                                if cap_gib is None:
-                                    try:
-                                        total_gib = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
-                                    except Exception:
-                                        total_gib = 12.0
-                                    if total_gib <= 8.5:
-                                        cap_gib = max(2.25, total_gib * 0.38)
-                                    elif total_gib <= 13.0:
-                                        cap_gib = max(3.0, total_gib * 0.42)
-                                    else:
-                                        cap_gib = min(5.5, max(3.5, total_gib * 0.28))
-                                max_mem = {0: f"{cap_gib:.2f}GiB", "cpu": "12GiB"}
-                                dtype = torch.float16
-                                try:
-                                    if torch.cuda.is_bf16_supported():
-                                        dtype = torch.bfloat16
-                                except Exception:
-                                    pass
-                                log_print(
-                                    f"Qwen-ASR VRAM cap ~{cap_gib:.2f} GiB on GPU (set PRIVOX_ASR_MAX_GPU_GIB to override); dtype={dtype}"
-                                )
+                            if self.asr_model is not None and getattr(self, "_asr_held_key", None) == (ASR_BACKEND, WHISPER_SIZE):
+                                log_print("Reusing Qwen3ASRModel from RAM...")
+                                if is_gpu:
+                                    t_offload = time.time()
+                                    self.asr_model.model.to("cuda")
+                                    log_print(f"Qwen3ASRModel transferred to GPU in {time.time() - t_offload:.2f}s.")
                             else:
-                                max_mem = None
-                                dtype = torch.float32
+                                log_print(f"ASR Diagnostic - Initializing Qwen3ASRModel ({WHISPER_REPO}) on {device_str}...")
+                                from qwen_asr import Qwen3ASRModel
 
-                            local_qwen = os.path.join(BASE_DIR, "models", f"whisper-{WHISPER_SIZE}")
-                            model_path = local_qwen if os.path.isdir(local_qwen) else WHISPER_REPO
-                            
-                            self.asr_model = Qwen3ASRModel.from_pretrained(
-                                model_path,
-                                dtype=dtype,
-                                low_cpu_mem_usage=True,
-                                local_files_only=True if os.path.isdir(local_qwen) else False,
-                            )
-                            if is_gpu:
-                                self.asr_model.model.to("cuda")
-                            log_print("Qwen3ASRModel initialized successfully.")
+                                if is_gpu:
+                                    cap_env = (os.environ.get("PRIVOX_ASR_MAX_GPU_GIB") or "").strip()
+                                    cap_gib = None
+                                    if cap_env:
+                                        try:
+                                            cap_gib = float(cap_env)
+                                        except ValueError:
+                                            cap_gib = None
+                                    if cap_gib is None:
+                                        try:
+                                            total_gib = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+                                        except Exception:
+                                            total_gib = 12.0
+                                        if total_gib <= 8.5:
+                                            cap_gib = max(2.25, total_gib * 0.38)
+                                        elif total_gib <= 13.0:
+                                            cap_gib = max(3.0, total_gib * 0.42)
+                                        else:
+                                            cap_gib = min(5.5, max(3.5, total_gib * 0.28))
+                                    max_mem = {0: f"{cap_gib:.2f}GiB", "cpu": "12GiB"}
+                                    dtype = torch.float16
+                                    try:
+                                        if torch.cuda.is_bf16_supported():
+                                            dtype = torch.bfloat16
+                                    except Exception:
+                                        pass
+                                    log_print(
+                                        f"Qwen-ASR VRAM cap ~{cap_gib:.2f} GiB on GPU (set PRIVOX_ASR_MAX_GPU_GIB to override); dtype={dtype}"
+                                    )
+                                else:
+                                    max_mem = None
+                                    dtype = torch.float32
+
+                                local_qwen = os.path.join(BASE_DIR, "models", f"whisper-{WHISPER_SIZE}")
+                                model_path = local_qwen if os.path.isdir(local_qwen) else WHISPER_REPO
+                                
+                                _from_pretrained_kwargs: dict = dict(
+                                    dtype=dtype,
+                                    low_cpu_mem_usage=True,
+                                    local_files_only=True if os.path.isdir(local_qwen) else False,
+                                )
+                                _used_device_map = False
+                                if is_gpu and max_mem is not None:
+                                    # Pass device_map + max_memory so transformers distributes layers
+                                    # respecting the VRAM cap instead of loading all to CPU then OOM-ing
+                                    # on the monolithic .to("cuda") call.
+                                    try:
+                                        _kw_with_map = dict(
+                                            **_from_pretrained_kwargs,
+                                            device_map="auto",
+                                            max_memory=max_mem,
+                                        )
+                                        self.asr_model = Qwen3ASRModel.from_pretrained(
+                                            model_path,
+                                            **_kw_with_map,
+                                        )
+                                        _used_device_map = True
+                                        log_print("Qwen3ASRModel loaded with device_map=auto (VRAM cap enforced).")
+                                    except TypeError as _dmap_err:
+                                        # Older qwen_asr versions may not accept device_map/max_memory.
+                                        log_print(f"device_map not supported by qwen_asr ({_dmap_err}); falling back to CPU load + .to(cuda).")
+                                if not _used_device_map:
+                                    self.asr_model = Qwen3ASRModel.from_pretrained(
+                                        model_path,
+                                        **_from_pretrained_kwargs,
+                                    )
+                                    if is_gpu:
+                                        self.asr_model.model.to("cuda")
+                                log_print("Qwen3ASRModel initialized successfully.")
                         else:
                             # int8_float16 cuts VRAM vs pure float16 on CUDA with small quality cost.
                             compute_type = "int8_float16" if is_gpu else "int8"
@@ -2481,6 +2602,7 @@ class VoiceInputApp:
 
                         # Track ASR model usage here instead of in load_config
                         self.track_model_usage(getattr(self, 'active_asr_name', WHISPER_SIZE))
+                        self._asr_held_key = (ASR_BACKEND, WHISPER_SIZE)
                         self._asr_loaded_key = (ASR_BACKEND, WHISPER_SIZE)
                         dt = time.time() - t0
                         log_print(f"ASR load time: {dt:.2f}s (backend={ASR_BACKEND})")
@@ -2510,6 +2632,19 @@ class VoiceInputApp:
 
                 try:
                     res_grammar = load_grammar()
+                    # Flush any VRAM transiently used during grammar init before ASR claims GPU memory.
+                    # llama.cpp may have reserved and released scratch buffers that the CUDA allocator
+                    # still holds; empty_cache() returns them to the driver so ASR can use them.
+                    _t2 = get_torch()
+                    if _t2 is not None:
+                        try:
+                            import gc as _gc
+                            _gc.collect()
+                            if _t2.cuda.is_available():
+                                _t2.cuda.empty_cache()
+                                log_print("VRAM cache flushed between grammar and ASR load.")
+                        except Exception as _flush_err:
+                            log_print(f"VRAM flush warning (non-fatal): {_flush_err}")
                     res_asr = load_asr()
 
                 finally:
@@ -2605,23 +2740,37 @@ class VoiceInputApp:
             
             if self.asr_model is not None:
 
-                
-                # Targeted internal model cleanup
+                # Targeted internal model cleanup.
+                # For models loaded with device_map="auto" (accelerate dispatch hooks),
+                # a plain .cpu() call is a no-op — the hooks keep tensors on GPU.
+                # We must remove the hooks first, then move to CPU, to actually free VRAM.
                 try:
-                    models_to_clean = [self.asr_model]
-                    if hasattr(self.asr_model, "model"):
-                        models_to_clean.append(self.asr_model.model)
-                    
-                    for m in models_to_clean:
+                    inner = getattr(self.asr_model, "model", None)
+                    models_to_offload = [m for m in [inner, self.asr_model] if m is not None]
+                    for m in models_to_offload:
+                        # Remove accelerate dispatch hooks if present
                         try:
-                            if hasattr(m, "cpu"): m.cpu()
-                        except: pass
-                except: pass
+                            hf_map = getattr(m, "hf_device_map", None)
+                            if hf_map:
+                                from accelerate.hooks import remove_hook_from_module
+                                remove_hook_from_module(m, recurse=True)
+                                log_print(f"Removed accelerate device_map hooks from {type(m).__name__}.")
+                        except Exception as _hook_err:
+                            log_print(f"Hook removal skipped ({type(m).__name__}): {_hook_err}")
+                        # Now move to CPU
+                        try:
+                            if hasattr(m, "cpu"):
+                                m.cpu()
+                        except Exception as _cpu_err:
+                            log_print(f"CPU offload warning ({type(m).__name__}): {_cpu_err}")
+                except Exception as _clean_err:
+                    log_print(f"ASR cleanup warning: {_clean_err}")
 
-                if ASR_BACKEND == "qwen_asr":
-                    log_print("Qwen-ASR reference preserved locally in RAM.")
+                if ASR_BACKEND in ("qwen_asr", "sensevoice"):
+                    log_print(f"{ASR_BACKEND} reference preserved in RAM (VRAM freed).")
                 else:
                     self.asr_model = None
+                    self._asr_held_key = None
                     log_print("ASR model reference destroyed.")
             
             self.grammar_checker.unload_model()
@@ -2831,7 +2980,8 @@ class VoiceInputApp:
                     )
 
             self.custom_dictionary = prefs.get("custom_dictionary", [])
-            self.vram_timeout = max(5, prefs.get("vram_timeout", 60))
+            v_val = prefs.get("vram_timeout", 60)
+            self.vram_timeout = 0 if v_val == 0 else max(5, v_val)
             self.use_simplified_chinese_output = bool(prefs.get("use_simplified_chinese_output", False))
             # Eager load defaults to True for a premium "ready-to-go" experience
             self.eager_model_load = bool(prefs.get("eager_model_load", config.get("eager_model_load", True)))
@@ -3572,10 +3722,17 @@ class VoiceInputApp:
     
     
                 elif ASR_BACKEND == "qwen_asr":
-                    # Pre-transcription check: ensure model is on CUDA (if available) before proceeding
-                    if cuda_is_available() and getattr(self.asr_model.model, "device", type("D", (), {"type": "cpu"})).type != "cuda":
-                        # Fast RAM -> VRAM transfer
-                        self.asr_model.model.to("cuda")
+                    # Pre-transcription check: ensure model is on CUDA before proceeding.
+                    # For device_map="auto" models, .device doesn't exist at top level — check
+                    # hf_device_map instead. Only call .to("cuda") for non-device-mapped models.
+                    if cuda_is_available():
+                        inner_model = getattr(self.asr_model, "model", None)
+                        _has_device_map = bool(getattr(inner_model, "hf_device_map", None))
+                        if not _has_device_map:
+                            _dev_type = getattr(getattr(inner_model, "device", None), "type", "cpu")
+                            if _dev_type != "cuda":
+                                # Fast RAM -> VRAM transfer (plain load path, no device_map)
+                                inner_model.to("cuda")
     
                     # Slicing logic strictly derived from ONNX build to prevent OOM
                     CHUNK_SIZE = 30 * 16000 # 30 seconds at 16kHz
@@ -3911,7 +4068,7 @@ class VoiceInputApp:
             
         while self.running:
             # VRAM Saver Check
-            if self.heavy_models_loaded and not self.is_listening and self.ui_state != "PROCESSING":
+            if self.vram_timeout > 0 and self.heavy_models_loaded and not self.is_listening and self.ui_state != "PROCESSING":
                 if (time.time() - self.last_activity_time) > self.vram_timeout:
                     self.unload_heavy_models()
 

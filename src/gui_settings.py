@@ -1142,8 +1142,8 @@ class SettingsGUI(QMainWindow):
                 f"{'on' if cur['use_simplified_chinese_output'] else 'off'} "
                 f"(was {'on' if snap['use_simplified_chinese_output'] else 'off'})"
             )
-        if cur["vram_timeout_s"] != snap["vram_timeout_s"]:
-            lines.append(f"VRAM saver: {snap['vram_timeout_s']}s → {cur['vram_timeout_s']}s")
+        if cur["vram_timeout"] != snap["vram_timeout"]:
+            lines.append(f"VRAM saver: {snap['vram_timeout']}s → {cur['vram_timeout']}s")
         if cur["auto_stop_s"] != snap["auto_stop_s"]:
             lines.append(f"Auto-stop silence: {snap['auto_stop_s']}s → {cur['auto_stop_s']}s")
         if cur["hotkey_pref"] != snap["hotkey_pref"]:
@@ -1240,7 +1240,8 @@ class SettingsGUI(QMainWindow):
         self.check_startup.setChecked(self.check_startup_status())
         self.check_simplified_chinese.setChecked(bool(self.config.get("use_simplified_chinese_output", False)))
         self.check_eager_load.setChecked(bool(self.config.get("eager_model_load", False)))
-        self.vram_spin.setValue(max(5, int(self.config.get("vram_timeout", 60))))
+        v_timeout = int(self.config.get("vram_timeout", 60))
+        self.vram_spin.setValue(v_timeout if v_timeout == 0 else max(5, v_timeout))
         
         # Auto-stop conversion display (ms to s)
         stop_ms = self.config.get("silence_timeout_ms", 10000)
@@ -1755,7 +1756,8 @@ class SettingsGUI(QMainWindow):
                 break
         
         try:
-            self.prefs["vram_timeout"] = max(5, self.vram_spin.value())
+            v_val = self.vram_spin.value()
+            self.prefs["vram_timeout"] = 0 if v_val == 0 else max(5, v_val)
         except: pass
         try:
             val = max(5, self.stop_spin.value())

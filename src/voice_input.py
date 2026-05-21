@@ -54,6 +54,22 @@ def _privox_install_root() -> str:
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+# --- 0b. CUDA Allocator Tuning (MUST BE BEFORE ANY ML LIBRARY IMPORT) -----
+# In dev runs Pixi's conda env sets these automatically; the packaged EXE
+# starts with a clean environment and gets PyTorch's large-static-pool defaults,
+# which accounts for the bulk of the VRAM difference between EXE and dev builds.
+#
+#   expandable_segments:True  — allocator grows lazily rather than pre-reserving
+#                               a large upfront block (~500 MB – 1.5 GB saving).
+#   CUBLAS_WORKSPACE_CONFIG   — cap cuBLAS scratch to ~32 MB fixed vs unbounded.
+#   CUDA_MODULE_LOADING=LAZY  — defer GPU kernel JIT until first actual use.
+#
+# All three use setdefault so explicit user overrides (env vars set before launch)
+# are always respected.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+os.environ.setdefault("CUDA_MODULE_LOADING", "LAZY")
+
 # --- 1. DLL Registration & CUDA Pre-load (MUST BE BEFORE ANY 3RD PARTY IMPORTS) ---
 if sys.platform == "win32":
     import ctypes

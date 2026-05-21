@@ -2616,6 +2616,31 @@ class VoiceInputApp:
                                     raise
                             log_print("WhisperModel initialized successfully.")
 
+                        # --- ASR CUDA Graph Warmup ---
+                        # Pre-bake GPU compilation / cuDNN benchmarking for the ASR model
+                        try:
+                            _wup_start = time.time()
+                            log_print(f"Running ASR graph warmup inference ({ASR_BACKEND})...")
+                            _dummy_audio = np.zeros(int(SAMPLE_RATE * 0.5), dtype=np.float32)
+                            
+                            if ASR_BACKEND == "sensevoice":
+                                self.asr_model.generate(
+                                    input=_dummy_audio, cache={}, language="auto", use_itn=True, batch_size_s=60
+                                )
+                            elif ASR_BACKEND == "qwen_asr":
+                                if cuda_is_available():
+                                    _inner = getattr(self.asr_model, "model", None)
+                                    _has_map = bool(getattr(_inner, "hf_device_map", None))
+                                    if not _has_map and getattr(getattr(_inner, "device", None), "type", "cpu") != "cuda":
+                                        _inner.to("cuda")
+                                self.asr_model.transcribe(_dummy_audio)
+                            elif ASR_BACKEND == "whisper":
+                                list(self.asr_model.transcribe(_dummy_audio, language="en", beam_size=1))
+                                
+                            log_print(f"ASR graph warmup done in {time.time() - _wup_start:.2f}s.")
+                        except Exception as _wup_err:
+                            log_print(f"ASR graph warmup skipped ({_wup_err}).")
+
                         # Track ASR model usage here instead of in load_config
                         self.track_model_usage(getattr(self, 'active_asr_name', WHISPER_SIZE))
                         self._asr_held_key = (ASR_BACKEND, WHISPER_SIZE)
@@ -2782,12 +2807,9 @@ class VoiceInputApp:
                 except Exception as _clean_err:
                     log_print(f"ASR cleanup warning: {_clean_err}")
 
-                if ASR_BACKEND in ("qwen_asr", "sensevoice"):
-                    log_print(f"{ASR_BACKEND} reference preserved in RAM (VRAM freed).")
-                else:
-                    self.asr_model = None
-                    self._asr_held_key = None
-                    log_print("ASR model reference destroyed.")
+                self.asr_model = None
+                self._asr_held_key = None
+                log_print("ASR model reference destroyed (VRAM completely freed).")
             
             self.grammar_checker.unload_model()
             self.grammar_checker.context_buffer = "" # Clear conversation context

@@ -304,8 +304,8 @@ def main() -> None:
     )
     ap.add_argument(
         "--version",
-        default="0.3.23",
-        help="llama-cpp-python version to build/install (default: 0.3.23)",
+        default="0.3.20",
+        help="llama-cpp-python version to build/install (default: 0.3.20)",
     )
     args = ap.parse_args()
 
@@ -409,7 +409,6 @@ def main() -> None:
             "wheel",
             "--no-deps",
             "--no-cache-dir",
-            "llama-cpp-python",
             "-w",
             str(out),
             f"llama-cpp-python=={ver}",

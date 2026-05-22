@@ -144,9 +144,9 @@ _pyinstaller_argv = [
     '--exclude-module=huggingface_hub',
 ]
 
-# scripts/ contains dev-only diagnostics; excluding from packaged exe for minimal footprint.
-# if os.path.isdir("scripts"):
-#     _pyinstaller_argv.append("--add-data=scripts;scripts")
+# scripts/ contains dev-only diagnostics, but install_llama_cuda.py is required for fallback compilation.
+if os.path.isdir("scripts"):
+    _pyinstaller_argv.append("--add-data=scripts;scripts")
 
 # Optional: vendor a CUDA-built llama_cpp_python-*.whl so end users skip source compiles.
 if os.path.isdir("wheels"):

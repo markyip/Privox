@@ -34,6 +34,9 @@ A powerful, private, and fully local voice input assistant for Windows. Privox c
 
 ### 2. How to Use
 
+> [!NOTE]
+> **VRAM Usage**: Privox keeps models pre-loaded in memory to ensure instant response times when you start speaking. This consumes roughly **1 GB to 1.5 GB of VRAM** (GPU memory) during the idle stage. If you plan to launch a heavy, GPU-intensive game or application, you may want to exit Privox temporarily to free up memory.
+
 - **Always Ready**: Once launched, Privox lives in your **System Tray** (near the clock). You can right-click the icon to access Settings or exit the app.
 - **Tap your hotkey** (default: `F8`): The app starts listening (you'll see a small animation in your taskbar).
 - **Just Talk**: Speak naturally, as if you were talking to a friend.

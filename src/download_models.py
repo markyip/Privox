@@ -481,8 +481,8 @@ def main(log_callback=None):
                     log_local("scripts/install_llama_cuda.py not found (reinstall app or copy scripts/ next to Privox.exe).")
                     return False
                 log_local(
-                    "No 0.3.20 CUDA wheel for this Python - running scripts/install_llama_cuda.py "
-                    "(0.3.20: MSVC + CUDA paths, then pip sdist if needed)..."
+                    "No 0.3.23 CUDA wheel for this Python - running scripts/install_llama_cuda.py "
+                    "(0.3.23: MSVC + CUDA paths, then pip sdist if needed)..."
                 )
                 r = subprocess.run(
                     [exe, helper],
@@ -547,12 +547,12 @@ def main(log_callback=None):
                 for _tag, url in abetlen_cuda:
                     cmd = [
                         exe, "-m", "pip", "install", "--upgrade",
-                        "llama-cpp-python==0.3.20",
+                        "llama-cpp-python==0.3.23",
                         "--extra-index-url", url,
                         "--only-binary=:all:",
                         "--no-deps", "--no-input", "--no-cache-dir",
                     ]
-                    if _pip_run(cmd, _cmake_env(env, has_gpu), f"GPU 0.3.20 wheel ({_tag})"):
+                    if _pip_run(cmd, _cmake_env(env, has_gpu), f"GPU 0.3.23 wheel ({_tag})"):
                         installed = True
                         break
 
@@ -564,11 +564,11 @@ def main(log_callback=None):
                     for _tag, url in abetlen_cuda[:2]:
                         cmd = [
                             exe, "-m", "pip", "install", "--upgrade",
-                            "llama-cpp-python==0.3.20",
+                            "llama-cpp-python==0.3.23",
                             "--extra-index-url", url,
                             "--no-deps", "--no-input", "--no-cache-dir",
                         ]
-                        if _pip_run(cmd, _cmake_env(env, has_gpu), f"GPU 0.3.20 sdist ({_tag})"):
+                        if _pip_run(cmd, _cmake_env(env, has_gpu), f"GPU 0.3.23 sdist ({_tag})"):
                             installed = True
                             break
 
@@ -600,14 +600,14 @@ def main(log_callback=None):
                 cpu_cmds = [
                     [
                         exe, "-m", "pip", "install", "--upgrade",
-                        "llama-cpp-python==0.3.20",
+                        "llama-cpp-python==0.3.23",
                         "--extra-index-url", "https://abetlen.github.io/llama-cpp-python/whl/cpu",
                         "--only-binary=:all:",
                         "--no-deps", "--no-input", "--no-cache-dir",
                     ],
                     [
                         exe, "-m", "pip", "install", "--upgrade",
-                        "llama-cpp-python==0.3.20",
+                        "llama-cpp-python==0.3.23",
                         "--no-deps", "--no-input", "--no-cache-dir",
                     ],
                 ]

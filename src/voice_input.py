@@ -66,7 +66,7 @@ def _privox_install_root() -> str:
 #
 # All three use setdefault so explicit user overrides (env vars set before launch)
 # are always respected.
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+# os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True") # Disabled: prevents VRAM release to Windows OS
 os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 os.environ.setdefault("CUDA_MODULE_LOADING", "LAZY")
 
@@ -124,6 +124,15 @@ from privox_runtime import (
 torch = get_torch()
 if torch is not None:
     torch.set_num_threads(2)  # Constrain underlying OpenMP/MKL to avoid CPU spikes on start
+
+def log_vram_usage(stage_name):
+    try:
+        if torch is not None and torch.cuda.is_available():
+            alloc = torch.cuda.memory_allocated() / (1024**3)
+            res = torch.cuda.memory_reserved() / (1024**3)
+            log_print(f"[VRAM] {stage_name} | Allocated: {alloc:.2f} GB | Reserved: {res:.2f} GB")
+    except Exception:
+        pass
 
 # Downgrade noisy third-party warnings (nagisa SyntaxWarning; transformers generation hints).
 warnings.filterwarnings(
@@ -2010,10 +2019,18 @@ class GrammarChecker:
             if self.model:
                 try:
                     self.model.close()
+                except Exception as e:
+                    log_print(f"Grammar Model close error: {e}")
+                
+                # Explicitly destroy the reference and force GC to ensure llama.cpp frees CUDA buffers
+                self.model = None
+                GrammarChecker._Llama = None
+                GrammarChecker._llama_imported = False
+                try:
+                    import gc
+                    gc.collect()
                 except Exception:
                     pass
-                del self.model
-                self.model = None
                 log_print("Grammar Model Unloaded.")
 
 
@@ -2437,7 +2454,8 @@ class VoiceInputApp:
                         self.last_model_error = f"Grammar: {e}"
                         return False
 
-                def load_asr():
+                def _do_load_models():
+                    log_vram_usage("Pre-Load")
                     try:
                         self.model_load_stage = "loading_asr"
                         t0 = time.time()
@@ -2457,9 +2475,9 @@ class VoiceInputApp:
                             try:
                                 # Remove accelerate dispatch hooks before CPU offload;
                                 # plain .cpu() is a no-op on device_map="auto" models.
-                                for _m in [self.asr_model, getattr(self.asr_model, "model", None)]:
-                                    if _m is None:
-                                        continue
+                                _inner = getattr(self.asr_model, "model", None)
+                                _to_offload = [_m for _m in [_inner, self.asr_model] if _m is not None]
+                                for _m in _to_offload:
                                     try:
                                         if getattr(_m, "hf_device_map", None):
                                             from accelerate.hooks import remove_hook_from_module
@@ -2471,6 +2489,8 @@ class VoiceInputApp:
                                             _m.cpu()
                                     except Exception:
                                         pass
+                                del _inner, _to_offload
+                                if '_m' in locals(): del _m
                             except Exception:
                                 pass
                             self.asr_model = None
@@ -2623,19 +2643,20 @@ class VoiceInputApp:
                             log_print(f"Running ASR graph warmup inference ({ASR_BACKEND})...")
                             _dummy_audio = np.zeros(int(SAMPLE_RATE * 0.5), dtype=np.float32)
                             
-                            if ASR_BACKEND == "sensevoice":
-                                self.asr_model.generate(
-                                    input=_dummy_audio, cache={}, language="auto", use_itn=True, batch_size_s=60
-                                )
-                            elif ASR_BACKEND == "qwen_asr":
-                                if cuda_is_available():
-                                    _inner = getattr(self.asr_model, "model", None)
-                                    _has_map = bool(getattr(_inner, "hf_device_map", None))
-                                    if not _has_map and getattr(getattr(_inner, "device", None), "type", "cpu") != "cuda":
-                                        _inner.to("cuda")
-                                self.asr_model.transcribe(_dummy_audio)
-                            elif ASR_BACKEND == "whisper":
-                                list(self.asr_model.transcribe(_dummy_audio, language="en", beam_size=1))
+                            with torch.no_grad():
+                                if ASR_BACKEND == "sensevoice":
+                                    self.asr_model.generate(
+                                        input=_dummy_audio, cache={}, language="auto", use_itn=True, batch_size_s=60
+                                    )
+                                elif ASR_BACKEND == "qwen_asr":
+                                    if cuda_is_available():
+                                        _inner = getattr(self.asr_model, "model", None)
+                                        _has_map = bool(getattr(_inner, "hf_device_map", None))
+                                        if not _has_map and getattr(getattr(_inner, "device", None), "type", "cpu") != "cuda":
+                                            _inner.to("cuda")
+                                    self.asr_model.transcribe(_dummy_audio)
+                                elif ASR_BACKEND == "whisper":
+                                    list(self.asr_model.transcribe(_dummy_audio, language="en", beam_size=1))
                                 
                             log_print(f"ASR graph warmup done in {time.time() - _wup_start:.2f}s.")
                         except Exception as _wup_err:
@@ -2654,12 +2675,7 @@ class VoiceInputApp:
                         self.loading_status = "Error Loading ASR"
                         return False
 
-                def _env_sequential_qwen() -> bool:
-                    v = (os.environ.get("PRIVOX_SEQUENTIAL_QWEN_LOAD") or "").strip().lower()
-                    return v in ("1", "true", "yes", "on")
-
                 # Sequential vs Parallel loading strategy
-                # Forcing Sequential Mode for all backends to prevent severe CPU saturation and OOMs.
                 log_print("Using Sequential Load Strategy to prevent CPU spikes...")
                 
                 old_threads = 4  # Fallback
@@ -2674,8 +2690,6 @@ class VoiceInputApp:
                 try:
                     res_grammar = load_grammar()
                     # Flush any VRAM transiently used during grammar init before ASR claims GPU memory.
-                    # llama.cpp may have reserved and released scratch buffers that the CUDA allocator
-                    # still holds; empty_cache() returns them to the driver so ASR can use them.
                     _t2 = get_torch()
                     if _t2 is not None:
                         try:
@@ -2686,7 +2700,7 @@ class VoiceInputApp:
                                 log_print("VRAM cache flushed between grammar and ASR load.")
                         except Exception as _flush_err:
                             log_print(f"VRAM flush warning (non-fatal): {_flush_err}")
-                    res_asr = load_asr()
+                    res_asr = _do_load_models()
 
                 finally:
                     if _t is not None:
@@ -2697,61 +2711,21 @@ class VoiceInputApp:
                         
                 results = [res_grammar, res_asr]
 
+                # Flush any intermediate buffers created during load/warmup
+                if torch is not None and torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                log_vram_usage("Post-Load (Active)")
+
                 if not results[1]:  # ASR is mandatory
-                    log_print("CRITICAL: ASR model failed to load.")
-                    self.loading_status = "ASR Load Error"
-                    self.update_tray_tooltip()
-                    self.update_status("ERROR")
-                    if self.icon and self.last_model_error:
-                        try:
-                            self.icon.notify(f"Privox model load failed: {self.last_model_error}", "Privox Error")
-                        except Exception:
-                            pass
-                    self._emit_runtime_error(
-                        "Privox Model Load Error",
-                        "Failed to load speech model (ASR).",
-                        self.last_model_error,
-                    )
-                    self.pending_wakeup = False
-                    self.model_load_stage = "failed_asr"
                     return
-
-                if not results[0]:
-                    log_print("WARNING: Grammar model failed to load. Proceeding with ASR only.")
-
-                self.heavy_models_loaded = True
-                self.model_load_started_at = 0.0
-                self.model_load_stage = "ready"
-                self.loading_status = "Ready" if results[0] else "ASR Only"
-                # Do not clobber RECORDING/PROCESSING: user may have started the mic 
-                # or a transcription may be running while models were still loading.
-                if self.is_listening:
-                    self.update_status("RECORDING")
-                elif self.ui_state != "PROCESSING":
-                    self.update_status("READY")
-
-                # Reset activity timer so we don't immediately unload
-                self.last_activity_time = time.time()
-
-                # If this was a manual F8 wakeup, we might already be listening.
-                # Otherwise (initial load), we play the 'Ready' sound.
-                if self.pending_wakeup:
-                    self.pending_wakeup = False
-                    if not self.is_listening:
-                        if self._wakeup_autostart_cancelled:
-                            log_print(
-                                "Pending Wakeup: recording stopped during model load; skipping auto-start "
-                                "(press hotkey again to record)."
-                            )
-                        else:
-                            log_print("Pending Wakeup found. Auto-starting recording...")
-                            # Tiny delay to ensure UI updates and avoid race conditions with sound manager
-                            time.sleep(0.1)
-                            self.start_listening()
-                    else:
-                        log_print("Pending Wakeup found, but already listening. Skipping auto-start.")
                 else:
-                    self.sound_manager.play_start()
+                    self.heavy_models_loaded = True
+                    self.model_load_stage = "idle"
+                    self.loading_status = "Listening"
+                    self.update_tray_tooltip()
+                    self.update_status("RECORDING" if self.is_listening else "READY")
+                    if not self.is_listening:
+                        self.sound_manager.play_start()
             finally:
                 # track_model_usage() updates .user_prefs.json during load; align poll baseline
                 # so we do not spuriously run load_config() right after wake (log noise + extra work).
@@ -2782,30 +2756,26 @@ class VoiceInputApp:
             if self.asr_model is not None:
 
                 # Targeted internal model cleanup.
-                # For models loaded with device_map="auto" (accelerate dispatch hooks),
-                # a plain .cpu() call is a no-op — the hooks keep tensors on GPU.
-                # We must remove the hooks first, then move to CPU, to actually free VRAM.
                 try:
-                    inner = getattr(self.asr_model, "model", None)
-                    models_to_offload = [m for m in [inner, self.asr_model] if m is not None]
-                    for m in models_to_offload:
-                        # Remove accelerate dispatch hooks if present
-                        try:
-                            hf_map = getattr(m, "hf_device_map", None)
-                            if hf_map:
-                                from accelerate.hooks import remove_hook_from_module
-                                remove_hook_from_module(m, recurse=True)
-                                log_print(f"Removed accelerate device_map hooks from {type(m).__name__}.")
-                        except Exception as _hook_err:
-                            log_print(f"Hook removal skipped ({type(m).__name__}): {_hook_err}")
-                        # Now move to CPU
-                        try:
-                            if hasattr(m, "cpu"):
-                                m.cpu()
-                        except Exception as _cpu_err:
-                            log_print(f"CPU offload warning ({type(m).__name__}): {_cpu_err}")
+                    # Clear deep Qwen/Torch references
+                    _inner = getattr(self.asr_model, "model", None)
+                    if _inner is not None:
+                        if getattr(_inner, "hf_device_map", None):
+                            from accelerate.hooks import remove_hook_from_module
+                            remove_hook_from_module(_inner, recurse=True)
+                        if hasattr(_inner, "cpu"):
+                            _inner.cpu()
+                        del _inner
+                        if hasattr(self.asr_model, "model"):
+                            self.asr_model.model = None
+                except Exception:
+                    pass
+
+                try:
+                    import accelerate
+                    accelerate.utils.release_memory(self.asr_model)
                 except Exception as _clean_err:
-                    log_print(f"ASR cleanup warning: {_clean_err}")
+                    pass
 
                 self.asr_model = None
                 self._asr_held_key = None
@@ -2817,6 +2787,11 @@ class VoiceInputApp:
             # CRITICAL: Force garbage collection to reclaim VRAM from C++ backends
             import gc
             gc.collect()
+            
+            if torch is not None and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                
+            log_vram_usage("Post-Unload (Idle)")
             log_print("VRAM Saver: Garbage collection forced.")
 
             if self.vad_model is not None and not NO_TORCH and not _privox_vad_prefers_cuda():
@@ -3735,16 +3710,19 @@ class VoiceInputApp:
                 info = None
                 if ASR_BACKEND == "sensevoice":
                     # SenseVoice/funasr
+                    def _sv_gen():
+                        with torch.no_grad():
+                            return self.asr_model.generate(
+                                input=audio_data.flatten().astype(np.float32),
+                                cache={},
+                                language="auto", # SenseVoice handles LID well
+                                use_itn=True,
+                                batch_size_s=60,
+                                merge_vad=True,
+                                merge_length_s=15,
+                            )
                     results = self._run_with_timeout(
-                        lambda: self.asr_model.generate(
-                            input=audio_data.flatten().astype(np.float32),
-                            cache={},
-                            language="auto", # SenseVoice handles LID well
-                            use_itn=True,
-                            batch_size_s=60,
-                            merge_vad=True,
-                            merge_length_s=15,
-                        ),
+                        _sv_gen,
                         timeout_s=120,
                         label="ASR generate",
                     )
@@ -3780,12 +3758,15 @@ class VoiceInputApp:
                     seg_texts = []
                     for idx, chunk in enumerate(chunks):
                         if len(chunks) > 1: log_transcription(f"  Transcribing chunk {idx+1}/{len(chunks)}...")
+                        def _qwen_gen(c=chunk):
+                            with torch.no_grad():
+                                return self.asr_model.transcribe(
+                                    audio=(c, 16000),
+                                    language=None, # Auto-detect
+                                    return_time_stamps=False # DISABLE forced alignment
+                                )
                         results = self._run_with_timeout(
-                            lambda c=chunk: self.asr_model.transcribe(
-                                audio=(c, 16000),
-                                language=None, # Auto-detect
-                                return_time_stamps=False # DISABLE forced alignment
-                            ),
+                            _qwen_gen,
                             timeout_s=120,
                             label=f"ASR transcribe chunk {idx+1}",
                         )

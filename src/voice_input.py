@@ -2654,7 +2654,7 @@ class VoiceInputApp:
                                         _has_map = bool(getattr(_inner, "hf_device_map", None))
                                         if not _has_map and getattr(getattr(_inner, "device", None), "type", "cpu") != "cuda":
                                             _inner.to("cuda")
-                                    self.asr_model.transcribe(_dummy_audio)
+                                    self.asr_model.transcribe(audio=(_dummy_audio, int(SAMPLE_RATE)))
                                 elif ASR_BACKEND == "whisper":
                                     list(self.asr_model.transcribe(_dummy_audio, language="en", beam_size=1))
                                 

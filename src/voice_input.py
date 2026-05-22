@@ -3762,6 +3762,7 @@ class VoiceInputApp:
                             with torch.no_grad():
                                 return self.asr_model.transcribe(
                                     audio=(c, 16000),
+                                    context="Transcript may mix English and Chinese; keep each language in its usual spelling.",
                                     language=None, # Auto-detect
                                     return_time_stamps=False # DISABLE forced alignment
                                 )

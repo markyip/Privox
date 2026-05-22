@@ -98,3 +98,7 @@ voice_input_diff.patch
 
 # CUDA llama-cpp-python wheel vendored for installer (copy before build; use Git LFS if you commit it)
 wheels/*.whl
+ 
+# PyInstaller Test Artifacts
+*.spec
+test_*.py

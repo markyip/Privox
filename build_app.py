@@ -142,6 +142,7 @@ _pyinstaller_argv = [
     '--exclude-module=pynput',
     '--exclude-module=pyperclip',
     '--exclude-module=huggingface_hub',
+    '--clean',
 ]
 
 # scripts/ contains dev-only diagnostics, but install_llama_cuda.py is required for fallback compilation.

@@ -103,7 +103,7 @@ Every piece of feedback helps shape Privox into a better tool. Thank you for you
 
 For power users who want to go beyond the Settings UI, Privox can be customized by editing the configuration files directly.
 
-The **packaged app version** string is `APP_VERSION` in `src/bootstrap.py` (currently **1.1**); it should match `version_info.txt` and `assets/privox.manifest` when you cut a release build.
+The **packaged app version** string is `APP_VERSION` in `src/bootstrap.py` (currently **1.2**); it should match `version_info.txt` and `assets/privox.manifest` when you cut a release build.
 
 ### Adding Your Own AI Models
 

@@ -2385,6 +2385,8 @@ class VoiceInputApp:
                 # Signal RECORDING immediately if user already hit hotkey during wake-up
                 if self.is_listening:
                     self.update_status("RECORDING")
+                else:
+                    self.update_status("INITIALIZING")
                 
                 self.update_tray_tooltip()
                 self.model_load_started_at = time.time()
@@ -2724,8 +2726,6 @@ class VoiceInputApp:
                     self.loading_status = "Listening"
                     self.update_tray_tooltip()
                     self.update_status("RECORDING" if self.is_listening else "READY")
-                    if not self.is_listening:
-                        self.sound_manager.play_start()
             finally:
                 # track_model_usage() updates .user_prefs.json during load; align poll baseline
                 # so we do not spuriously run load_config() right after wake (log noise + extra work).

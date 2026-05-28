@@ -103,6 +103,7 @@ if sys.platform == "win32":
     # we avoid creating a global Sentinel session to save VRAM headroom.
 
 import logging
+from logging.handlers import RotatingFileHandler
 import threading
 import queue
 import time
@@ -182,7 +183,7 @@ def setup_logging():
     if is_frozen or is_packaged_launch:
         _handlers: list[logging.Handler] = [logging.NullHandler()]
     else:
-        _handlers = [logging.FileHandler(log_file, encoding="utf-8")]
+        _handlers = [RotatingFileHandler(log_file, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8")]
         if sys.stdout:
             _handlers.append(logging.StreamHandler(sys.stdout))
 
@@ -777,6 +778,8 @@ if sys.platform == "win32":
 # --- 3. Configuration ---
 SAMPLE_RATE = 16000
 BLOCK_SIZE = 512
+# Bound only the short callback backlog; the recording buffer itself remains unbounded.
+AUDIO_QUEUE_MAX_CHUNKS = 256  # ~8 seconds at 16 kHz / 512-sample blocks
 # Silero probability threshold; lower = more sensitive (helps quiet mics / distant speech).
 VAD_THRESHOLD = 0.4
 MIN_SPEECH_DURATION_MS = 400
@@ -2088,8 +2091,10 @@ class VoiceInputApp:
         self.sound_manager = SoundManager(self.sound_enabled)
         
         # State
-        self.q = queue.Queue()
+        self.q = queue.Queue(maxsize=AUDIO_QUEUE_MAX_CHUNKS)
         self.audio_buffer = [] 
+        self._dropped_audio_chunks = 0
+        self._last_audio_drop_log = 0.0
         self.is_listening = False
         self.is_speaking = False
         self._heard_voice_energy = False
@@ -2102,6 +2107,9 @@ class VoiceInputApp:
         self.loading_status = "Initializing..."
         self.ui_state = "LOADING"
         self._transcribe_task_id = 0
+        self._transcribe_in_progress = False
+        self._transcribe_state_lock = threading.Lock()
+        self._pending_transcribe = None
         
         # Initialize Placeholders
         self.grammar_checker = GrammarChecker(
@@ -3465,9 +3473,38 @@ class VoiceInputApp:
         draw.line((10, 32, 54, 32), fill=color, width=3)
         return img
 
-    def audio_callback(self, indata, frames, time, status):
-        if self.running and self.mic_active and self.models_ready:
-            self.q.put(indata.copy())
+    def _drain_audio_queue(self):
+        try:
+            while True:
+                self.q.get_nowait()
+        except queue.Empty:
+            pass
+
+    def audio_callback(self, indata, frames, callback_time, status):
+        if not (self.running and self.mic_active and self.models_ready and self.is_listening):
+            return
+
+        chunk = indata.copy()
+        try:
+            self.q.put_nowait(chunk)
+        except queue.Full:
+            try:
+                self.q.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self.q.put_nowait(chunk)
+            except queue.Full:
+                pass
+
+            self._dropped_audio_chunks += 1
+            now = time.monotonic()
+            if now - self._last_audio_drop_log > 5.0:
+                self._last_audio_drop_log = now
+                log_print(
+                    f"Audio queue backlog full; dropped {self._dropped_audio_chunks} old chunk(s) "
+                    "to keep live recording responsive."
+                )
 
     def _listener_key_token(self, key):
         """Normalize pynput key to the same token used for self.target_key (e.g. 'f8', 'space')."""
@@ -3615,6 +3652,8 @@ class VoiceInputApp:
         self._heard_voice_energy = False
         self._last_loud_chunk_time = time.time()
         self.audio_buffer = []
+        self._drain_audio_queue()
+        self._dropped_audio_chunks = 0
         if self.vad_iterator:
             self.vad_iterator.reset_states()
         self.update_status("RECORDING")
@@ -3644,14 +3683,38 @@ class VoiceInputApp:
                 )
                 self._paste_anchor_timer.daemon = True
                 self._paste_anchor_timer.start()
-            audio_segment = np.array(self.audio_buffer)
+            audio_segment = np.concatenate(self.audio_buffer).astype(np.float32, copy=False)
             # Run transcription in a separate thread so we don't block the keyboard listener!
-            threading.Thread(target=self.transcribe, args=(audio_segment, task_id), daemon=True).start()
+            self._queue_transcribe(audio_segment, task_id)
         else:
              self.update_status("READY")
              
         self.audio_buffer = []
         self.last_activity_time = time.time()
+
+    def _queue_transcribe(self, audio_segment, task_id):
+        """Run one transcription at a time; keep only the newest pending recording."""
+        with self._transcribe_state_lock:
+            if self._transcribe_in_progress:
+                self._pending_transcribe = (audio_segment, task_id)
+                log_print("Transcription already running; queued latest recording and replaced older pending audio.")
+                return
+            self._transcribe_in_progress = True
+        threading.Thread(target=self.transcribe, args=(audio_segment, task_id), daemon=True).start()
+
+    def _finish_transcribe_and_maybe_start_next(self):
+        next_job = None
+        with self._transcribe_state_lock:
+            if self._pending_transcribe is not None:
+                next_job = self._pending_transcribe
+                self._pending_transcribe = None
+            else:
+                self._transcribe_in_progress = False
+        if next_job is not None:
+            audio_segment, task_id = next_job
+            threading.Thread(target=self.transcribe, args=(audio_segment, task_id), daemon=True).start()
+            return True
+        return False
 
     def _run_with_timeout(self, func, timeout_s, label):
         """Run a blocking callable with timeout to prevent permanent PROCESSING state."""
@@ -3840,9 +3903,8 @@ class VoiceInputApp:
                 
     
     
-                import gc
-                gc.collect()
-                time.sleep(0.5) 
+                if (os.environ.get("PRIVOX_GC_AFTER_ASR") or "").strip().lower() in ("1", "true", "yes", "on"):
+                    gc.collect()
                 
                 # Since we aggressively skip loading the grammar model during init for ONNX,
                 # we must explicitly trigger it here now that the ASR is purged from VRAM.
@@ -3916,7 +3978,11 @@ class VoiceInputApp:
                         self._paste_anchor_hwnd = None
                 except Exception:
                     pass
-                if task_id is None or task_id == getattr(self, "_transcribe_task_id", 0):
+                has_pending_transcribe = self._finish_transcribe_and_maybe_start_next()
+                if has_pending_transcribe:
+                    self.update_status("PROCESSING")
+                    self.update_tray_tooltip()
+                elif task_id is None or task_id == getattr(self, "_transcribe_task_id", 0):
                     # Always leave PROCESSING: on error show ERROR tray state (was: stuck spinner forever).
                     if self.loading_status in ["ASR Error", "Refiner Error"]:
                         self.update_status("ERROR")
@@ -4088,7 +4154,12 @@ class VoiceInputApp:
             
         while self.running:
             # VRAM Saver Check
-            if self.vram_timeout > 0 and self.heavy_models_loaded and not self.is_listening and self.ui_state != "PROCESSING":
+            if (
+                self.vram_timeout > 0
+                and self.heavy_models_loaded
+                and not self.is_listening
+                and not self._transcribe_in_progress
+            ):
                 if (time.time() - self.last_activity_time) > self.vram_timeout:
                     self.unload_heavy_models()
 
@@ -4146,11 +4217,11 @@ class VoiceInputApp:
                 if not self.is_listening:
                     continue
                     
-                chunk = chunk.flatten()
-                self.audio_buffer.extend(chunk)
+                chunk = np.asarray(chunk, dtype=np.float32).reshape(-1)
+                self.audio_buffer.append(chunk)
 
                 if self.is_listening and len(chunk) > 0:
-                    rms = float(np.sqrt(np.mean(chunk.astype(np.float64) ** 2)))
+                    rms = float(np.sqrt(np.mean(chunk * chunk)))
                     if rms >= INITIAL_SPEECH_ENERGY_RMS:
                         self._heard_voice_energy = True
                         self._last_loud_chunk_time = time.time()

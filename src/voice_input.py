@@ -1605,6 +1605,17 @@ class GrammarChecker:
                 word_n = len(clean_text.split())
                 input_tokens_est = max(char_n // 2, word_n * 3, char_n // 4 + 200)
                 max_tokens = min(8192, max(256, int(char_n * 1.3) + 512, input_tokens_est * 3))
+
+                # Clamp so prompt + generated output stay inside the model's context window.
+                # n_ctx was lowered (8192 -> 4096) to cut KV-cache VRAM; without this clamp a long
+                # transcript could request more output tokens than the window can hold and error/garble.
+                try:
+                    _model_ctx = int(self.model.n_ctx())
+                except Exception:
+                    _model_ctx = int(self.profile.get("n_ctx", 4096) or 4096)
+                # Reserve room for the system rules + transcript already in the prompt (~768 tok overhead).
+                _output_budget = max(256, _model_ctx - (input_tokens_est + 768))
+                max_tokens = min(max_tokens, _output_budget)
     
                 raw_response = ""
                 gemma_degenerate = False

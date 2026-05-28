@@ -109,6 +109,8 @@ class StderrInterceptor:
         self.pct_re = re.compile(r"(\d+(?:\.\d+)?)%")
         
     def write(self, s):
+        if getattr(self, "is_cancelled", False):
+            raise InterruptedError("Download cancelled by user.")
         if self.orig:
             try:
                 self.orig.write(s)
@@ -131,8 +133,14 @@ class ModelUpdateWorker(QObject):
         super().__init__()
         self.signals = signals
 
+    def cancel(self):
+        self._is_cancelled = True
+        if hasattr(self, "_interceptor"):
+            self._interceptor.is_cancelled = True
+
     @Slot()
     def run(self):
+        self._is_cancelled = False
         script_dir = os.path.dirname(os.path.abspath(__file__))
         if script_dir not in sys.path:
             sys.path.insert(0, script_dir)
@@ -151,16 +159,25 @@ class ModelUpdateWorker(QObject):
 
         print("[DEBUG] Redirecting stderr...", flush=True)
         old_stderr = sys.stderr
-        sys.stderr = StderrInterceptor(old_stderr, self.signals.progress.emit)
+        self._interceptor = StderrInterceptor(old_stderr, self.signals.progress.emit)
+        sys.stderr = self._interceptor
         
         try:
             print("[DEBUG] Calling download_models.main()...", flush=True)
             # Re-ensure path for download_models internal imports if any
             download_models.main(log_callback=ui_log)
             print("[DEBUG] download_models.main() finished successfully.", flush=True)
-            self.signals.finished.emit(True, "")
-        except Exception as e:
+            if self._is_cancelled:
+                self.signals.finished.emit(False, "Cancelled by user.")
+            else:
+                self.signals.finished.emit(True, "")
+        except InterruptedError as e:
             self.signals.finished.emit(False, str(e))
+        except Exception as e:
+            if "No space left" in str(e) or getattr(e, "errno", None) == 28:
+                self.signals.finished.emit(False, "Out of storage space! Please free up disk space on your drive and try again.")
+            else:
+                self.signals.finished.emit(False, str(e))
         finally:
             sys.stderr = old_stderr
 
@@ -506,7 +523,37 @@ class ModernProgressDialog(QDialog):
             }
         """)
         self.restart_btn.clicked.connect(self.accept)
-        center_layout.addWidget(self.restart_btn, alignment=Qt.AlignCenter)
+        
+        # --- Cancel Button ---
+        self.cancel_btn = QPushButton("CANCEL DOWNLOAD")
+        self.cancel_btn.setFixedSize(160, 42)
+        self.cancel_btn.setCursor(Qt.PointingHandCursor)
+        self.cancel_btn.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(255, 255, 255, 0.1);
+                color: #ffffff;
+                border-radius: 8px;
+                font-weight: 800;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 60, 60, 0.8);
+            }
+        """)
+        self.cancel_btn.clicked.connect(self.cancel_download)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(10)
+        btn_layout.addWidget(self.restart_btn)
+        btn_layout.addWidget(self.cancel_btn)
+        
+        center_layout.addLayout(btn_layout)
+        
+    def cancel_download(self):
+        if hasattr(self, "worker"):
+            self.worker.cancel()
+        self.cancel_btn.setEnabled(False)
+        self.cancel_btn.setText("CANCELLING...")
         
         container_layout.addLayout(center_layout)
         container_layout.addStretch()
@@ -545,6 +592,7 @@ class ModernProgressDialog(QDialog):
         self.sub_status.setText(sub_text)
         self.sub_status.setStyleSheet("color: white; font-size: 14px; font-weight: 500; border: none;")
         self.restart_btn.setVisible(True)
+        self.cancel_btn.setVisible(False)
         self.restart_btn.setFocus()
 
     def mousePressEvent(self, event):

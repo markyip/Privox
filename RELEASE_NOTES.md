@@ -12,6 +12,8 @@ This update resolves a crash that affected users with NVIDIA GPUs in the 10–12
 
 - **Fixed CUDA Out-of-Memory crash on startup** *(Qwen-ASR + 10–12 GB GPU)*: When both the grammar/refiner model and the Qwen-ASR model needed to share a mid-range GPU, the refiner could fill all available VRAM before the ASR model had a chance to load. Privox now automatically calculates how much VRAM the ASR model will need and reserves that headroom when loading the refiner — both models coexist without crashing.
 
+- **Improved "Out of Storage" Error Handling & Cancellation**: Added a "Cancel Download" button to the model download UI, allowing users to safely interrupt large model downloads. Additionally, if the disk space runs out (`[Errno 28]`), Privox now gracefully catches the error and surfaces a clear message on the tray icon and error dialogs, instead of experiencing an unexpected application timeout.
+
 - **Fixed VRAM not released during idle (VRAM Saver)**: After a recent update introduced smarter GPU layer placement via `device_map`, a subtle issue caused VRAM to remain occupied even after the VRAM Saver triggered and the app showed *"Idle (VRAM Free)"*. The root cause was that PyTorch's accelerate dispatch hooks intercept `.cpu()` calls on device-mapped models, silently preventing them from moving to CPU. Privox now correctly removes these hooks before offloading, ensuring GPU memory is fully freed at idle.
 
 - **Fixed VRAM Saver timeout setting not accepting 0 (disabled)**: The Settings UI now correctly allows setting the VRAM Saver timer to **0** to disable it entirely, instead of clamping the value to a minimum of 5 seconds.

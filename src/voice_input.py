@@ -2397,7 +2397,7 @@ class VoiceInputApp:
                     # If model loading hangs (no exception), surface a visible timeout error.
                     while True:
                         time.sleep(2)
-                        if self.heavy_models_loaded or self.loading_status in ["ASR Load Error", "Error Loading ASR", "Error Loading VAD"]:
+                        if self.heavy_models_loaded or self.loading_status in ["ASR Load Error", "Error Loading ASR", "Error Loading VAD", "Out of Storage Space"]:
                             return
                         stage = getattr(self, "model_load_stage", "")
                         if stage == "loading_asr_hf_download":

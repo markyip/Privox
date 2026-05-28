@@ -201,17 +201,13 @@ def ensure_asr_snapshot(
         snapshot_download(**dl_kw)
 
     except Exception as e:
-
         log_local(f"[ASR] huggingface_hub snapshot_download failed: {e}")
-
+        if "No space left" in str(e) or getattr(e, "errno", None) == 28:
+            raise RuntimeError("Out of storage space! Please free up disk space on your drive and try again.") from e
         raise RuntimeError(
-
             f"Failed to download ASR from {whisper_repo!r} into {whisper_target}. "
-
             "Check network, disk space, and HF access. "
-
             "Try: pixi run python src/download_models.py from the install folder."
-
         ) from e
 
 

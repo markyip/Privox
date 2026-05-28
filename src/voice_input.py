@@ -2133,6 +2133,7 @@ class VoiceInputApp:
         self._asr_loaded_key = None  # (ASR_BACKEND, WHISPER_SIZE) after successful ASR load
         self._asr_held_key = None   # (ASR_BACKEND, WHISPER_SIZE) representing model currently resident in RAM
         self.model_lock = threading.RLock()
+        self._usage_write_lock = threading.Lock()  # serialize .user_prefs.json writes (parallel model load)
         self._paste_clipboard_lock = threading.Lock()
         self._paste_anchor_lock = threading.Lock()
         self._paste_anchor_timer = None  # threading.Timer for deferred HWND capture
@@ -2685,40 +2686,86 @@ class VoiceInputApp:
                         self.loading_status = "Error Loading ASR"
                         return False
 
-                # Sequential vs Parallel loading strategy
-                log_print("Using Sequential Load Strategy to prevent CPU spikes...")
-                
+                # --- Load strategy: cut wake-from-idle latency ---
+                # Sequential load takes (grammar_load + asr_load); the first transcription cannot start
+                # until BOTH finish because transcribe() needs model_lock. Loading them in parallel makes
+                # wall-clock ~= max(grammar_load, asr_load) instead of the sum.
+                # Parallel briefly needs both models' peak init memory at once, so it is gated on a
+                # comfortably large GPU by default and can be forced either way via env:
+                #   PRIVOX_PARALLEL_MODEL_LOAD=1  -> always parallel
+                #   PRIVOX_PARALLEL_MODEL_LOAD=0  -> always sequential (safe for small GPUs / OOM)
+                def _parallel_load_enabled() -> bool:
+                    forced = (os.environ.get("PRIVOX_PARALLEL_MODEL_LOAD") or "").strip().lower()
+                    if forced in ("1", "true", "yes", "on"):
+                        return True
+                    if forced in ("0", "false", "no", "off"):
+                        return False
+                    if not cuda_is_available():
+                        return False  # CPU-only: parallel just saturates cores, no real win
+                    try:
+                        return cuda_device_total_memory_gib(0) >= 12.0
+                    except Exception:
+                        return False
+
+                use_parallel = _parallel_load_enabled()
+
                 old_threads = 4  # Fallback
                 _t = get_torch()
                 if _t is not None:
                     try:
                         old_threads = _t.get_num_threads()
-                        _t.set_num_threads(1)
+                        # Parallel shares CPU across two heavy initializers; sequential keeps spikes low.
+                        _t.set_num_threads(2 if use_parallel else 1)
                     except Exception:
                         pass
 
                 try:
-                    res_grammar = load_grammar()
-                    # Flush any VRAM transiently used during grammar init before ASR claims GPU memory.
-                    _t2 = get_torch()
-                    if _t2 is not None:
-                        try:
-                            import gc as _gc
-                            _gc.collect()
-                            if _t2.cuda.is_available():
-                                _t2.cuda.empty_cache()
-                                log_print("VRAM cache flushed between grammar and ASR load.")
-                        except Exception as _flush_err:
-                            log_print(f"VRAM flush warning (non-fatal): {_flush_err}")
-                    res_asr = _do_load_models()
+                    if use_parallel:
+                        log_print("Using Parallel Load Strategy (ASR + refiner concurrently) to minimize wake latency...")
+                        _load_results = {}
 
+                        def _load_runner(name, fn):
+                            try:
+                                _load_results[name] = fn()
+                            except Exception as e:
+                                log_print(f"Parallel load thread error ({name}): {e}")
+                                _load_results[name] = False
+
+                        # Start ASR first — it is the head of the transcribe pipeline.
+                        _asr_thread = threading.Thread(
+                            target=_load_runner, args=("asr", _do_load_models), daemon=True
+                        )
+                        _grammar_thread = threading.Thread(
+                            target=_load_runner, args=("grammar", load_grammar), daemon=True
+                        )
+                        _asr_thread.start()
+                        _grammar_thread.start()
+                        _asr_thread.join()
+                        _grammar_thread.join()
+                        res_asr = _load_results.get("asr", False)
+                        res_grammar = _load_results.get("grammar", False)
+                    else:
+                        log_print("Using Sequential Load Strategy to prevent CPU spikes...")
+                        res_grammar = load_grammar()
+                        # Flush any VRAM transiently used during grammar init before ASR claims GPU memory.
+                        _t2 = get_torch()
+                        if _t2 is not None:
+                            try:
+                                import gc as _gc
+                                _gc.collect()
+                                if _t2.cuda.is_available():
+                                    _t2.cuda.empty_cache()
+                                    log_print("VRAM cache flushed between grammar and ASR load.")
+                            except Exception as _flush_err:
+                                log_print(f"VRAM flush warning (non-fatal): {_flush_err}")
+                        res_asr = _do_load_models()
                 finally:
                     if _t is not None:
                         try:
                             _t.set_num_threads(old_threads)
                         except Exception:
                             pass
-                        
+
                 results = [res_grammar, res_asr]
 
                 # Flush any intermediate buffers created during load/warmup
@@ -2856,21 +2903,20 @@ class VoiceInputApp:
         """Update last_used timestamp for the given model in hidden prefs."""
         try:
             prefs_path = os.path.join(BASE_DIR, ".user_prefs.json")
-            if os.path.exists(prefs_path):
-                # RE-READ to ensure we have latest state (avoid race conditions with GUI)
+            # Serialize read-modify-write so concurrent loaders (parallel ASR + refiner) can't corrupt prefs.
+            with self._usage_write_lock:
                 if os.path.exists(prefs_path):
+                    # RE-READ to ensure we have latest state (avoid race conditions with GUI)
                     with open(prefs_path, "r", encoding="utf-8") as f:
                         latest_prefs = json.load(f)
-                else: 
-                    latest_prefs = {}
-                
-                stats = latest_prefs.get("model_usage_stats", {})
-                stats[model_name] = datetime.now().isoformat()
-                latest_prefs["model_usage_stats"] = stats
-                models_config.scrub_obsolete_user_pref_keys(latest_prefs)
 
-                with open(prefs_path, "w", encoding="utf-8") as f:
-                    json.dump(latest_prefs, f, indent=4)
+                    stats = latest_prefs.get("model_usage_stats", {})
+                    stats[model_name] = datetime.now().isoformat()
+                    latest_prefs["model_usage_stats"] = stats
+                    models_config.scrub_obsolete_user_pref_keys(latest_prefs)
+
+                    with open(prefs_path, "w", encoding="utf-8") as f:
+                        json.dump(latest_prefs, f, indent=4)
         except Exception as e:
             log_print(f"Error tracking usage: {e}")
 

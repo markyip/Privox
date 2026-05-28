@@ -28,7 +28,7 @@ A powerful, private, and fully local voice input assistant for Windows. Privox c
 
 ### 1. Installation
 
-1. Download **Privox.exe** from our [Releases](https://github.com/markyip/Privox/releases) page. The latest stable release is **v1.2** (2026-05-21); see [RELEASE_NOTES.md](RELEASE_NOTES.md) for full changes.
+1. Download **Privox.exe** from our [Releases](https://github.com/markyip/Privox/releases) page. The latest stable release is **v1.2** (2026-05-28); see [RELEASE_NOTES.md](RELEASE_NOTES.md) for full changes.
 2. Run the program and follow the simple on-screen instructions.
 3. On your first run, Privox will take a few minutes to set up its "AI Brains"—then you're ready to go!
 

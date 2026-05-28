@@ -2723,7 +2723,7 @@ class VoiceInputApp:
                 else:
                     self.heavy_models_loaded = True
                     self.model_load_stage = "idle"
-                    self.loading_status = "Listening"
+                    self.loading_status = "Ready"
                     self.update_tray_tooltip()
                     self.update_status("RECORDING" if self.is_listening else "READY")
             finally:

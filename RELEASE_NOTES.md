@@ -2,11 +2,13 @@
 
 ## v1.2 (GPU Stability & VRAM Fix Update)
 
-**Release date:** 2026-05-21
+**Release date:** 2026-05-28
 
 This update resolves a crash that affected users with NVIDIA GPUs in the 10–12 GB range (e.g. RTX 3080, 4070, 4070 Ti) when using **Qwen-ASR** alongside a refiner model. It also fixes a separate issue where VRAM was not fully released during the **VRAM Saver idle** state.
 
 ### 🐛 Bug Fixes
+
+- **Fixed tray icon state misalignment**: The tray icon's tooltip now accurately reflects the "Ready" state when the app is idle. Previously, it could falsely display "Listening..." if it got stuck during the model loading phase.
 
 - **Fixed CUDA Out-of-Memory crash on startup** *(Qwen-ASR + 10–12 GB GPU)*: When both the grammar/refiner model and the Qwen-ASR model needed to share a mid-range GPU, the refiner could fill all available VRAM before the ASR model had a chance to load. Privox now automatically calculates how much VRAM the ASR model will need and reserves that headroom when loading the refiner — both models coexist without crashing.
 

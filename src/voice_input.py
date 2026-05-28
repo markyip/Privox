@@ -2650,8 +2650,8 @@ class VoiceInputApp:
                         # Pre-bake GPU compilation / cuDNN benchmarking for the ASR model
                         try:
                             _wup_start = time.time()
-                            log_print(f"Running ASR graph warmup inference ({ASR_BACKEND})...")
-                            _dummy_audio = np.zeros(int(SAMPLE_RATE * 0.5), dtype=np.float32)
+                            log_print(f"Running ASR graph warmup inference ({ASR_BACKEND}, 0.1s synthetic audio)...")
+                            _dummy_audio = np.zeros(int(SAMPLE_RATE * 0.1), dtype=np.float32)
                             
                             with torch.no_grad():
                                 if ASR_BACKEND == "sensevoice":

@@ -36,7 +36,7 @@ LLM_LIBRARY = [
         "file_name": "gemma-4-E2B-it-Q4_K_M.gguf",
         "prompt_type": "gemma",
         "turboquant": True,
-        "n_ctx": 4096,
+        "n_ctx": 8192,
         "n_gpu_layers": 20,
         "description": "Gemma 4 E2B tuned for speed and low VRAM."
     },
@@ -46,7 +46,7 @@ LLM_LIBRARY = [
         "file_name": "gemma-4-E4B-it-Q4_K_M.gguf",
         "prompt_type": "gemma",
         "turboquant": True,
-        "n_ctx": 4096,
+        "n_ctx": 8192,
         "n_gpu_layers": 42,
         "description": "Gemma 4 E4B tuned for speed and low VRAM usage."
     },
@@ -56,7 +56,7 @@ LLM_LIBRARY = [
         "file_name": "gemma-4-E4B-it-Q4_K_M.gguf",
         "prompt_type": "gemma",
         "turboquant": True,
-        "n_ctx": 4096,
+        "n_ctx": 8192,
         "n_gpu_layers": 42,
         "description": "Gemma 4 E4B Assistant with native multimodal and audio processing capabilities."
     },

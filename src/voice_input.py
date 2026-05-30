@@ -2400,16 +2400,24 @@ class VoiceInputApp:
         # Main only needs VAD (loaded above) to record. Pre-warm the worker so the first
         # transcription is fast, but the main process never holds ASR/refiner VRAM.
         if _worker_isolation_enabled():
-            # Pre-spawn a WARM-FRESH worker (process imported, NO models loaded, ~0 VRAM). This
-            # pays the spawn+import cost (~4-5s) in the background at startup so the first
-            # hotkey-down only has to load models (~10s) instead of spawn+import+load (~13s).
-            # Models still load only on hotkey-down (_worker_warmup), so idle VRAM stays ~0.
             self.loading_status = "Ready"
             self.update_tray_tooltip()
             self.update_status("READY")
-            threading.Thread(
-                target=lambda: self._ensure_worker(wait_ready=False), daemon=True
-            ).start()
+            if self.eager_model_load:
+                # "Pre-warm Models on Startup" ON: load the worker's models now so the first
+                # transcription is instant. The idle VRAM saver still kills the worker (and
+                # respawns a WARM-FRESH one) after vram_timeout of no use, so idle VRAM returns
+                # to ~0 if you don't speak shortly after launch.
+                threading.Thread(
+                    target=lambda: self._ensure_worker(wait_ready=True), daemon=True
+                ).start()
+            else:
+                # Pre-warm only the worker PROCESS (import/spawn, ~0 VRAM); models load on
+                # hotkey-down. Idle VRAM stays ~0 from launch. This pays the spawn+import cost
+                # (~4-5s) in the background so the first hotkey-down only has to load models.
+                threading.Thread(
+                    target=lambda: self._ensure_worker(wait_ready=False), daemon=True
+                ).start()
             return
 
         # Eager vs Lazy Loading

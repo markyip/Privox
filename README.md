@@ -117,6 +117,7 @@ Behaviour:
 - **Idle VRAM ≈ 0**: at the VRAM Saver timeout (`vram_timeout`, default 60 s) the loaded worker is killed (freeing weights *and* the CUDA context) and a fresh **warm** worker (no models, ~0 VRAM) is respawned for a fast next wake.
 - **Wake from idle ≈ 10–12 s**: the warm worker has already paid the process-spawn + `import` cost; waking only reloads model weights (the Qwen3-ASR load dominates at ~8 s).
 - **Extended idle** (`PRIVOX_WORKER_KILL_TIMEOUT`, default `600` seconds, or the `worker_kill_timeout` preference): the warm worker is also terminated to free system RAM.
+- **Pre-warm Models on Startup** (Settings → General): when enabled, the worker loads its models at launch so the **first** transcription is instant (the idle VRAM saver still frees everything after `vram_timeout` of no use). When disabled, only the worker *process* is pre-warmed (~0 VRAM) and models load on the first hotkey (~10–12 s).
 - **Instant response instead**: set the **VRAM Saver timeout to 0** to keep the worker loaded, or set **`PRIVOX_WORKER_ISOLATION=0`** to fall back to the legacy in-process engine entirely.
 
 See [RELEASE_NOTES.md](RELEASE_NOTES.md) for details.

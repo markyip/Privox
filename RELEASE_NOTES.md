@@ -16,6 +16,7 @@ Privox now runs the heavy ASR + refiner models inside a **separate, killable wor
   - At the **VRAM Saver timeout** (`vram_timeout`, default 60 s) a *loaded* worker is killed and a fresh **warm** worker is respawned in the background — idle VRAM stays ~0 while keeping the next wake fast.
   - After **extended idle** (`worker_kill_timeout`, default 600 s; override with `PRIVOX_WORKER_KILL_TIMEOUT` or the `worker_kill_timeout` preference) the warm worker is also terminated to release its system RAM.
 - **Graceful wake UX**: The worker is warmed on hotkey-down so model loading overlaps with you speaking; the tray tooltip reflects "Loading engine…" → "Ready" instead of getting stuck.
+- **"Pre-warm Models on Startup" honored under isolation**: when this Setting is enabled, the worker loads its models at launch for an instant first transcription (idle still frees everything after the VRAM Saver timeout). When disabled, only the worker process is pre-warmed (~0 VRAM) and models load on the first hotkey.
 
 ### 🔧 Technical Notes
 

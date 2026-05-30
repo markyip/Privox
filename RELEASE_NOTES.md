@@ -1,5 +1,34 @@
 # Privox Release Notes
 
+## v1.3 (Installer, UX & Engine Update)
+
+**Release date:** 2026-05-30
+
+This release polishes first-run installation, tray and settings UX, idle-wake feedback, and the development stack (PyTorch CUDA 12.8, Gemma 4 refiner labels, llama-cpp GPU install).
+
+### 🐛 Bug Fixes
+
+- **Tray tooltip stuck on “Loading…” after models are ready**: The status line now switches to **Ready** when the inference worker (or in-process ASR + refiner) has finished loading, even if `ui_state` was still `INITIALIZING` or `loading_status` still said “Loading engine…”.
+- **No start/ready sound when waking from VRAM idle**: Auto-stop is suspended while models reload; completing a wake load can auto-start recording when intended, or play a **ready** chime if you are already listening. A short **wake** tone confirms hotkey capture when the mic is not up yet.
+- **Settings hotkey capture toggled recording**: While **RECORD NEW** is active, the main app ignores the recording hotkey so your current key can be captured. You may press the **same** hotkey again to keep it (no forced change to a different key).
+- **Installer failed on `pixi.lock` v7 / conda-pypi mapping**: Bundled Pixi is upgraded to **v0.69+** and setup uses `pixi install --frozen` so the shipped lock file is not regenerated (avoids “Lock-file version 7 is newer than supported” and flaky mapping downloads on older Pixi 0.67).
+
+### 🚀 Improvements
+
+- **Clearer Gemma 4 refiner names in Settings**: Lists **Gemma 4 E2B IT** and **Gemma 4 E4B IT (TurboQuant)** with migration from older misleading labels; default refiner aligned to the E2B IT profile.
+- **PyTorch 2.10 + CUDA 12.8** in the Pixi environment (`torch` / `torchaudio` cu128 wheels) for current NVIDIA drivers.
+- **llama-cpp CUDA install**: `install-llama-cuda` and model download flows try **cu128 → cu126 → cu125 → cu124** wheels, then fall back to a local source build when needed.
+- **Sound settings hot-reload**: `sound_enabled` from Settings is applied to the running app without restart; beep playback no longer uses a global lock that could delay stop tones after rapid toggles.
+- **Hotkey preference safety**: Saving settings or internal prefs updates no longer drops the hotkey back to F8 when another write omits the field.
+
+### 🔧 Technical Notes
+
+- Installer writes `.privox_hotkey_capture` while Settings captures a hotkey; the main process skips `toggle_hotkey` while that flag exists.
+- README adds **Install troubleshooting (Pixi / pixi.lock v7)** for manual recovery under `%LOCALAPPDATA%\Privox`.
+- See **Worker-Process VRAM Isolation** below for the idle VRAM architecture (enabled by default in packaged builds).
+
+---
+
 ## Worker-Process VRAM Isolation (near-zero idle VRAM)
 
 **Status:** Enabled by default for the **packaged app** and the `pixi run start-worker-isolation` dev task (`run_dev.bat`). Set `PRIVOX_WORKER_ISOLATION=0` to fall back to the legacy in-process engine.

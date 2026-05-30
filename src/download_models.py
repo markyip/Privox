@@ -1386,7 +1386,7 @@ def main(log_callback=None):
 
             tmp_path = out_path + ".part"
 
-            req = urllib.request.Request(url, headers={"User-Agent": "Privox-Installer/1.2.4"})
+            req = urllib.request.Request(url, headers={"User-Agent": "Privox-Installer/1.3.0"})
 
             with urllib.request.urlopen(req, timeout=60) as resp:
 

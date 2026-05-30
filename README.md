@@ -1,6 +1,6 @@
 # Privox 🎙️
 
-![App version](https://img.shields.io/badge/app-v1.2-blue)
+![App version](https://img.shields.io/badge/app-v1.3-blue)
 [![Python Version](https://img.shields.io/badge/python-3.10--3.12-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-Noncommercial-green.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Windows-blue?logo=windows)
@@ -28,7 +28,7 @@ A powerful, private, and fully local voice input assistant for Windows. Privox c
 
 ### 1. Installation
 
-1. Download **Privox.exe** from our [Releases](https://github.com/markyip/Privox/releases) page. The latest stable release is **v1.2** (2026-05-28); see [RELEASE_NOTES.md](RELEASE_NOTES.md) for full changes.
+1. Download **Privox.exe** from our [Releases](https://github.com/markyip/Privox/releases) page. The latest stable release is **v1.3** (2026-05-30); see [RELEASE_NOTES.md](RELEASE_NOTES.md) for full changes.
 2. Run the program and follow the simple on-screen instructions.
 3. On your first run, Privox will take a few minutes to set up its "AI Brains"—then you're ready to go!
 
@@ -117,7 +117,7 @@ Every piece of feedback helps shape Privox into a better tool. Thank you for you
 
 For power users who want to go beyond the Settings UI, Privox can be customized by editing the configuration files directly.
 
-The **packaged app version** string is `APP_VERSION` in `src/bootstrap.py` (currently **1.2**); it should match `version_info.txt` and `assets/privox.manifest` when you cut a release build.
+The **packaged app version** string is `APP_VERSION` in `src/bootstrap.py` (currently **1.3**); it should match `version_info.txt` and `assets/privox.manifest` when you cut a release build.
 
 ### Near-Zero Idle VRAM (Worker-Process Isolation)
 

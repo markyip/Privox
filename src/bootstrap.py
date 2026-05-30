@@ -39,7 +39,7 @@ from PySide6.QtGui import QIcon, QFont, QColor, QPalette
 from PySide6.QtCore import Qt, Signal, QObject, QThread
 
 # --- Versioning ---
-APP_VERSION = "1.2" # GPU Stability & VRAM Fix Update
+APP_VERSION = "1.3"  # Installer, UX & engine update (see RELEASE_NOTES.md)
 
 # Disable Symlinks for Windows
 os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"

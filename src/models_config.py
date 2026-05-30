@@ -29,38 +29,45 @@ ASR_LIBRARY = [
 ]
 
 # --- Refiner (LLM) Library ---
+# Display names use "IT" for the main instruction-tuned checkpoints (google/gemma-4-*-it).
+# google/gemma-4-*-it-assistant are separate MTP drafters for speculative decoding — not listed here.
 LLM_LIBRARY = [
     {
-        "name": "Gemma 4 E2B (TurboQuant)",
+        "name": "Gemma 4 E2B IT (TurboQuant)",
         "repo_id": "unsloth/gemma-4-E2B-it-GGUF",
         "file_name": "gemma-4-E2B-it-Q4_K_M.gguf",
         "prompt_type": "gemma",
         "turboquant": True,
         "n_ctx": 8192,
         "n_gpu_layers": 20,
-        "description": "Gemma 4 E2B tuned for speed and low VRAM."
+        "description": "Main refiner (google/gemma-4-E2B-it). Lowest VRAM; default.",
     },
     {
-        "name": "Gemma 4 E4B (TurboQuant)",
+        "name": "Gemma 4 E4B IT (TurboQuant)",
         "repo_id": "unsloth/gemma-4-E4B-it-GGUF",
         "file_name": "gemma-4-E4B-it-Q4_K_M.gguf",
         "prompt_type": "gemma",
         "turboquant": True,
         "n_ctx": 8192,
         "n_gpu_layers": 42,
-        "description": "Gemma 4 E4B tuned for speed and low VRAM usage."
-    },
-    {
-        "name": "Gemma 4 E4B-IT-Assistant (TurboQuant)",
-        "repo_id": "unsloth/gemma-4-E4B-it-GGUF",
-        "file_name": "gemma-4-E4B-it-Q4_K_M.gguf",
-        "prompt_type": "gemma",
-        "turboquant": True,
-        "n_ctx": 8192,
-        "n_gpu_layers": 42,
-        "description": "Gemma 4 E4B Assistant with native multimodal and audio processing capabilities."
+        "description": "Higher-quality refiner (google/gemma-4-E4B-it). More VRAM than E2B IT.",
     },
 ]
+
+# Old Settings labels → current LLM_LIBRARY "name" (same GGUF weights where applicable).
+REFINER_NAME_MIGRATIONS: dict[str, str] = {
+    "Gemma 4 E2B (TurboQuant)": "Gemma 4 E2B IT (TurboQuant)",
+    "Gemma 4 E4B (TurboQuant)": "Gemma 4 E4B IT (TurboQuant)",
+    # Misleading duplicate: same E4B-it weights, not google/gemma-4-E4B-it-assistant (MTP drafter).
+    "Gemma 4 E4B-IT-Assistant (TurboQuant)": "Gemma 4 E4B IT (TurboQuant)",
+}
+
+
+def migrate_refiner_display_name(name: str | None) -> str:
+    """Map legacy refiner combo labels to current display names."""
+    if not name:
+        return DEFAULT_LLM
+    return REFINER_NAME_MIGRATIONS.get(name, name)
 
 
 def refiner_gguf_min_complete_bytes(file_name: str) -> int:
@@ -86,7 +93,7 @@ def refiner_gguf_min_complete_bytes(file_name: str) -> int:
 DEFAULT_ASR = "Distil-Whisper Large v3 (English)"
 # Folder id under models/whisper-<id> and config.json "whisper_model" (keep in sync with ASR_LIBRARY entry).
 DEFAULT_ASR_WHISPER_MODEL = "distil-large-v3"
-DEFAULT_LLM = "Gemma 4 E2B (TurboQuant)"
+DEFAULT_LLM = "Gemma 4 E2B IT (TurboQuant)"
 
 # --- Persona Lenses ---
 # These are the systematic instructions applied to each persona

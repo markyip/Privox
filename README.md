@@ -64,7 +64,7 @@ You don't need to be a computer expert to customize Privox. Just right-click the
 ## 📋 Good to Know
 
 - **VRAM usage is model-dependent**: Privox loads two local AI models (ASR + Refiner). Typical active VRAM is around 4–7 GB depending on your selected backend and GPU size. On **10–12 GB cards**, Privox automatically caps how many refiner layers go on GPU to leave enough headroom for the ASR model — both coexist without CUDA out-of-memory errors.
-- **TurboQuant refiner profiles**: Default Gemma refiners use tuned load settings (`n_ctx`, `n_gpu_layers`, `n_batch`) for a good balance on typical GPUs. **`n_ctx` is 8192** so longer dictation is less likely to be truncated during refinement; very long transcripts use a **compact system prompt** that still enforces the same critical rules but skips heavy few-shot blocks to fit context.
+- **TurboQuant refiner profiles**: Settings list **Gemma 4 E2B IT** and **E4B IT** (instruction-tuned checkpoints). They use tuned load settings (`n_ctx`, `n_gpu_layers`, `n_batch`) for a good balance on typical GPUs. This is not the separate Google **IT-Assistant** MTP drafter used for speculative decoding. **`n_ctx` is 8192** so longer dictation is less likely to be truncated during refinement; very long transcripts use a **compact system prompt** that still enforces the same critical rules but skips heavy few-shot blocks to fit context.
 - **Config file safety**: If `config.json` or `.user_prefs.json` is temporarily invalid JSON while you save in an editor, Privox reports a clear error (including path and a short preview) when running **from source / Pixi** (`privox_app.log`). The **packaged executable** does not write that log file; fix the file and save again to apply settings.
 - **VRAM Saver (worker isolation)**: The speech (ASR) and refiner (Grammar) models run in a **separate worker process**. After idle, Privox **terminates that process** so the operating system reclaims the entire GPU footprint — model weights **and** the PyTorch/CUDA hardware context — bringing idle VRAM down to **~0** (previously a long-lived process permanently reserved ~1–1.5 GB it could never release). A fresh, model-free "warm" worker is then kept ready so the next wake only has to reload weights (~10–12 s, dominated by the speech model). Setting the **VRAM Saver timeout to 0** keeps the worker loaded for instant response. Worker isolation is on by default for the packaged app and the `pixi run start-worker-isolation` dev task; set `PRIVOX_WORKER_ISOLATION=0` to use the legacy in-process engine instead.
 - **Qwen-ASR on mid-range GPUs**: When using Qwen-ASR on a 10–12 GB card, the ASR model is loaded with a VRAM cap (`~42%` of total, ~5 GB on 12 GB) using `device_map` to prevent out-of-memory during the transition from CPU to GPU.
@@ -78,6 +78,20 @@ You don't need to be a computer expert to customize Privox. Just right-click the
 - **Accent variations may affect transcription accuracy**: The voice-to-text engine can be sensitive to strong or regional accents, which is an inherent limitation of the underlying ASR technology. If transcription quality seems off, try switching to a different ASR model in **Settings** (e.g., the Multilingual model may handle diverse accents better).
 - **Occasional LLM hallucination**: Although multiple safeguards are in place, the refiner model may occasionally add, rephrase, or embellish words beyond the original transcript. The refiner is asked to return text inside `<refined>` tags; if a model ignores that format, Privox falls back to heuristics and may return the raw transcription when the reply looks like a prompt echo. If you notice output that doesn't match what you said, please report it.
 - **Mixed-language in one utterance**: ASR quality still varies when you code-mix (e.g. English technical terms inside Chinese). The refiner is instructed to **preserve** Latin + CJK in the same sentence rather than translating everything to one language; if you see unwanted rewriting, try another ASR model or report an issue with a short example.
+
+## 🛠️ Install troubleshooting (Pixi / `pixi.lock` v7)
+
+If setup stops with **Lock-file version 7 is newer than supported** or **failed to fetch conda-pypi mapping** / **unexpected end of file**, the bundled Pixi under `%LOCALAPPDATA%\Privox\_internal\pixi\` is too old (e.g. 0.67). It cannot read the shipped lock file, tries to regenerate it, and may fail on a network fetch.
+
+**Fix (existing install):**
+
+```powershell
+cd $env:LOCALAPPDATA\Privox
+.\_internal\pixi\pixi.exe self-update
+.\_internal\pixi\pixi.exe install --frozen
+```
+
+Or install [Pixi](https://pixi.sh) globally (`pixi self-update`), then run `pixi install --frozen` in the Privox folder. New installers upgrade or re-download Pixi **v0.69.0+** automatically and use `--frozen` so the lock file is not regenerated.
 
 ## 🗺️ What's Coming
 

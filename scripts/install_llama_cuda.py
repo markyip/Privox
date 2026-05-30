@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
-"""Build/install llama-cpp-python with CUDA for Windows (cp312 often has no prebuilt cu124 wheel).
+"""Build/install llama-cpp-python with CUDA for Windows (cp312 often has no prebuilt wheel).
 
+- Tries abetlen CUDA wheel indexes (cu128 -> cu124) when reachable; otherwise builds from source
+  via CMAKE_ARGS (bundled llama.cpp in the sdist).
 - CMAKE_ARGS must not contain unquoted spaces (e.g. under Program Files); use 8.3 short paths.
 - Ninja builds need MSVC cl.exe on PATH; we locate it via vswhere when not in a VS Developer shell.
 """
@@ -13,6 +15,108 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+import urllib.error
+import urllib.request
+
+ABETLEN_CUDA_TAGS: tuple[str, ...] = ("cu128", "cu126", "cu125", "cu124")
+ABETLEN_WHEEL_BASE = "https://abetlen.github.io/llama-cpp-python/whl"
+
+
+def _abetlen_index_url(tag: str) -> str:
+    return f"{ABETLEN_WHEEL_BASE}/{tag}"
+
+
+def _probe_abetlen_index(tag: str, timeout: float = 10.0) -> bool:
+    url = _abetlen_index_url(tag)
+    for method in ("HEAD", "GET"):
+        try:
+            req = urllib.request.Request(url, method=method)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                if getattr(resp, "status", 200) < 400:
+                    return True
+        except urllib.error.HTTPError as e:
+            if e.code == 405 and method == "HEAD":
+                continue
+            return False
+        except Exception:
+            if method == "GET":
+                return False
+    return False
+
+
+def _resolve_abetlen_cuda_tag(preferred: str | None = None) -> str | None:
+    if preferred:
+        if _probe_abetlen_index(preferred):
+            return preferred
+        print(
+            f"WARNING: abetlen index {preferred!r} not reachable; probing other CUDA tags.",
+            flush=True,
+        )
+    for tag in ABETLEN_CUDA_TAGS:
+        if preferred and tag == preferred:
+            continue
+        if _probe_abetlen_index(tag):
+            return tag
+    return None
+
+
+def _pip_install_llama(
+    ver: str,
+    env: dict,
+    *,
+    from_source: bool,
+    wheel_tag: str | None,
+    wheel_only: bool,
+) -> None:
+    pkg = f"llama-cpp-python=={ver}"
+    base = _pip_command_prefix()
+
+    if from_source:
+        print(f"Installing {pkg} from source (sdist + CMAKE_ARGS)...", flush=True)
+        cmd = base + ["install", "--upgrade", "--force-reinstall", "--no-cache-dir", pkg, "--no-deps"]
+        subprocess.check_call(cmd, env=env)
+        return
+
+    tag = wheel_tag or _resolve_abetlen_cuda_tag()
+    if tag:
+        index = _abetlen_index_url(tag)
+        print(f"Installing {pkg} from abetlen CUDA wheel index ({tag})...", flush=True)
+        cmd = base + [
+            "install",
+            "--upgrade",
+            "--force-reinstall",
+            "--no-cache-dir",
+            pkg,
+            "--extra-index-url",
+            index,
+            "--no-deps",
+        ]
+        if wheel_only:
+            cmd = base + [
+                "install",
+                "--upgrade",
+                "--force-reinstall",
+                "--no-cache-dir",
+                "--only-binary",
+                ":all:",
+                pkg,
+                "--extra-index-url",
+                index,
+                "--no-deps",
+            ]
+        try:
+            subprocess.check_call(cmd, env=env)
+            return
+        except subprocess.CalledProcessError:
+            if wheel_only:
+                raise
+            print(f"Wheel install from {tag} failed; falling back to source build...", flush=True)
+    else:
+        print("No abetlen CUDA wheel index reachable; building from source...", flush=True)
+
+    _pip_install_llama(ver, env, from_source=True, wheel_tag=None, wheel_only=False)
+
 
 
 def _windows_short_path(path: str) -> str:
@@ -307,6 +411,22 @@ def main() -> None:
         default="0.3.20",
         help="llama-cpp-python version to build/install (default: 0.3.20)",
     )
+    ap.add_argument(
+        "--from-source",
+        action="store_true",
+        help="Force CUDA source build (bundled llama.cpp; newest arch support).",
+    )
+    ap.add_argument(
+        "--wheel-tag",
+        default=None,
+        choices=ABETLEN_CUDA_TAGS,
+        help="Prefer a specific abetlen CUDA wheel tag (default: probe cu128->cu124).",
+    )
+    ap.add_argument(
+        "--wheel-only",
+        action="store_true",
+        help="Do not fall back to source if the prebuilt wheel install fails.",
+    )
     args = ap.parse_args()
 
     os.environ["PYTHONNOUSERSITE"] = "1"
@@ -412,23 +532,18 @@ def main() -> None:
             "-w",
             str(out),
             f"llama-cpp-python=={ver}",
-            "--extra-index-url",
-            "https://abetlen.github.io/llama-cpp-python/whl/cu124",
         ]
-        print(f"Building wheel (CUDA) into {out} ...", flush=True)
+        print(f"Building wheel (CUDA source) into {out} ...", flush=True)
+        print("Running:", " ".join(cmd), flush=True)
+        subprocess.check_call(cmd, env=env)
     else:
-        cmd = _pip_command_prefix() + [
-            "install",
-            "--upgrade",
-            "--force-reinstall",
-            "--no-cache-dir",
-            f"llama-cpp-python=={ver}",
-            "--extra-index-url",
-            "https://abetlen.github.io/llama-cpp-python/whl/cu124",
-            "--no-deps",
-        ]
-    print("Running:", " ".join(cmd), flush=True)
-    subprocess.check_call(cmd, env=env)
+        _pip_install_llama(
+            ver,
+            env,
+            from_source=bool(args.from_source),
+            wheel_tag=args.wheel_tag,
+            wheel_only=bool(args.wheel_only),
+        )
 
 
 if __name__ == "__main__":

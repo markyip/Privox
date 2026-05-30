@@ -18,6 +18,7 @@ if sys.platform == 'win32':
     if os.path.exists(bin_path):
         os.add_dll_directory(bin_path)
 
+import atexit
 import copy
 import json
 import models_config
@@ -684,6 +685,15 @@ class SettingsGUI(QMainWindow):
         if self.tech_config.get("whisper_model") in removed_asr_labels:
             self.tech_config["whisper_model"] = models_config.DEFAULT_ASR_WHISPER_MODEL
             
+        # --- Migration: legacy refiner labels → current display names ---
+        for key in ("current_refiner",):
+            v = self.prefs.get(key)
+            if v:
+                self.prefs[key] = models_config.migrate_refiner_display_name(v)
+            tv = self.tech_config.get(key)
+            if tv:
+                self.tech_config[key] = models_config.migrate_refiner_display_name(tv)
+
         # --- Migration: redirect removed refiner names to current default ---
         removed_refiners = {
             "CoEdit Large (T5)",
@@ -721,7 +731,24 @@ class SettingsGUI(QMainWindow):
             self.move(event.globalPosition().toPoint() - self.drag_pos)
             event.accept()
 
+    def _hotkey_capture_flag_path(self) -> str:
+        return os.path.join(getattr(self, "base_dir", os.getcwd()), ".privox_hotkey_capture")
+
+    def _set_hotkey_capture_active(self, active: bool) -> None:
+        """Tell the main Privox process to ignore the recording hotkey while we capture keys."""
+        flag = self._hotkey_capture_flag_path()
+        try:
+            if active:
+                with open(flag, "w", encoding="utf-8") as f:
+                    f.write(str(os.getpid()))
+            elif os.path.exists(flag):
+                os.remove(flag)
+        except Exception as e:
+            print(f"WARNING: hotkey capture flag: {e}", flush=True)
+
     def closeEvent(self, event):
+        if getattr(self, "is_recording_hk", False):
+            self.stop_hotkey_recording()
         if self.is_dirty:
             detail = self._unsaved_change_descriptions()
             dialog = ModernDialog(
@@ -1471,6 +1498,11 @@ class SettingsGUI(QMainWindow):
             }
         """)
         btn_rec.setObjectName("btn_rec")
+        btn_rec.setToolTip(
+            "Click, then press the key combination you want.\n"
+            "You can press the current hotkey again to keep it.\n"
+            "Esc cancels. Privox will not toggle recording while capturing."
+        )
         btn_rec.clicked.connect(self.start_hotkey_record)
         self.btn_rec = btn_rec
         hk_layout.addWidget(btn_rec)
@@ -1731,7 +1763,17 @@ class SettingsGUI(QMainWindow):
         self.prefs["sound_enabled"] = self.check_sound.isChecked()
         self.prefs["use_simplified_chinese_output"] = self.check_simplified_chinese.isChecked()
         self.prefs["eager_model_load"] = self.check_eager_load.isChecked()
-        self.prefs["auto_stop_enabled"] = True 
+        self.prefs["auto_stop_enabled"] = True
+        # Always persist hotkey on save (RECORD NEW sets prefs["hotkey"]; never drop on save).
+        hk = (self.prefs.get("hotkey") or "").strip().lower()
+        if not hk:
+            tip = (self.hk_val.toolTip() or "").strip()
+            if tip:
+                hk = tip.lower().replace(" + ", "+").replace(" ", "")
+            else:
+                raw = (self.hk_val.text() or "").strip().lower().replace(" + ", "+").replace(" ", "")
+                hk = raw or str(self.config.get("hotkey", "f8")).lower()
+        self.prefs["hotkey"] = hk or "f8"
         
         # Capture current prompt edits before saving
         char = self.char_combo.currentText()
@@ -1858,13 +1900,17 @@ class SettingsGUI(QMainWindow):
     }
 
     def start_hotkey_record(self):
-        self.btn_rec.setText("RECORDING...")
+        self._hk_capture_baseline = (self.prefs.get("hotkey") or "f8").lower()
+        self._set_hotkey_capture_active(True)
+        self.btn_rec.setText("PRESS KEYS...")
         self.btn_rec.setProperty("recording", True)
         self.btn_rec.style().unpolish(self.btn_rec)
         self.btn_rec.style().polish(self.btn_rec)
         self.btn_rec.setEnabled(False)
         self.grabKeyboard()
         self.is_recording_hk = True
+        self.hk_val.setText("Press a key…")
+        self.hk_val.setToolTip("Press the desired hotkey (current key is OK). Esc to cancel.")
 
     def keyPressEvent(self, event):
         if hasattr(self, 'is_recording_hk') and self.is_recording_hk:
@@ -1873,7 +1919,7 @@ class SettingsGUI(QMainWindow):
             
             # Escape to cancel
             if key == Qt.Key_Escape:
-                self.stop_hotkey_recording()
+                self.stop_hotkey_recording(restore_display=True)
                 return
 
             # Capture combinations
@@ -1930,8 +1976,10 @@ class SettingsGUI(QMainWindow):
                 # Stay in recording mode so the user can immediately try again
                 return
 
-            # Save and finalize
+            # Save and finalize (re-selecting the current hotkey is allowed)
             disp_full = " + ".join([p.upper() for p in parts])
+            baseline = getattr(self, "_hk_capture_baseline", (self.prefs.get("hotkey") or "f8").lower())
+            unchanged = hk_str.lower() == baseline
 
             # Elide if too long
             disp_elided = disp_full
@@ -1943,13 +1991,21 @@ class SettingsGUI(QMainWindow):
 
             self.prefs["hotkey"] = hk_str
             self.stop_hotkey_recording()
-            self.is_dirty = True
+            if unchanged:
+                self.show_toast(f"Hotkey unchanged ({disp_full}).")
+            else:
+                self.is_dirty = True
         else:
             super().keyPressEvent(event)
 
-    def stop_hotkey_recording(self):
+    def stop_hotkey_recording(self, *, restore_display: bool = True):
         self.is_recording_hk = False
+        self._set_hotkey_capture_active(False)
         self.releaseKeyboard()
+        if restore_display:
+            old_hk = (self.prefs.get("hotkey") or "f8").upper().replace("+", " + ")
+            self.hk_val.setText(old_hk)
+            self.hk_val.setToolTip("")
         self.btn_rec.setText("RECORD NEW")
         self.btn_rec.setProperty("recording", False)
         self.btn_rec.style().unpolish(self.btn_rec)
@@ -2252,7 +2308,19 @@ class SettingsGUI(QMainWindow):
             sys.exit(10)
 
 
+def _cleanup_hotkey_capture_flag():
+    try:
+        base = os.path.dirname(os.path.abspath(__file__))
+        root = os.path.dirname(base)
+        flag = os.path.join(root, ".privox_hotkey_capture")
+        if os.path.exists(flag):
+            os.remove(flag)
+    except Exception:
+        pass
+
+
 if __name__ == "__main__":
+    atexit.register(_cleanup_hotkey_capture_flag)
     app = QApplication(sys.argv)
     window = SettingsGUI()
     font = QFont("Inter", 10)

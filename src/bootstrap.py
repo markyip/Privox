@@ -117,7 +117,7 @@ class InstallWorker(QObject):
             self.progress_signal.emit(40)
             self.log_signal.emit("Setting up environment (Pixi)...")
             
-            success = run_pixi_command(self, [pixi_exe, "install", "-v"], cwd=target_dir)
+            success = run_pixi_install(self, pixi_exe, target_dir)
             if not success or self.cancelled:
                 if not self.cancelled:
                     self.finished.emit(False)
@@ -786,33 +786,140 @@ class InstallerGUI(QMainWindow):
 
 # --- Helper Functions (Migrated from legacy bootstrap.py) ---
 
+# pixi.lock in this repo is version 7 (Pixi >= 0.68). Older bundled pixi (e.g. 0.67)
+# ignores the lock, tries to regenerate it, and often fails on conda-pypi mapping download.
+PIXI_RELEASE_TAG = "v0.69.0"
+PIXI_MIN_VERSION = (0, 68, 0)
+PIXI_DOWNLOAD_URL = (
+    f"https://github.com/prefix-dev/pixi/releases/download/{PIXI_RELEASE_TAG}/"
+    "pixi-x86_64-pc-windows-msvc.zip"
+)
+_SUBPROC_FLAGS = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+
+
+def _parse_pixi_semver(pixi_exe: str) -> tuple[int, int, int] | None:
+    try:
+        proc = subprocess.run(
+            [pixi_exe, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            creationflags=_SUBPROC_FLAGS,
+        )
+        line = (proc.stdout or proc.stderr or "").strip()
+        for token in line.split():
+            if token and token[0].isdigit():
+                parts = token.split(".")
+                nums = [int(p) for p in parts[:3] if p.isdigit()]
+                while len(nums) < 3:
+                    nums.append(0)
+                return tuple(nums[:3])
+    except Exception:
+        pass
+    return None
+
+
+def _pixi_version_ok(ver: tuple[int, int, int] | None) -> bool:
+    return ver is not None and ver >= PIXI_MIN_VERSION
+
+
+def _download_pixi(pixi_dir: str, pixi_exe: str, log_cb) -> bool:
+    log_cb(f"Downloading Pixi {PIXI_RELEASE_TAG}...")
+    if not os.path.exists(pixi_dir):
+        os.makedirs(pixi_dir)
+    zip_path = os.path.join(pixi_dir, "pixi.zip")
+    try:
+        urllib.request.urlretrieve(PIXI_DOWNLOAD_URL, zip_path)
+        log_cb("Extracting Pixi...")
+        with zipfile.ZipFile(zip_path, "r") as zip_ref:
+            zip_ref.extractall(pixi_dir)
+        os.remove(zip_path)
+        return os.path.exists(pixi_exe)
+    except Exception as e:
+        log_cb(f"Pixi download error: {e}")
+        return False
+
+
+def _upgrade_pixi(pixi_exe: str, log_cb) -> bool:
+    cur = _parse_pixi_semver(pixi_exe)
+    if _pixi_version_ok(cur):
+        return True
+    shown = ".".join(str(x) for x in cur) if cur else "unknown"
+    need = ".".join(str(x) for x in PIXI_MIN_VERSION)
+    log_cb(
+        f"Upgrading Pixi ({shown} → {PIXI_RELEASE_TAG}; "
+        f"pixi.lock v7 requires Pixi >={need})..."
+    )
+    try:
+        proc = subprocess.run(
+            [pixi_exe, "self-update"],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            creationflags=_SUBPROC_FLAGS,
+        )
+        for line in (proc.stdout or "").splitlines():
+            if line.strip():
+                log_cb(line.strip())
+        for line in (proc.stderr or "").splitlines():
+            if line.strip():
+                log_cb(line.strip())
+    except Exception as e:
+        log_cb(f"Pixi self-update failed: {e}")
+    after = _parse_pixi_semver(pixi_exe)
+    if _pixi_version_ok(after):
+        log_cb(f"Pixi upgraded to {'.'.join(str(x) for x in after)}.")
+        return True
+    return False
+
+
 def ensure_pixi(base_dir, log_cb):
-    """ Checks for local pixi executable, downloads if missing. """
+    """Ensure a Pixi build that can read pixi.lock v7 (download or upgrade in-place)."""
     internal_dir = os.path.join(base_dir, "_internal")
     pixi_dir = os.path.join(internal_dir, "pixi")
     pixi_exe = os.path.join(pixi_dir, "pixi.exe")
-    
+
     if os.path.exists(pixi_exe):
-        log_cb("Pixi detected.")
-        return pixi_exe
-        
-    log_cb("Downloading Pixi (Standalone packages)...")
-    if not os.path.exists(pixi_dir):
-        os.makedirs(pixi_dir)
-        
-    url = "https://github.com/prefix-dev/pixi/releases/latest/download/pixi-x86_64-pc-windows-msvc.zip"
-    zip_path = os.path.join(pixi_dir, "pixi.zip")
-    
-    try:
-        urllib.request.urlretrieve(url, zip_path)
-        log_cb("Extracting Pixi...")
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(pixi_dir)
-        os.remove(zip_path)
-        return pixi_exe if os.path.exists(pixi_exe) else None
-    except Exception as e:
-        log_cb(f"Pixi download error: {e}")
+        if not _pixi_version_ok(_parse_pixi_semver(pixi_exe)):
+            if not _upgrade_pixi(pixi_exe, log_cb):
+                try:
+                    os.remove(pixi_exe)
+                except OSError:
+                    pass
+        if os.path.exists(pixi_exe) and _pixi_version_ok(_parse_pixi_semver(pixi_exe)):
+            log_cb("Pixi detected.")
+            return pixi_exe
+
+    if not _download_pixi(pixi_dir, pixi_exe, log_cb):
         return None
+    if not _pixi_version_ok(_parse_pixi_semver(pixi_exe)):
+        _upgrade_pixi(pixi_exe, log_cb)
+    if not os.path.exists(pixi_exe) or not _pixi_version_ok(_parse_pixi_semver(pixi_exe)):
+        log_cb(
+            f"Pixi {PIXI_RELEASE_TAG} or newer is required. "
+            "Install manually: https://pixi.sh then run "
+            f'pixi self-update && cd "{base_dir}" && pixi install --frozen'
+        )
+        return None
+    log_cb("Pixi ready.")
+    return pixi_exe
+
+
+def run_pixi_install(worker, pixi_exe: str, target_dir: str) -> bool:
+    """Install from the committed lock file without regenerating it (avoids conda-pypi mapping fetch)."""
+    if run_pixi_command(worker, [pixi_exe, "install", "--frozen", "-v"], cwd=target_dir):
+        return True
+    worker.log_signal.emit("Retrying environment setup (Pixi self-update)...")
+    run_pixi_command(worker, [pixi_exe, "self-update"], cwd=target_dir)
+    if run_pixi_command(worker, [pixi_exe, "install", "--frozen", "-v"], cwd=target_dir):
+        return True
+    worker.log_signal.emit(
+        "Pixi install failed. If you saw conda-pypi mapping / unexpected end of file: "
+        f"open PowerShell, run: cd \"{target_dir}\"; "
+        f".\\_internal\\pixi\\pixi.exe self-update; "
+        f".\\_internal\\pixi\\pixi.exe install --frozen"
+    )
+    return False
 
 def install_app_files(target_dir, log_cb):
     """ Copies the EXE and resources to the target directory. """

@@ -936,6 +936,12 @@ def main(log_callback=None):
 
             abetlen_cuda = [
 
+                ("cu128", "https://abetlen.github.io/llama-cpp-python/whl/cu128"),
+
+                ("cu126", "https://abetlen.github.io/llama-cpp-python/whl/cu126"),
+
+                ("cu125", "https://abetlen.github.io/llama-cpp-python/whl/cu125"),
+
                 ("cu124", "https://abetlen.github.io/llama-cpp-python/whl/cu124"),
 
                 ("cu121", "https://abetlen.github.io/llama-cpp-python/whl/cu121"),

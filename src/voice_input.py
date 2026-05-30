@@ -636,8 +636,22 @@ except Exception as e:
     print(f"Boot Error: {e}")
 
 BASE_DIR = _privox_install_root()
+HOTKEY_CAPTURE_FLAG = os.path.join(BASE_DIR, ".privox_hotkey_capture")
 if sys.platform == "win32":
     logging.info("Privox install root (BASE_DIR): %s", BASE_DIR)
+
+
+def _settings_hotkey_capture_active() -> bool:
+    """True while Settings GUI is capturing a new hotkey (suppress global toggle)."""
+    if not os.path.exists(HOTKEY_CAPTURE_FLAG):
+        return False
+    try:
+        if time.time() - os.path.getmtime(HOTKEY_CAPTURE_FLAG) > 300:
+            os.remove(HOTKEY_CAPTURE_FLAG)
+            return False
+    except Exception:
+        pass
+    return True
 
 def show_modern_error(title, message, subtext=""):
     """Shows a premium styled error dialog, falling back to ctypes if PySide6 fails."""
@@ -835,28 +849,48 @@ GRAMMAR_FILE = models_config.LLM_LIBRARY[0]["file_name"]
 class SoundManager:
     def __init__(self, enabled=True):
         self.enabled = enabled and (winsound is not None)
-        self.lock = threading.Lock()
+
+    def set_enabled(self, enabled: bool) -> None:
+        """Sync with Settings / hot-reload (enabled flag is not refreshed on load_config otherwise)."""
+        self.enabled = bool(enabled) and (winsound is not None)
 
     def _play(self, freq, duration):
-        if self.enabled:
-            # Using a lock ensures beeps don't collide if triggered rapidly
-            try:
-                with self.lock:
-                    winsound.Beep(freq, duration)
-            except Exception as e:
-                log_print(f"Sound Error: {e}")
+        if not self.enabled or winsound is None:
+            return
+        # No global lock: a blocking lock could delay stop beeps after rapid start/stop toggles.
+        try:
+            winsound.Beep(freq, duration)
+        except Exception as e:
+            log_print(f"Sound Error: {e}")
 
     def play_start(self):
         if self.enabled:
-            threading.Thread(target=self._play, args=(1000, 200), daemon=True).start()
+            threading.Thread(target=self._play, args=(1000, 150), daemon=True).start()
 
     def play_stop(self):
         if self.enabled:
-            threading.Thread(target=self._play, args=(750, 200), daemon=True).start()
+            threading.Thread(target=self._play, args=(750, 150), daemon=True).start()
 
     def play_error(self):
         if self.enabled:
-            threading.Thread(target=self._play, args=(400, 500), daemon=True).start()
+            threading.Thread(target=self._play, args=(400, 400), daemon=True).start()
+
+    def play_wake(self):
+        """Short ack when a wake-from-idle load was scheduled (mic or engine not ready yet)."""
+        if self.enabled:
+            threading.Thread(target=self._play, args=(600, 120), daemon=True).start()
+
+    def play_ready(self):
+        """Double chime when ASR/refiner finished loading after idle (engine ready to transcribe)."""
+        if not self.enabled:
+            return
+
+        def _chime():
+            self._play(1200, 90)
+            time.sleep(0.07)
+            self._play(1200, 90)
+
+        threading.Thread(target=_chime, daemon=True).start()
 
 
 def _infer_language_from_transcript(text: str) -> tuple[str | None, float]:
@@ -1074,8 +1108,8 @@ class GrammarChecker:
                         if cuda_is_available() and not llama_has_cuda:
                             self.loading_error = (
                                 "llama-cpp-python is CPU-only but a CUDA GPU appears available to Privox. "
-                                "Reinstall llama-cpp-python with the CUDA 12.4 wheel (do not use the CPU wheel). "
-                                "Run: python src/download_models.py or pip install with --extra-index-url cu124."
+                                "Reinstall llama-cpp-python with a CUDA wheel or source build (do not use the CPU wheel). "
+                                "Run: pixi run install-llama-cuda or python src/download_models.py."
                             )
                             log_print(self.loading_error)
                             return False
@@ -2291,6 +2325,8 @@ class VoiceInputApp:
         # If True, user stopped recording (toggle or auto-stop) while ASR/LLM were still loading —
         # do not auto-start again when load finishes (avoids phantom sessions after VRAM saver wake).
         self._wakeup_autostart_cancelled = False
+        self._awaiting_wake_ready_chime = False  # play_ready after worker/in-process load while recording
+        self._worker_load_in_progress = False
         self._heavy_model_load_in_progress = False  # suppress prefs hot-reload during ASR/LLM init
         self.last_model_error = ""
         self.model_load_started_at = 0.0
@@ -2956,8 +2992,8 @@ class VoiceInputApp:
                     self.heavy_models_loaded = True
                     self.model_load_stage = "idle"
                     self.loading_status = "Ready"
-                    self.update_tray_tooltip()
                     self.update_status("RECORDING" if self.is_listening else "READY")
+                    self._refresh_tray_ready_state()
             finally:
                 # track_model_usage() updates .user_prefs.json during load; align poll baseline
                 # so we do not spuriously run load_config() right after wake (log noise + extra work).
@@ -2966,16 +3002,22 @@ class VoiceInputApp:
                 except Exception:
                     pass
                 self._heavy_model_load_in_progress = False
-                
+                if getattr(self, "heavy_models_loaded", False):
+                    self._try_complete_wake_feedback()
+                elif self.pending_wakeup:
+                    self.pending_wakeup = False
+
                 # CRITICAL: Reset the silence budget now that we are actually ready to process.
                 self.last_activity_time = time.time()
                 self._last_loud_chunk_time = time.time()
                 self._heard_voice_energy = False
-                
+
                 # --- SAFE AUDIO START ---
                 if not self.mic_active:
                     log_print("Models loaded (or skipped). Starting audio system...")
                     self.start_audio_stream()
+                    if getattr(self, "heavy_models_loaded", False):
+                        self._try_complete_wake_feedback()
 
     def unload_heavy_models(self):
         with self.model_lock:
@@ -3076,24 +3118,35 @@ class VoiceInputApp:
             with open(prefs_path, "rb") as f:
                 self._last_prefs_hash = hashlib.md5(f.read()).hexdigest()
 
+    def _update_user_prefs(self, updater) -> None:
+        """Read-modify-write .user_prefs.json under lock (prevents hotkey etc. being clobbered)."""
+        prefs_path = os.path.join(BASE_DIR, ".user_prefs.json")
+        try:
+            with self._usage_write_lock:
+                prefs = (
+                    _safe_json_load(prefs_path, ".user_prefs.json")
+                    if os.path.exists(prefs_path)
+                    else {}
+                )
+                if not isinstance(prefs, dict):
+                    prefs = {}
+                updater(prefs)
+                models_config.scrub_obsolete_user_pref_keys(prefs)
+                with open(prefs_path, "w", encoding="utf-8") as f:
+                    json.dump(prefs, f, indent=4)
+        except Exception as e:
+            log_print(f"Error updating user prefs: {e}")
+
     def track_model_usage(self, model_name):
         """Update last_used timestamp for the given model in hidden prefs."""
         try:
-            prefs_path = os.path.join(BASE_DIR, ".user_prefs.json")
-            # Serialize read-modify-write so concurrent loaders (parallel ASR + refiner) can't corrupt prefs.
-            with self._usage_write_lock:
-                if os.path.exists(prefs_path):
-                    # RE-READ to ensure we have latest state (avoid race conditions with GUI)
-                    with open(prefs_path, "r", encoding="utf-8") as f:
-                        latest_prefs = json.load(f)
+            ts = datetime.now().isoformat()
 
-                    stats = latest_prefs.get("model_usage_stats", {})
-                    stats[model_name] = datetime.now().isoformat()
-                    latest_prefs["model_usage_stats"] = stats
-                    models_config.scrub_obsolete_user_pref_keys(latest_prefs)
+            def _upd(prefs):
+                stats = prefs.setdefault("model_usage_stats", {})
+                stats[model_name] = ts
 
-                    with open(prefs_path, "w", encoding="utf-8") as f:
-                        json.dump(latest_prefs, f, indent=4)
+            self._update_user_prefs(_upd)
         except Exception as e:
             log_print(f"Error tracking usage: {e}")
 
@@ -3110,12 +3163,8 @@ class VoiceInputApp:
 
             # --- 2. Load User Preferences (Hidden/Private) ---
             prefs = _safe_json_load(prefs_path, ".user_prefs.json") if os.path.exists(prefs_path) else {}
-            if prefs and models_config.scrub_obsolete_user_pref_keys(prefs) and os.path.exists(prefs_path):
-                try:
-                    with open(prefs_path, "w", encoding="utf-8") as f:
-                        json.dump(prefs, f, indent=4)
-                except OSError as _e:
-                    log_print(f"Could not rewrite prefs after obsolete-key scrub: {_e}")
+            if prefs and models_config.scrub_obsolete_user_pref_keys(prefs):
+                self._update_user_prefs(lambda p: models_config.scrub_obsolete_user_pref_keys(p))
 
             # --- 3. Migration Logic (Move settings from config -> prefs) ---
             pref_keys = [
@@ -3136,8 +3185,12 @@ class VoiceInputApp:
 
             if migrated:
                 log_print("Migrating user settings to hidden .user_prefs.json...")
-                with open(prefs_path, "w", encoding="utf-8") as f:
-                    json.dump(prefs, f, indent=4)
+                _migrated_prefs = dict(prefs)
+
+                def _apply_migration(p):
+                    p.update(_migrated_prefs)
+
+                self._update_user_prefs(_apply_migration)
                 with open(config_path, "w", encoding="utf-8") as f:
                     # Keep formatted technical config
                     json.dump(config, f, indent=4)
@@ -3153,8 +3206,13 @@ class VoiceInputApp:
             }
             if prefs.get("current_refiner") in removed_refiners:
                 prefs["current_refiner"] = models_config.DEFAULT_LLM
-                with open(prefs_path, "w", encoding="utf-8") as f:
-                    json.dump(prefs, f, indent=4)
+                _new_refiner = prefs["current_refiner"]
+                self._update_user_prefs(lambda p: p.__setitem__("current_refiner", _new_refiner))
+
+            _migrated = models_config.migrate_refiner_display_name(prefs.get("current_refiner"))
+            if _migrated != prefs.get("current_refiner"):
+                prefs["current_refiner"] = _migrated
+                self._update_user_prefs(lambda p: p.__setitem__("current_refiner", _migrated))
 
             _gem = models_config.LLM_LIBRARY[0]
             if config.get("grammar_file") == "Qwen3.5-4B-Q4_K_M.gguf" or config.get("grammar_repo") == "unsloth/Qwen3.5-4B-GGUF":
@@ -3168,8 +3226,13 @@ class VoiceInputApp:
                 self._last_prefs_mtime = os.path.getmtime(prefs_path)
 
             # --- 4. Apply Settings ---
-            # Parse hotkey_str (e.g. "ctrl+shift+k")
-            new_hotkey_str = prefs.get("hotkey", "f8").lower()
+            # Parse hotkey_str (e.g. "ctrl+shift+k"). Only default to f8 when the key is absent —
+            # do not overwrite an in-memory hotkey if a concurrent prefs write dropped the field.
+            _disk_hotkey = (prefs.get("hotkey") or "").strip().lower()
+            if _disk_hotkey:
+                new_hotkey_str = _disk_hotkey
+            else:
+                new_hotkey_str = (getattr(self, "hotkey_str", None) or "f8").lower()
             hotkey_changed = new_hotkey_str != getattr(self, 'hotkey_str', '')
             self.hotkey_str = new_hotkey_str
             
@@ -3197,6 +3260,8 @@ class VoiceInputApp:
                  self._last_prefs_mtime = os.path.getmtime(prefs_path)
 
             self.sound_enabled = prefs.get("sound_enabled", True)
+            if hasattr(self, "sound_manager"):
+                self.sound_manager.set_enabled(self.sound_enabled)
             self.auto_stop_enabled = prefs.get("auto_stop_enabled", True)
             old_silence = getattr(self, "silence_timeout_ms", 10000)
             # Backend Clamping: Min 5s
@@ -3238,7 +3303,12 @@ class VoiceInputApp:
             self.tone = prefs.get("tone", "Natural")
             self.custom_prompts = prefs.get("custom_prompts", {})
             old_refiner = getattr(self, "current_refiner", "")
-            self.current_refiner = prefs.get("current_refiner", models_config.DEFAULT_LLM)
+            self.current_refiner = models_config.migrate_refiner_display_name(
+                prefs.get("current_refiner", models_config.DEFAULT_LLM)
+            )
+            if self.current_refiner != prefs.get("current_refiner"):
+                prefs["current_refiner"] = self.current_refiner
+                self._update_user_prefs(lambda p: p.__setitem__("current_refiner", self.current_refiner))
             
             # Library Loading: Use source-of-truth from code to avoid stale cached libraries
             # in .user_prefs.json causing wrong model selection.
@@ -3321,12 +3391,8 @@ class VoiceInputApp:
                 _wm_pref = models_config.DEFAULT_ASR
             if _prefs_wm_missing and _wm_pref and _wm_pref != models_config.DEFAULT_ASR:
                 prefs["whisper_model"] = _wm_pref
-                models_config.scrub_obsolete_user_pref_keys(prefs)
-                try:
-                    with open(prefs_path, "w", encoding="utf-8") as f:
-                        json.dump(prefs, f, indent=4)
-                except OSError:
-                    pass
+                _wm_save = _wm_pref
+                self._update_user_prefs(lambda p: p.__setitem__("whisper_model", _wm_save))
             self.active_asr_name = _wm_pref
             active_asr = self.active_asr_name
             _ct2_env = (os.environ.get("PRIVOX_CT2_ASR") or "").strip().lower()
@@ -3415,11 +3481,8 @@ class VoiceInputApp:
             # REMOVED cleanup_stale_models from here to prevent recursive reload loops
 
             # Config reload can interleave with model load; avoid stuck INITIALIZING / wrong tray state.
-            if getattr(self, "heavy_models_loaded", False) and getattr(self, "ui_state", "") == "INITIALIZING":
-                if self.is_listening:
-                    self.update_status("RECORDING")
-                else:
-                    self.update_status("READY")
+            if self._engine_ready() and getattr(self, "ui_state", "") in ("INITIALIZING", "LOADING"):
+                self._refresh_tray_ready_state()
 
         except Exception as e:
             import traceback as _tb
@@ -3556,6 +3619,43 @@ class VoiceInputApp:
             log_print(f"Cleanup error: {e}")
             
 
+    def _engine_ready(self) -> bool:
+        """True when ASR+refiner can run (in-process models loaded or worker reports ready)."""
+        if _worker_isolation_enabled():
+            return bool(getattr(self, "_worker_ready", False))
+        return bool(getattr(self, "heavy_models_loaded", False))
+
+    def _refresh_tray_ready_state(self) -> None:
+        """Clear stale 'Loading…' tray text after the engine is actually ready."""
+        if not self._engine_ready():
+            return
+        stale = (
+            "Starting engine...",
+            "Loading engine...",
+            "Loading Models...",
+            "Loading VAD...",
+            "Initializing...",
+        )
+        if getattr(self, "loading_status", "") in stale:
+            self.loading_status = "Ready"
+        st = getattr(self, "ui_state", "READY")
+        if st in ("INITIALIZING", "LOADING"):
+            if self.is_listening:
+                self.update_status("RECORDING")
+            else:
+                self.update_status("READY")
+        else:
+            self.update_tray_tooltip()
+
+    def _tray_status_line(self) -> str:
+        """One-line status for the tray tooltip (avoids stale loading_status after load completes)."""
+        st = getattr(self, "ui_state", "READY")
+        if st == "SLEEP":
+            return getattr(self, "loading_status", "") or "Idle (VRAM Free)"
+        if self._engine_ready() and st not in ("RECORDING", "PROCESSING", "DOWNLOADING", "ERROR"):
+            return "Ready"
+        return getattr(self, "loading_status", "") or "Initializing..."
+
     def update_tray_tooltip(self):
         """Tray title: prefer live ui_state (listening/processing) over loading_status so prefs reload does not clobber RECORDING."""
         if not self.icon:
@@ -3569,7 +3669,7 @@ class VoiceInputApp:
         elif st == "PROCESSING":
             self.icon.title = f"Privox: Processing... ({gpu_status})\nHotkey: {hk_display}"
         elif st == "INITIALIZING":
-            self.icon.title = f"Privox: {self.loading_status} ({gpu_status})\nHotkey: {hk_display}"
+            self.icon.title = f"Privox: {self._tray_status_line()} ({gpu_status})\nHotkey: {hk_display}"
         elif st == "DOWNLOADING":
             self.icon.title = f"Privox: Downloading model... ({gpu_status})\nHotkey: {hk_display}"
         elif st == "ERROR":
@@ -3577,12 +3677,15 @@ class VoiceInputApp:
         elif st == "SLEEP":
             self.icon.title = f"Privox: Sleeping (VRAM saver) ({gpu_status})\nHotkey: {hk_display}"
         else:
-            self.icon.title = f"Privox: {self.loading_status} ({gpu_status})\nHotkey: {hk_display}"
+            self.icon.title = f"Privox: {self._tray_status_line()} ({gpu_status})\nHotkey: {hk_display}"
 
     def update_status(self, status):
         # status: READY, RECORDING, PROCESSING, ERROR, LOADING, SLEEP
         self.ui_state = status
-        
+        if status == "SLEEP":
+            self._hotkey_primary_down = False
+            self._awaiting_wake_ready_chime = False
+
         # Immediate text update (icon handled by loop or here if static)
         if not self.icon: return
 
@@ -3786,6 +3889,9 @@ class VoiceInputApp:
 
         key_name = self._listener_key_token(key)
 
+        if _settings_hotkey_capture_active():
+            return
+
         # 3. Check Match
         if key_name == self.target_key:
             # OS key-repeat sends repeated key-down without key-up; first down toggles, repeats must not.
@@ -3867,6 +3973,41 @@ class VoiceInputApp:
             h = self._paste_anchor_hwnd
         return int(h) if h else None
 
+    def _models_loading_for_session(self) -> bool:
+        """True while ASR/refiner are loading for the current wake (suppresses premature auto-stop)."""
+        if getattr(self, "_heavy_model_load_in_progress", False):
+            return True
+        if _worker_isolation_enabled():
+            if getattr(self, "_worker_load_in_progress", False):
+                return True
+            if self.is_listening and not self._worker_ready:
+                w = getattr(self, "_worker", None)
+                if w is not None and w.is_alive():
+                    return True
+        return False
+
+    def _try_complete_wake_feedback(self):
+        """Honor pending_wakeup or play ready chime after idle model reload."""
+        if self._wakeup_autostart_cancelled:
+            self.pending_wakeup = False
+            self._awaiting_wake_ready_chime = False
+            return
+        if self.pending_wakeup and self.mic_active and not self.is_listening:
+            self.pending_wakeup = False
+            log_print("Wake load complete: auto-starting recording.")
+            self.start_listening()
+            return
+        if self.pending_wakeup:
+            self.pending_wakeup = False
+        models_ok = (
+            self._worker_ready
+            if _worker_isolation_enabled()
+            else bool(self.heavy_models_loaded)
+        )
+        if models_ok and getattr(self, "_awaiting_wake_ready_chime", False) and self.is_listening:
+            self._awaiting_wake_ready_chime = False
+            self.sound_manager.play_ready()
+
     def start_listening(self):
         self._cancel_paste_anchor_timer()
         with self._paste_anchor_lock:
@@ -3875,6 +4016,8 @@ class VoiceInputApp:
         self.last_activity_time = time.time()
         log_print("\n[Start Listening]", flush=True)
         self.sound_manager.play_start()
+        if _worker_isolation_enabled() and not self._worker_ready:
+            self._awaiting_wake_ready_chime = True
         self.is_listening = True
         self.is_speaking = False
         self._heard_voice_energy = False
@@ -3890,6 +4033,7 @@ class VoiceInputApp:
     def stop_listening(self):
         log_print(" [Stopped]", flush=True)
         self.sound_manager.play_stop()
+        self._awaiting_wake_ready_chime = False
         # Any stop during a VRAM-saver wake load means "do not auto-start when load finishes"
         # (covers auto-stop and toggle-off; avoids race vs setting heavy_models_loaded before this runs).
         if self.pending_wakeup:
@@ -3962,6 +4106,16 @@ class VoiceInputApp:
 
     def _ensure_worker(self, wait_ready: bool = False, ready_timeout: float = 90.0):
         """Spawn (if needed) and optionally wait for the inference worker to be model-ready."""
+        need_load_wait = wait_ready and not self._worker_ready
+        if need_load_wait:
+            self._worker_load_in_progress = True
+        try:
+            return self._ensure_worker_impl(wait_ready, ready_timeout)
+        finally:
+            if need_load_wait:
+                self._worker_load_in_progress = False
+
+    def _ensure_worker_impl(self, wait_ready: bool = False, ready_timeout: float = 90.0):
         with self._worker_lock:
             if self._worker is None:
                 self._worker = _WorkerClient()
@@ -3999,14 +4153,11 @@ class VoiceInputApp:
                 if not self._worker_ready:
                     log_print("Worker is ready (models loaded).")
                 self._worker_ready = True
-                # Clear the transient startup status so the tray tooltip does not stay
-                # stuck on it once the engine is up.
-                if self.loading_status in ("Starting engine...", "Loading engine..."):
-                    self.loading_status = "Ready"
-                    self.update_tray_tooltip()
+                self._refresh_tray_ready_state()
                 # Start the idle countdown from readiness, not from spawn, so a slow load
                 # is never immediately killed by the VRAM saver.
                 self.last_activity_time = time.time()
+                self._try_complete_wake_feedback()
                 return client
             err = pong.get("error")
             if err:
@@ -4797,7 +4948,7 @@ class VoiceInputApp:
                 
                 # Check VAD for Manual Toggle Feedback & Auto-Stop
                 # CRITICAL: Suspend Auto-Stop logic while AI models are still loading (Wake up phase)
-                if self.vad_iterator and not self._heavy_model_load_in_progress:
+                if self.vad_iterator and not self._models_loading_for_session():
                     if NO_TORCH:
                         speech_dict = self.vad_iterator(chunk.astype(np.float32), return_seconds=True)
                     else:
@@ -4832,7 +4983,13 @@ class VoiceInputApp:
         if self.settings_process and self.settings_process.poll() is None:
             # Already running
             return
-            
+
+        try:
+            if os.path.exists(HOTKEY_CAPTURE_FLAG):
+                os.remove(HOTKEY_CAPTURE_FLAG)
+        except Exception:
+            pass
+
         gui_path = resource_path("src/gui_settings.py")
         if not getattr(sys, 'frozen', False):
             # In Dev mode, we might need absolute path
@@ -4957,8 +5114,12 @@ class VoiceInputApp:
         if _worker_isolation_enabled():
             self._worker_warmup()
             if not self.mic_active:
-                log_print("Ignored Hotkey: No Microphone Active")
-                self.sound_manager.play_error()
+                if not self._worker_ready:
+                    log_print("Wake accepted (microphone not active yet). Pre-loading engine...")
+                    self.sound_manager.play_wake()
+                else:
+                    log_print("Ignored Hotkey: No Microphone Active")
+                    self.sound_manager.play_error()
                 return
             if not self.is_listening:
                 if self.ui_state == "PROCESSING":
@@ -4988,18 +5149,27 @@ class VoiceInputApp:
                     self._wakeup_autostart_cancelled = False
                     threading.Thread(target=self.load_heavy_models, daemon=True).start()
             else:
-                # Mic not up yet (or stream failed): still kick off model load so install/wake can finish,
-                # but never auto-start recording when load completes from this path.
+                # Mic not up yet (or stream failed): still kick off model load so install/wake can finish.
                 if not getattr(self, "_heavy_model_load_in_progress", False):
                     log_print(
                         "Wake up: pre-loading models in background (microphone not active yet — "
-                        "no auto-start after load; press hotkey again when ready)."
+                        "will auto-start when the mic is ready if you pressed the hotkey to wake)."
                     )
+                    self.pending_wakeup = True
+                    self._wakeup_autostart_cancelled = False
                     threading.Thread(target=self.load_heavy_models, daemon=True).start()
 
         # Guard: mic required to start/stop a recording session.
         # Transcription/Refinement will wait for asr_model/llm_model inside transcribe().
         if not self.mic_active:
+            if (
+                self.pending_wakeup
+                or getattr(self, "_heavy_model_load_in_progress", False)
+                or (not _worker_isolation_enabled() and not self.heavy_models_loaded)
+            ):
+                log_print("Wake accepted (microphone not active yet). Models loading...")
+                self.sound_manager.play_wake()
+                return
             log_print("Ignored Hotkey: No Microphone Active")
             self.sound_manager.play_error()
             return

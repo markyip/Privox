@@ -63,7 +63,7 @@ download-models = { cmd = "python src/download_models.py", env = { PYTHONNOUSERS
 
 build = { cmd = "python build_app.py", env = { PYTHONNOUSERSITE = "1" } }
 
-# Refiner (Gemma 4): needs llama-cpp-python >=0.3.20 with CUDA. Optional: copy the built wheel to wheels/ before `pixi run build` to ship it in the installer.
+# Refiner (Gemma 4): needs llama-cpp-python >=0.3.20 with CUDA (cu128/cu124 wheel or source via install-llama-cuda). Optional: copy wheel to wheels/ before `pixi run build`.
 
 install-llama-cuda = "python scripts/install_llama_cuda.py"
 
@@ -111,7 +111,7 @@ pywin32 = "*"
 
 # PyPI deps sized for what src/ actually imports. Large / optional notes:
 
-# - torch: required (Silero VAD torch.hub, Qwen-ASR, CUDA checks). ~GBs with cu124 wheels.
+# - torch: required (Silero VAD torch.hub, Qwen-ASR, CUDA checks). ~GBs with cu128 wheels.
 
 # - torchaudio: required by snakers4/silero-vad hubconf.py `dependencies` (torch.hub.load fails without it).
 
@@ -167,7 +167,7 @@ zhconv = "*"
 
 diskcache = "*"
 
-torch = { version = "==2.6.0+cu124", index = "https://download.pytorch.org/whl/cu124" }
+torch = { version = "==2.10.0+cu128", index = "https://download.pytorch.org/whl/cu128" }
 
-torchaudio = { version = "==2.6.0+cu124", index = "https://download.pytorch.org/whl/cu124" }
+torchaudio = { version = "==2.10.0+cu128", index = "https://download.pytorch.org/whl/cu128" }
 

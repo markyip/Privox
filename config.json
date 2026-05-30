@@ -1,10 +1,11 @@
 {
-    "asr_backend": "qwen_asr",
-    "whisper_repo": "Qwen/Qwen3-ASR-0.6B",
-    "grammar_repo": "unsloth/gemma-4-E4B-it-GGUF",
-    "grammar_file": "gemma-4-E4B-it-Q4_K_M.gguf",
+    "asr_backend": "whisper",
+    "whisper_repo": "Systran/faster-distil-whisper-large-v3",
+    "whisper_model": "distil-large-v3",
+    "grammar_repo": "unsloth/gemma-4-E2B-it-GGUF",
+    "grammar_file": "gemma-4-E2B-it-Q4_K_M.gguf",
     "active_character": "Professional Refiner",
     "log_transcription": false,
     "eager_model_load": true,
-    "version": "1.1"
+    "version": "1.3"
 }

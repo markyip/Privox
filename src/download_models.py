@@ -572,13 +572,13 @@ def main(log_callback=None):
 
     config_path = os.path.join(target_base_dir, "config.json")
 
-    asr_backend = "whisper"
+    asr_backend = _def_asr.get("backend", "whisper")
 
     if os.path.exists(config_path):
 
         try:
 
-            with open(config_path, "r") as f:
+            with open(config_path, "r", encoding="utf-8") as f:
 
                 config = json.load(f)
 
@@ -590,9 +590,11 @@ def main(log_callback=None):
 
                 grammar_repo = config.get("grammar_repo", grammar_repo)
 
-                asr_backend = config.get("asr_backend", "whisper")
+                asr_backend = config.get("asr_backend", asr_backend)
 
-            log_local(f"Loaded tailored settings from config.json: {whisper_model_name}")
+            log_local(
+                f"Loaded ASR from config.json: {whisper_model_name} ({whisper_repo}), backend={asr_backend}"
+            )
 
         except Exception as e:
 

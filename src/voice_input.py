@@ -864,8 +864,18 @@ class SoundManager:
             log_print(f"Sound Error: {e}")
 
     def play_start(self):
+        if not self.enabled or winsound is None:
+            return
+        # Synchronous beep: daemon threads were often delayed/lost during worker spawn after idle.
+        try:
+            winsound.Beep(1000, 150)
+        except Exception as e:
+            log_print(f"Sound Error: {e}")
+
+    def play_engine_ready(self):
+        """One short tick when the worker finished loading while the user is already recording."""
         if self.enabled:
-            threading.Thread(target=self._play, args=(1000, 150), daemon=True).start()
+            threading.Thread(target=self._play, args=(880, 70), daemon=True).start()
 
     def play_stop(self):
         if self.enabled:
@@ -881,16 +891,9 @@ class SoundManager:
             threading.Thread(target=self._play, args=(600, 120), daemon=True).start()
 
     def play_ready(self):
-        """Double chime when ASR/refiner finished loading after idle (engine ready to transcribe)."""
-        if not self.enabled:
-            return
-
-        def _chime():
-            self._play(1200, 90)
-            time.sleep(0.07)
-            self._play(1200, 90)
-
-        threading.Thread(target=_chime, daemon=True).start()
+        """Single soft chime when the engine becomes ready before recording starts (not while listening)."""
+        if self.enabled:
+            threading.Thread(target=self._play, args=(1200, 80), daemon=True).start()
 
 
 def _infer_language_from_transcript(text: str) -> tuple[str | None, float]:
@@ -3980,10 +3983,9 @@ class VoiceInputApp:
         if _worker_isolation_enabled():
             if getattr(self, "_worker_load_in_progress", False):
                 return True
+            # After idle the worker process may not exist yet (tier-2 kill); still loading.
             if self.is_listening and not self._worker_ready:
-                w = getattr(self, "_worker", None)
-                if w is not None and w.is_alive():
-                    return True
+                return True
         return False
 
     def _try_complete_wake_feedback(self):
@@ -4004,9 +4006,13 @@ class VoiceInputApp:
             if _worker_isolation_enabled()
             else bool(self.heavy_models_loaded)
         )
-        if models_ok and getattr(self, "_awaiting_wake_ready_chime", False) and self.is_listening:
+        if models_ok and getattr(self, "_awaiting_wake_ready_chime", False):
             self._awaiting_wake_ready_chime = False
-            self.sound_manager.play_ready()
+            if self.is_listening:
+                # Single tick (not the old double-chime) so idle-wake sessions get clear feedback.
+                self.sound_manager.play_engine_ready()
+            else:
+                self.sound_manager.play_ready()
 
     def start_listening(self):
         self._cancel_paste_anchor_timer()
@@ -4014,14 +4020,14 @@ class VoiceInputApp:
             self._paste_anchor_hwnd = None
         self._transcribe_task_id += 1
         self.last_activity_time = time.time()
-        log_print("\n[Start Listening]", flush=True)
-        self.sound_manager.play_start()
-        if _worker_isolation_enabled() and not self._worker_ready:
-            self._awaiting_wake_ready_chime = True
+        self._last_loud_chunk_time = time.time()
         self.is_listening = True
         self.is_speaking = False
         self._heard_voice_energy = False
-        self._last_loud_chunk_time = time.time()
+        log_print("\n[Start Listening]", flush=True)
+        if _worker_isolation_enabled() and not self._worker_ready:
+            self._awaiting_wake_ready_chime = True
+        self.sound_manager.play_start()
         self.audio_buffer = []
         self._drain_audio_queue()
         self._dropped_audio_chunks = 0
@@ -5130,6 +5136,7 @@ class VoiceInputApp:
             return
 
         # Wake up detection - Trigger background load if needed, but don't block!
+        self._wakeup_autostart_cancelled = False
         if not self.heavy_models_loaded:
             # Dev: initial_load already runs load_heavy_models() on a daemon thread — do not start another
             # thread that only blocks on model_lock during ONNX snapshot_download.

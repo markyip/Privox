@@ -48,6 +48,14 @@ A powerful, private, and fully local voice input assistant for Windows. Privox c
 > [!TIP]
 > **Your Hotkey, Your Way**: Don't like `F8`? You can change it to any key or combination (like `Ctrl+Shift+Space`) in **Settings**. Open Settings by right-clicking the Privox icon in your taskbar.
 
+> [!NOTE]
+> **English vs multilingual speech models**  
+> If you dictate mainly in **English**, switch the ASR model in **Settings → AI Models** to a **lighter faster-whisper (Whisper) checkpoint** rather than **Qwen-ASR**:
+>
+> - **Default out of the box:** New installs download **Distil-Whisper Large v3 (English)** (faster-whisper / CTranslate2) for a quicker first run and shorter wake-from-idle load. **OpenAI Whisper Small** is an even lighter option on weaker PCs.
+> - **Use Qwen-ASR when you need multilingual support** — Cantonese, Mandarin, Japanese, code-mixed speech, and similar cases. Pick a Qwen size in **Settings → AI Models**; the installer does not download Qwen unless you select it later.
+> - **Multilingual without Qwen:** **Whisper Large v3 Turbo (Multilingual)** is a good middle ground — still CTranslate2/faster-whisper, not as heavy as Qwen, but stronger than the English-only Distil model across languages.
+
 ## ⚙️ Simple Controls
 
 You don't need to be a computer expert to customize Privox. Just right-click the **Privox icon** near your clock (the system tray):
@@ -74,7 +82,8 @@ You don't need to be a computer expert to customize Privox. Just right-click the
 
 ## ⚠️ Known Limitations
 
-- **Multilingual accuracy varies**: Voice-to-text is provided by **faster-whisper** (English-focused Distil/Small, plus one **Multilingual Large v3 Turbo** checkpoint) and **Qwen-ASR** on Hugging Face (shipped default: **Qwen-ASR v3 1.7B**). Non-English and code-mixed speech are best-effort; if quality is weak for your language, try **Whisper Large v3 Turbo (Multilingual)** or another **Qwen-ASR** size in Settings. Please [open an Issue](https://github.com/markyip/Privox/issues) with the model name and a short example if something looks wrong.
+- **Default speech model**: First-time setup uses **Distil-Whisper Large v3 (English)** (see `config.json`). **Qwen-ASR** and other presets are optional downloads when you change the ASR model in Settings.
+- **Multilingual accuracy varies**: Voice-to-text is provided by **faster-whisper** (English-focused Distil/Small, plus **Whisper Large v3 Turbo (Multilingual)**) and **Qwen-ASR** (strongest for many non-English and code-mixed cases, but heavier on GPU). See the **English vs multilingual speech models** note under [How to Use](#2-how-to-use). If quality is weak for your language, try **Whisper Large v3 Turbo (Multilingual)** or a **Qwen-ASR** size in Settings. Please [open an Issue](https://github.com/markyip/Privox/issues) with the model name and a short example if something looks wrong.
 - **Accent variations may affect transcription accuracy**: The voice-to-text engine can be sensitive to strong or regional accents, which is an inherent limitation of the underlying ASR technology. If transcription quality seems off, try switching to a different ASR model in **Settings** (e.g., the Multilingual model may handle diverse accents better).
 - **Occasional LLM hallucination**: Although multiple safeguards are in place, the refiner model may occasionally add, rephrase, or embellish words beyond the original transcript. The refiner is asked to return text inside `<refined>` tags; if a model ignores that format, Privox falls back to heuristics and may return the raw transcription when the reply looks like a prompt echo. If you notice output that doesn't match what you said, please report it.
 - **Mixed-language in one utterance**: ASR quality still varies when you code-mix (e.g. English technical terms inside Chinese). The refiner is instructed to **preserve** Latin + CJK in the same sentence rather than translating everything to one language; if you see unwanted rewriting, try another ASR model or report an issue with a short example.

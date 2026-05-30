@@ -148,6 +148,7 @@ for _msg in (
     warnings.filterwarnings("ignore", message=_msg, category=UserWarning)
 from datetime import datetime, timedelta
 import models_config
+import privox_ipc
 from huggingface_hub import HfApi
 if sys.platform == 'win32':
     import winreg
@@ -175,7 +176,9 @@ def setup_logging():
     )
 
     # Dev: log file under project / exe folder. Packaged exe: no log file (NullHandler only).
-    log_file = os.path.join(base_dir, "privox_app.log")
+    # The inference worker writes to its own file so the two processes never fight over rotation.
+    _is_engine = (os.environ.get("PRIVOX_ENGINE_MODE") or "").strip().lower() in ("1", "true", "yes", "on")
+    log_file = os.path.join(base_dir, "privox_worker.log" if _is_engine else "privox_app.log")
     log_level = logging.INFO
     log_format = "%(asctime)s.%(msecs)03d - %(levelname)s - %(message)s"
     log_datefmt = "%Y-%m-%d %H:%M:%S"
@@ -575,7 +578,12 @@ def ensure_numpy_version_visible_to_metadata():
 
 log_print("Starting Privox...")
 
-if sys.platform == 'win32':
+# The inference worker (PRIVOX_ENGINE_MODE) is a child of the main app and must NOT trip the
+# single-instance guard: the named mutex is system-wide, so the worker would always collide
+# with its parent and exit during import (killing the model-load thread).
+_PRIVOX_ENGINE_MODE_BOOT = (os.environ.get("PRIVOX_ENGINE_MODE") or "").strip().lower() in ("1", "true", "yes", "on")
+
+if sys.platform == 'win32' and not _PRIVOX_ENGINE_MODE_BOOT:
     # --- Single Instance Enforcement (Prevents model/log corruption) ---
     class SingleInstance:
         def __init__(self):
@@ -778,6 +786,26 @@ if sys.platform == "win32":
 # --- 3. Configuration ---
 SAMPLE_RATE = 16000
 BLOCK_SIZE = 512
+
+# --- Worker isolation flags --------------------------------------------------
+# ENGINE_MODE: this process is the inference worker (privox_worker.py). It only
+# owns the ASR + refiner engine; no tray / microphone / hotkey / auto-load.
+ENGINE_MODE = (os.environ.get("PRIVOX_ENGINE_MODE") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _worker_isolation_enabled() -> bool:
+    """Run ASR + refiner in a separate killable subprocess so idle frees ALL VRAM.
+
+    Opt-in while we validate wake latency: set PRIVOX_WORKER_ISOLATION=1 to enable.
+    Never enabled inside the worker itself (that process IS the engine).
+    """
+    if ENGINE_MODE:
+        return False
+    # Frozen EXE cannot spawn `python privox_worker.py`; needs a dedicated --worker entry
+    # (future work). Until then, fall back to the in-process path in packaged builds.
+    if getattr(sys, "frozen", False):
+        return False
+    return (os.environ.get("PRIVOX_WORKER_ISOLATION") or "").strip().lower() in ("1", "true", "yes", "on")
 # Bound only the short callback backlog; the recording buffer itself remains unbounded.
 AUDIO_QUEUE_MAX_CHUNKS = 256  # ~8 seconds at 16 kHz / 512-sample blocks
 # Silero probability threshold; lower = more sensitive (helps quiet mics / distant speech).
@@ -2069,6 +2097,111 @@ def _privox_vad_prefers_cuda() -> bool:
 
 
 
+class _WorkerClient:
+    """Main-process handle to the inference worker subprocess (privox_worker.py).
+
+    Owns the child process + a single persistent socket. Thread-safe request().
+    Killing the process (stop) returns ALL VRAM (incl. CUDA context) to the OS.
+    """
+
+    def __init__(self):
+        self.proc = None
+        self.sock = None
+        self.port = None
+        self._io_lock = threading.Lock()
+
+    def is_alive(self) -> bool:
+        return (
+            self.proc is not None
+            and self.proc.poll() is None
+            and self.sock is not None
+        )
+
+    def start(self, connect_timeout: float = 25.0) -> bool:
+        import socket as _socket
+
+        # Reserve a free localhost port, release it, then let the worker bind it.
+        probe = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+        probe.close()
+
+        worker_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "privox_worker.py")
+        creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        try:
+            self.proc = subprocess.Popen(
+                [sys.executable, worker_path, "--port", str(port)],
+                env=os.environ.copy(),
+                creationflags=creationflags,
+            )
+        except Exception as e:
+            log_print(f"WorkerClient: failed to spawn worker: {e}")
+            self.proc = None
+            return False
+        self.port = port
+
+        deadline = time.time() + connect_timeout
+        while time.time() < deadline:
+            if self.proc.poll() is not None:
+                log_print("WorkerClient: worker process exited before accepting a connection.")
+                self.proc = None
+                return False
+            try:
+                c = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+                c.settimeout(2.0)
+                c.connect(("127.0.0.1", port))
+                c.settimeout(None)
+                self.sock = c
+                log_print(f"WorkerClient: connected to worker on port {port}.")
+                return True
+            except OSError:
+                time.sleep(0.1)
+        log_print("WorkerClient: timed out connecting to worker.")
+        self.stop()
+        return False
+
+    def request(self, header: dict, blob: bytes = b"", timeout: float | None = None):
+        with self._io_lock:
+            if self.sock is None:
+                return None
+            try:
+                self.sock.settimeout(timeout)
+                privox_ipc.send_message(self.sock, header, blob)
+                resp = privox_ipc.recv_message(self.sock)
+                self.sock.settimeout(None)
+                if resp is None:
+                    return None
+                return resp[0]
+            except (OSError, ConnectionError) as e:
+                log_print(f"WorkerClient: request failed: {e}")
+                return None
+
+    def ping(self, timeout: float = 5.0) -> dict:
+        return self.request({"cmd": "ping"}, timeout=timeout) or {}
+
+    def stop(self):
+        with self._io_lock:
+            if self.sock is not None:
+                try:
+                    privox_ipc.send_message(self.sock, {"cmd": "shutdown"})
+                except Exception:
+                    pass
+                try:
+                    self.sock.close()
+                except Exception:
+                    pass
+                self.sock = None
+            if self.proc is not None:
+                try:
+                    self.proc.wait(timeout=3)
+                except Exception:
+                    try:
+                        self.proc.kill()
+                    except Exception:
+                        pass
+                self.proc = None
+
+
 class VoiceInputApp:
     def __init__(self):
         log_print("Initializing Voice Input Application...")
@@ -2139,6 +2272,14 @@ class VoiceInputApp:
         self._paste_anchor_timer = None  # threading.Timer for deferred HWND capture
         self._paste_anchor_hwnd = None
         self.vram_timeout = 60 # Seconds before unloading
+        # Two-tier idle (worker isolation): at vram_timeout we kill the LOADED worker (frees ALL
+        # VRAM incl. CUDA context) and immediately respawn a WARM-FRESH one (~0 VRAM) so the next
+        # wake skips spawn+import. After worker_kill_timeout of continued idle we kill the
+        # WARM-FRESH worker too, to free its RAM (next wake then pays full spawn+import+load once).
+        try:
+            self.worker_kill_timeout = max(60, int(os.environ.get("PRIVOX_WORKER_KILL_TIMEOUT", "600")))
+        except (TypeError, ValueError):
+            self.worker_kill_timeout = 600
         # Idle unload policy: unload ASR with refiner after VRAM Saver timeout (wake-up reload is fast enough).
         self.use_simplified_chinese_output = False
         self.eager_model_load = True 
@@ -2172,8 +2313,16 @@ class VoiceInputApp:
         # Set initial state to show loading spinner
         self.update_status("INITIALIZING")
 
-        # Start loading threads
-        threading.Thread(target=self.initial_load, daemon=True).start()
+        # Worker client handle (main process only, when isolation is enabled).
+        self._worker = None
+        self._worker_lock = threading.Lock()
+        self._worker_ready = False  # True once the worker reports models loaded
+
+        # Engine mode (privox_worker.py): the worker drives model loading explicitly via
+        # load_heavy_models(); do not auto-start initial_load (which also loads CPU VAD we don't need).
+        if not ENGINE_MODE:
+            # Start loading threads
+            threading.Thread(target=self.initial_load, daemon=True).start()
 
     def _emit_runtime_error(self, title, message, error_detail="", include_thread_dump=False):
         """Surface runtime errors for EXE mode where console logs are not visible."""
@@ -2243,6 +2392,22 @@ class VoiceInputApp:
         self.update_tray_tooltip()
         self.load_vad()
         
+        # Worker isolation: heavy models (ASR + refiner) live in the worker process.
+        # Main only needs VAD (loaded above) to record. Pre-warm the worker so the first
+        # transcription is fast, but the main process never holds ASR/refiner VRAM.
+        if _worker_isolation_enabled():
+            # Pre-spawn a WARM-FRESH worker (process imported, NO models loaded, ~0 VRAM). This
+            # pays the spawn+import cost (~4-5s) in the background at startup so the first
+            # hotkey-down only has to load models (~10s) instead of spawn+import+load (~13s).
+            # Models still load only on hotkey-down (_worker_warmup), so idle VRAM stays ~0.
+            self.loading_status = "Ready"
+            self.update_tray_tooltip()
+            self.update_status("READY")
+            threading.Thread(
+                target=lambda: self._ensure_worker(wait_ready=False), daemon=True
+            ).start()
+            return
+
         # Eager vs Lazy Loading
         if not self.eager_model_load:
             self.loading_status = "Ready (Lazy Model Warmup)"
@@ -3049,6 +3214,11 @@ class VoiceInputApp:
             self.custom_dictionary = prefs.get("custom_dictionary", [])
             v_val = prefs.get("vram_timeout", 60)
             self.vram_timeout = 0 if v_val == 0 else max(5, v_val)
+            try:
+                _k_val = int(prefs.get("worker_kill_timeout", self.worker_kill_timeout))
+                self.worker_kill_timeout = max(self.vram_timeout if self.vram_timeout > 0 else 60, _k_val)
+            except (TypeError, ValueError):
+                pass
             self.use_simplified_chinese_output = bool(prefs.get("use_simplified_chinese_output", False))
             # Eager load defaults to True for a premium "ready-to-go" experience
             self.eager_model_load = bool(prefs.get("eager_model_load", config.get("eager_model_load", True)))
@@ -3778,6 +3948,311 @@ class VoiceInputApp:
                 )
                 raise TimeoutError(self.last_model_error)
 
+    def _ensure_worker(self, wait_ready: bool = False, ready_timeout: float = 90.0):
+        """Spawn (if needed) and optionally wait for the inference worker to be model-ready."""
+        with self._worker_lock:
+            if self._worker is None:
+                self._worker = _WorkerClient()
+            if not self._worker.is_alive():
+                self.loading_status = "Starting engine..."
+                self.update_tray_tooltip()
+                if not self._worker.start():
+                    log_print("Could not start inference worker.")
+                    self._worker = None
+                    return None
+            client = self._worker
+
+        if not wait_ready:
+            # WARM-FRESH spawn: process is imported but holds no models (~0 VRAM).
+            return client
+
+        # Worker starts WARM-FRESH and only loads on an explicit command. Trigger the
+        # background load (idempotent) before polling readiness.
+        if not self._worker_ready:
+            self.loading_status = "Loading engine..."
+            self.update_tray_tooltip()
+            try:
+                client.request({"cmd": "load"}, timeout=10.0)
+            except Exception as e:
+                log_print(f"Worker load command failed: {e}")
+
+        deadline = time.time() + ready_timeout
+        while time.time() < deadline:
+            if not client.is_alive():
+                log_print("Worker died while waiting for readiness.")
+                self._worker_ready = False
+                return None
+            pong = client.ping()
+            if pong.get("ready"):
+                if not self._worker_ready:
+                    log_print("Worker is ready (models loaded).")
+                self._worker_ready = True
+                # Clear the transient startup status so the tray tooltip does not stay
+                # stuck on it once the engine is up.
+                if self.loading_status in ("Starting engine...", "Loading engine..."):
+                    self.loading_status = "Ready"
+                    self.update_tray_tooltip()
+                # Start the idle countdown from readiness, not from spawn, so a slow load
+                # is never immediately killed by the VRAM saver.
+                self.last_activity_time = time.time()
+                return client
+            err = pong.get("error")
+            if err:
+                log_print(f"Worker reported load error: {err}")
+            time.sleep(0.3)
+        log_print("Worker not ready within timeout; returning handle anyway.")
+        return client
+
+    def _shutdown_worker(self):
+        """Terminate the worker so the OS reclaims 100% of its VRAM (idle / shutdown)."""
+        with self._worker_lock:
+            w = self._worker
+            self._worker = None
+            self._worker_ready = False
+        if w is not None:
+            try:
+                w.stop()
+            except Exception as e:
+                log_print(f"Worker shutdown error: {e}")
+
+    def _worker_warmup(self):
+        """Pre-spawn + load the worker in the background (called on hotkey-down) so the
+        first transcription after idle does not pay the full spawn+load cost serially."""
+        if not _worker_isolation_enabled():
+            return
+        # If a WARM-FRESH (alive but not loaded) or no worker exists, trigger a full load.
+        if self._worker is not None and self._worker.is_alive() and self._worker_ready:
+            return
+        threading.Thread(
+            target=lambda: self._ensure_worker(wait_ready=True), daemon=True
+        ).start()
+
+    def _respawn_warm_worker(self):
+        """Background: kill any existing worker and spawn a fresh WARM-FRESH one (~0 VRAM).
+
+        Called after the idle VRAM saver kills a LOADED worker, so a never-loaded process sits
+        ready (spawn+import already paid) for the next wake while holding ~0 VRAM.
+        """
+        if not _worker_isolation_enabled() or not self.running:
+            return
+        try:
+            self._shutdown_worker()
+            if self.running:
+                self._ensure_worker(wait_ready=False)
+        except Exception as e:
+            log_print(f"WARM worker respawn error: {e}")
+
+    def _transcribe_via_worker(self, audio_data, task_id):
+        """Delegate ASR + refiner to the worker process, then paste in the main process."""
+        client = self._ensure_worker(wait_ready=True)
+        if client is None:
+            log_print("Worker unavailable; cannot transcribe.")
+            self.loading_status = "ASR Error"
+            return
+        audio = np.asarray(audio_data, dtype=np.float32).reshape(-1)
+        header = {
+            "cmd": "transcribe",
+            "task_id": task_id,
+            "dtype": "float32",
+            "sample_rate": SAMPLE_RATE,
+        }
+        resp = client.request(header, audio.tobytes(), timeout=200.0)
+        if resp is None:
+            log_print("Worker request failed (no response); tearing down for respawn.")
+            self._shutdown_worker()
+            self.loading_status = "ASR Error"
+            return
+        if not resp.get("ok"):
+            log_print(f"Worker inference not ok: {resp.get('reason')} {resp.get('detail', '')}")
+            return
+        final_text = resp.get("final_text")
+        if final_text is None or not str(final_text).strip():
+            log_transcription(" [Skip paste: empty refined output]")
+            return
+        ft = str(final_text)
+        cap = 500
+        log_transcription(
+            f" [Pasted text preview] ({len(ft)} chars): "
+            f"'{ft[:cap]}{'...' if len(ft) > cap else ''}'"
+        )
+        try:
+            self.paste_text(final_text)
+        except Exception as e:
+            log_print(f"Typing Error: {e}")
+            self.sound_manager.play_error()
+
+    def run_inference(self, audio_data, task_id=None):
+        """Pure audio -> refined-text inference (ASR + refiner). No paste / tray side effects.
+
+        Used by the inference worker process (privox_worker.py) and reusable in-process.
+        NOTE: mirrors the inference half of transcribe(); keep the two in sync until the
+        legacy in-process path is migrated to call this method directly.
+
+        Returns:
+          {"ok": True, "raw_text": str, "final_text": str, "asr_time": float, "grammar_time": float}
+          {"ok": False, "reason": "no_model" | "empty"}
+        """
+        with self.model_lock:
+            # Ensure models are loaded before transcribing
+            if not self.heavy_models_loaded:
+                log_print("Waiting for models to load...")
+                self.load_heavy_models()
+                if not self.asr_model:
+                    log_print("ASR Model still missing after lazy load attempt.")
+                    return {"ok": False, "reason": "no_model"}
+
+            _asr_label = getattr(self, "active_asr_name", None) or (
+                WHISPER_SIZE if ASR_BACKEND == "whisper" else WHISPER_REPO
+            )
+            log_transcription(f" Transcribing Using Backend: {ASR_BACKEND} (Model: {_asr_label})...", flush=True)
+            t0 = time.time()
+
+            raw_text = ""
+            info = None
+            if ASR_BACKEND == "sensevoice":
+                def _sv_gen():
+                    with torch.no_grad():
+                        return self.asr_model.generate(
+                            input=audio_data.flatten().astype(np.float32),
+                            cache={},
+                            language="auto",
+                            use_itn=True,
+                            batch_size_s=60,
+                            merge_vad=True,
+                            merge_length_s=15,
+                        )
+                results = self._run_with_timeout(_sv_gen, timeout_s=120, label="ASR generate")
+                if results and len(results) > 0:
+                    raw_text = results[0].get('text', '')
+                    raw_text = re.sub(r'<\|.*?\|>', '', raw_text).strip()
+                log_transcription(f" SenseVoice Result - Raw: '{raw_text}'")
+
+            elif ASR_BACKEND == "qwen_asr":
+                if cuda_is_available():
+                    inner_model = getattr(self.asr_model, "model", None)
+                    _has_device_map = bool(getattr(inner_model, "hf_device_map", None))
+                    if not _has_device_map:
+                        _dev_type = getattr(getattr(inner_model, "device", None), "type", "cpu")
+                        if _dev_type != "cuda":
+                            inner_model.to("cuda")
+
+                CHUNK_SIZE = 30 * 16000
+                audio_np = audio_data.astype(np.float32)
+                chunks = [audio_np[i:i + CHUNK_SIZE] for i in range(0, len(audio_np), CHUNK_SIZE)]
+                seg_texts = []
+                for idx, chunk in enumerate(chunks):
+                    if len(chunks) > 1:
+                        log_transcription(f"  Transcribing chunk {idx+1}/{len(chunks)}...")
+                    def _qwen_gen(c=chunk):
+                        with torch.no_grad():
+                            return self.asr_model.transcribe(
+                                audio=(c, 16000),
+                                context="Transcript may mix English and Chinese; keep each language in its usual spelling.",
+                                language=None,
+                                return_time_stamps=False,
+                            )
+                    results = self._run_with_timeout(
+                        _qwen_gen, timeout_s=120, label=f"ASR transcribe chunk {idx+1}"
+                    )
+                    if results and len(results) > 0:
+                        txt = results[0].get('text', '') if isinstance(results[0], dict) else getattr(results[0], 'text', str(results[0]))
+                        if txt:
+                            seg_texts.append(txt)
+                raw_text = " ".join(seg_texts).strip()
+                log_transcription(f" Qwen3-ASR Result: '{raw_text}'")
+
+            else:
+                _seg_lid = (os.environ.get("PRIVOX_WHISPER_PER_SEGMENT_LANGUAGE") or "").strip().lower()
+                _use_per_segment_lang = _seg_lid not in ("0", "false", "no", "off")
+                _asr_kw: dict = dict(
+                    audio=audio_data.astype(np.float32),
+                    task="transcribe",
+                    beam_size=5,
+                    vad_filter=True,
+                    vad_parameters=dict(min_silence_duration_ms=500),
+                )
+                if WHISPER_TRANSCRIBE_LANGUAGE:
+                    _asr_kw["language"] = WHISPER_TRANSCRIBE_LANGUAGE
+                elif _use_per_segment_lang:
+                    _asr_kw["multilingual"] = True
+                    _asr_kw["initial_prompt"] = (
+                        "Transcript may mix English and Chinese; keep each language in its usual spelling."
+                    )
+                segments, info = self._run_with_timeout(
+                    lambda kw=_asr_kw: self.asr_model.transcribe(**kw),
+                    timeout_s=120,
+                    label="ASR transcribe",
+                )
+                log_transcription(f" ASR Result - Language Detected: {info.language} ({info.language_probability:.2f})")
+                seg_results = []
+                for segment in segments:
+                    log_transcription(f"  Segment: [{segment.start:.2f}s -> {segment.end:.2f}s] ({len(segment.text)} chars)")
+                    seg_results.append(segment.text)
+                raw_text = " ".join(seg_results).strip()
+
+            t1 = time.time()
+            log_transcription(f" [ASR Total Time: {t1 - t0:.3f}s] Result: {len(raw_text)} chars")
+            _asr_pv = raw_text[:400].replace("\n", " ").strip()
+            if len(raw_text) > 400:
+                _asr_pv += "..."
+            log_print(f"ASR text ({len(raw_text)} chars, preview): {_asr_pv!r}")
+
+            if not raw_text:
+                log_transcription(" [Empty Transcription Result]")
+                return {"ok": False, "reason": "empty"}
+
+            is_command = False
+            command_text = raw_text
+
+            if (os.environ.get("PRIVOX_GC_AFTER_ASR") or "").strip().lower() in ("1", "true", "yes", "on"):
+                gc.collect()
+
+            if getattr(self, "current_refiner", ""):
+                self.grammar_checker.load_model()
+
+            log_transcription(f" Refining format ({self.current_refiner})...")
+            t2 = time.time()
+            detected_lang = info.language if (info and ASR_BACKEND == 'whisper') else None
+            detected_prob = info.language_probability if (info and ASR_BACKEND == 'whisper') else 0.0
+            final_text = self._run_with_timeout(
+                lambda: self.grammar_checker.correct(
+                    command_text,
+                    is_command=is_command,
+                    language=detected_lang,
+                    language_prob=detected_prob,
+                ),
+                timeout_s=90,
+                label="Refiner processing",
+            )
+            t3 = time.time()
+            log_transcription(f" [Grammar Time: {t3 - t2:.3f}s]")
+            ft_str = str(final_text) if final_text is not None else ""
+            log_transcription(f" [Refined Output: {len(ft_str)} chars]")
+            log_transcription(f" [Total Time: {t3 - t0:.3f}s]")
+            _ref_pv = ft_str[:400].replace("\n", " ").strip()
+            if len(ft_str) > 400:
+                _ref_pv += "..."
+            log_print(f"Refiner output ({len(ft_str)} chars, preview): {_ref_pv!r}")
+            _asr_n = " ".join(raw_text.split())
+            _ref_n = " ".join(ft_str.split())
+            if _asr_n == _ref_n:
+                log_print(
+                    "Refiner: same as ASR after whitespace normalize — model applied little/no surface edit "
+                    "(expected for clean English; rules ask not to invent content)."
+                )
+            else:
+                log_print(
+                    f"Refiner: text differs from ASR (ASR {len(raw_text)} chars → refined {len(ft_str)} chars)."
+                )
+
+            return {
+                "ok": True,
+                "raw_text": raw_text,
+                "final_text": ft_str,
+                "asr_time": t1 - t0,
+                "grammar_time": t3 - t2,
+            }
+
     def transcribe(self, audio_data, task_id=None):
         with self.model_lock:
             try:
@@ -3798,6 +4273,12 @@ class VoiceInputApp:
                     self.update_status("READY")
                     return
     
+                # Worker isolation: hand ASR + refiner to the killable worker process so idle
+                # can free ALL VRAM (incl. CUDA context). The worker reuses run_inference().
+                if _worker_isolation_enabled():
+                    self._transcribe_via_worker(audio_data, task_id)
+                    return
+
                 # Ensure models are loaded before transcribing
                 if not self.heavy_models_loaded:
                     log_print("Waiting for models to load...")
@@ -4202,11 +4683,34 @@ class VoiceInputApp:
             # VRAM Saver Check
             if (
                 self.vram_timeout > 0
-                and self.heavy_models_loaded
                 and not self.is_listening
                 and not self._transcribe_in_progress
+                and (time.time() - self.last_activity_time) > self.vram_timeout
             ):
-                if (time.time() - self.last_activity_time) > self.vram_timeout:
+                if _worker_isolation_enabled():
+                    idle_for = time.time() - self.last_activity_time
+                    worker_alive = self._worker is not None and self._worker.is_alive()
+                    # Tier 1 (at vram_timeout): a LOADED worker is killed (frees ALL VRAM incl.
+                    # CUDA context) and a fresh WARM-FRESH worker is respawned in the background
+                    # (~0 VRAM, spawn+import pre-paid) so the next wake only reloads models.
+                    # Only act on a READY worker — never interrupt an in-progress load.
+                    if worker_alive and self._worker_ready:
+                        log_print("Idle (tier 1): killing LOADED worker; respawning WARM-FRESH (frees VRAM, keeps fast wake).")
+                        self._shutdown_worker()
+                        self.loading_status = "Idle (VRAM Free)"
+                        self.update_tray_tooltip()
+                        self.update_status("SLEEP")
+                        threading.Thread(target=self._respawn_warm_worker, daemon=True).start()
+                    # Tier 2 (at worker_kill_timeout): after extended idle, kill the WARM-FRESH
+                    # worker too so the OS reclaims its RAM. Next wake pays full spawn+import+load.
+                    elif (
+                        worker_alive
+                        and not self._worker_ready
+                        and idle_for > self.worker_kill_timeout
+                    ):
+                        log_print(f"Idle (tier 2, {idle_for:.0f}s): killing WARM-FRESH worker to free RAM.")
+                        self._shutdown_worker()
+                elif self.heavy_models_loaded:
                     self.unload_heavy_models()
 
             # Keyboard Listener Watchdog
@@ -4249,6 +4753,13 @@ class VoiceInputApp:
                                     time.sleep(0.1)
                                     self.load_config()
                                     log_print(f"Reload complete. Hotkey: {self.hotkey_str}")
+                                    # Push config change to the worker so persona/model/dictionary changes
+                                    # take effect without waiting for the next idle respawn.
+                                    if _worker_isolation_enabled() and self._worker is not None and self._worker.is_alive():
+                                        try:
+                                            self._worker.request({"cmd": "reload_config"}, timeout=10.0)
+                                        except Exception:
+                                            pass
                                 else:
                                     # Content is same, just metadata was touched. Update mtime to stop polling.
                                     self._last_prefs_mtime = mtime
@@ -4340,6 +4851,10 @@ class VoiceInputApp:
         if self.settings_process:
             try: self.settings_process.terminate()
             except: pass
+        try:
+            self._shutdown_worker()
+        except Exception:
+            pass
         icon.visible = False
         icon.stop() 
         os._exit(0)
@@ -4349,6 +4864,10 @@ class VoiceInputApp:
         log_print(f"Restarting Privox (reopen_settings={reopen_settings})...")
         
         # Cleanup
+        try:
+            self._shutdown_worker()
+        except Exception:
+            pass
         if self.icon:
             self.icon.stop()
         
@@ -4419,6 +4938,22 @@ class VoiceInputApp:
         if not self.vad_model:
             log_print("Ignored Hotkey: VAD Model not fully loaded.")
             self.sound_manager.play_error()
+            return
+
+        # Worker isolation: models live in the worker. Pre-warm it on hotkey-down so the
+        # first transcription after idle overlaps spawn+load with the user speaking.
+        if _worker_isolation_enabled():
+            self._worker_warmup()
+            if not self.mic_active:
+                log_print("Ignored Hotkey: No Microphone Active")
+                self.sound_manager.play_error()
+                return
+            if not self.is_listening:
+                if self.ui_state == "PROCESSING":
+                    log_print("Interrupting current processing to start new recording.")
+                self.start_listening()
+            else:
+                self.stop_listening()
             return
 
         # Wake up detection - Trigger background load if needed, but don't block!

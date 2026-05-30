@@ -20,6 +20,11 @@ start = { cmd = "python src/voice_input.py", env = { PYTHONNOUSERSITE = "1" } }
 
 start-windowless = { cmd = "pythonw src/voice_input.py", env = { PYTHONNOUSERSITE = "1" } }
 
+# Worker isolation (experimental): ASR + refiner run in a separate killable subprocess so
+# idle frees ALL VRAM (incl. CUDA context). Dev/python only; frozen EXE falls back to in-process.
+
+start-worker-isolation = { cmd = "python src/voice_input.py", env = { PRIVOX_WORKER_ISOLATION = "1", PYTHONNOUSERSITE = "1" } }
+
 # CTranslate2 ASR path: if .user_prefs.json chose Qwen/SenseVoice, falls back to default faster-whisper; otherwise keeps your Whisper preset (e.g. Multilingual Turbo). PyTorch still used for Silero VAD unless NO_TORCH.
 
 start-ct2-asr = { cmd = "python src/voice_input.py", env = { PRIVOX_CT2_ASR = "1", PYTHONNOUSERSITE = "1" } }

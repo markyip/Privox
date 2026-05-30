@@ -105,6 +105,28 @@ For power users who want to go beyond the Settings UI, Privox can be customized 
 
 The **packaged app version** string is `APP_VERSION` in `src/bootstrap.py` (currently **1.2**); it should match `version_info.txt` and `assets/privox.manifest` when you cut a release build.
 
+### Experimental: Near-Zero Idle VRAM (Worker-Process Isolation)
+
+> [!NOTE]
+> This is an **opt-in, developer/source-only** feature. The packaged **Privox.exe** is unaffected and still keeps models in-process (≈1–1.5 GB idle VRAM as described above).
+
+By default Privox loads the ASR + refiner models inside the main process, so a small **CUDA hardware context** (~1–1.5 GB) stays resident even during the VRAM Saver idle state. When running **from source**, you can opt into an experimental mode that runs the heavy models in a **separate, killable worker process** so that idle returns **essentially all** GPU memory (including the CUDA context) to the OS:
+
+```bat
+:: From the project root (Pixi), either:
+run_dev.bat
+:: …or directly:
+pixi run start-worker-isolation
+```
+
+This sets `PRIVOX_WORKER_ISOLATION=1`. Behaviour:
+
+- **Idle VRAM ≈ 0**: at the VRAM Saver timeout the loaded worker is killed (freeing weights *and* the CUDA context) and a fresh **warm** worker (no models, ~0 VRAM) is respawned for a fast next wake.
+- **Wake from idle ≈ 11 s**: the warm worker has already paid the spawn + `import` cost; waking only reloads model weights (Qwen3-ASR load dominates at ~8 s).
+- **Extended idle** (`PRIVOX_WORKER_KILL_TIMEOUT`, default `600` seconds, or the `worker_kill_timeout` preference): the warm worker is also terminated to free system RAM.
+
+A packaged-EXE worker entry point is planned; frozen builds currently fall back to the in-process path automatically. See [RELEASE_NOTES.md](RELEASE_NOTES.md) for details.
+
 ### Adding Your Own AI Models
 
 You can add custom ASR (voice-to-text) or LLM (refiner) models by editing `src/models_config.py`.

@@ -962,6 +962,13 @@ def run_app():
     # so it can apply the same no-log-disk behavior as frozen mode.
     env["PRIVOX_PACKAGED_LAUNCH"] = "1"
 
+    # Worker-process VRAM isolation: run ASR + refiner in a separate killable child so idle frees
+    # ALL VRAM (incl. the CUDA context). The packaged app runs voice_input.py under the real Pixi
+    # pythonw.exe (NOT a frozen binary), so it can spawn `pythonw privox_worker.py` directly — no
+    # dedicated frozen entry point is required. Default ON for packaged launches; set
+    # PRIVOX_WORKER_ISOLATION=0 in the environment to fall back to the in-process engine.
+    env.setdefault("PRIVOX_WORKER_ISOLATION", "1")
+
     if os.path.exists(env_pythonw):
         # Run pythonw directly to ensure no console flashes from 'pixi run' invoking a shell
         script_path = os.path.join(root, "src", "voice_input.py")

@@ -1,15 +1,17 @@
 # Privox Release Notes
 
-## Experimental: Worker-Process VRAM Isolation (opt-in, source/dev)
+## Worker-Process VRAM Isolation (near-zero idle VRAM)
 
-**Status:** Experimental — **opt-in** via the `PRIVOX_WORKER_ISOLATION=1` environment variable. Currently available only when **running from source / Pixi** (`run_dev.bat` / `pixi run start-worker-isolation`); the packaged **Privox.exe** still uses the in-process engine and is unchanged by these notes.
+**Status:** Enabled by default for the **packaged app** and the `pixi run start-worker-isolation` dev task (`run_dev.bat`). Set `PRIVOX_WORKER_ISOLATION=0` to fall back to the legacy in-process engine.
 
-This work lets Privox run the heavy ASR + refiner models inside a **separate, killable worker process** so the operating system can reclaim *all* GPU memory when idle — including the PyTorch/CUDA hardware context that `torch.cuda.empty_cache()` can never release inside a long-lived process.
+Privox now runs the heavy ASR + refiner models inside a **separate, killable worker process** so the operating system can reclaim *all* GPU memory when idle — including the PyTorch/CUDA hardware context that `torch.cuda.empty_cache()` can never release inside a long-lived process.
+
+> The packaged `Privox.exe` is the installer/launcher and runs `src/voice_input.py` under the bundled Pixi `pythonw.exe` (not a frozen binary), so it can spawn the worker directly without a dedicated frozen entry point.
 
 ### 🚀 Improvements
 
-- **Near-zero idle VRAM**: When the VRAM Saver triggers, Privox now **terminates the inference worker process** instead of merely unloading model weights. This frees the entire GPU footprint (model weights **plus** the ~1–1.5 GB CUDA/cuDNN/cuBLAS context), bringing idle VRAM down to essentially **0**.
-- **Faster wake from idle (~11 s, down from ~13 s)**: A never-loaded **"warm" worker** is pre-spawned in the background, so it has already paid the process-spawn and `import` cost (~4–5 s) while holding ~0 VRAM. Waking from idle then only needs to load the model weights. The remaining time is dominated by the Qwen3-ASR load (~8 s).
+- **Near-zero idle VRAM**: When the VRAM Saver triggers, Privox now **terminates the inference worker process** instead of merely unloading model weights. This frees the entire GPU footprint (model weights **plus** the ~1–1.5 GB CUDA/cuDNN/cuBLAS context), bringing idle VRAM down to essentially **0**. (Set the VRAM Saver timeout to **0** to keep the worker resident for instant response.)
+- **Faster wake from idle (~10–12 s)**: A never-loaded **"warm" worker** is pre-spawned in the background, so it has already paid the process-spawn and `import` cost (~4–5 s) while holding ~0 VRAM. Waking from idle then only needs to load the model weights. The remaining time is dominated by the Qwen3-ASR load (~8 s).
 - **Two-tier idle policy**:
   - At the **VRAM Saver timeout** (`vram_timeout`, default 60 s) a *loaded* worker is killed and a fresh **warm** worker is respawned in the background — idle VRAM stays ~0 while keeping the next wake fast.
   - After **extended idle** (`worker_kill_timeout`, default 600 s; override with `PRIVOX_WORKER_KILL_TIMEOUT` or the `worker_kill_timeout` preference) the warm worker is also terminated to release its system RAM.
@@ -19,7 +21,7 @@ This work lets Privox run the heavy ASR + refiner models inside a **separate, ki
 
 - New modules: `src/privox_ipc.py` (length-prefixed framing over a local TCP socket) and `src/privox_worker.py` (the headless inference engine, reusing `VoiceInputApp` in `PRIVOX_ENGINE_MODE`).
 - The main process keeps the tray, hotkey, microphone, VAD (CPU) and clipboard; only audio → refined-text inference is delegated to the worker.
-- A packaged-EXE entry point for the worker is **future work**; until then, frozen builds automatically fall back to the existing in-process path.
+- `bootstrap.run_app` sets `PRIVOX_WORKER_ISOLATION=1` for packaged launches; a truly frozen build of `voice_input.py` itself (not how Privox is currently packaged) would still fall back to the in-process path.
 
 ---
 

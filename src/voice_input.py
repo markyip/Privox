@@ -796,13 +796,17 @@ ENGINE_MODE = (os.environ.get("PRIVOX_ENGINE_MODE") or "").strip().lower() in ("
 def _worker_isolation_enabled() -> bool:
     """Run ASR + refiner in a separate killable subprocess so idle frees ALL VRAM.
 
-    Opt-in while we validate wake latency: set PRIVOX_WORKER_ISOLATION=1 to enable.
+    Enabled via PRIVOX_WORKER_ISOLATION (set to 1 in dev by `pixi run start-worker-isolation`
+    and by default for packaged launches in bootstrap.run_app). The packaged app runs this file
+    under the real Pixi pythonw.exe (NOT a frozen binary), so spawning `pythonw privox_worker.py`
+    works without a dedicated frozen entry point.
     Never enabled inside the worker itself (that process IS the engine).
     """
     if ENGINE_MODE:
         return False
-    # Frozen EXE cannot spawn `python privox_worker.py`; needs a dedicated --worker entry
-    # (future work). Until then, fall back to the in-process path in packaged builds.
+    # A truly frozen build of voice_input itself could not spawn `python privox_worker.py`
+    # (no interpreter); it would need a dedicated --worker entry. The current packaging launches
+    # this file under Pixi python, so sys.frozen is False here and this guard is a safety net only.
     if getattr(sys, "frozen", False):
         return False
     return (os.environ.get("PRIVOX_WORKER_ISOLATION") or "").strip().lower() in ("1", "true", "yes", "on")

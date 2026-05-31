@@ -15,6 +15,8 @@ This release polishes first-run installation, tray and settings UX, idle-wake fe
 
 ### 🚀 Improvements
 
+- **Faster idle wake-to-transcribe**: The inference worker loads **Qwen ASR first** and reports ready before the Gemma refiner finishes; refiner loads in the background. Main process uses a **single background load** on hotkey-down and when recording starts (overlaps speech with model load). Sequential in-process wake also loads ASR before refiner; parallel load threshold lowered to **10 GiB** VRAM.
+- **ASR rolled back to Qwen-ASR v3 only**: Default speech model is again **Qwen-ASR v3 0.6B** (optional **1.7B** in Settings). Legacy faster-whisper / Distil / Whisper presets are removed from the catalog; old `config.json` and `.user_prefs.json` values migrate automatically on load.
 - **Clearer Gemma 4 refiner names in Settings**: Lists **Gemma 4 E2B IT** and **Gemma 4 E4B IT (TurboQuant)** with migration from older misleading labels; default refiner aligned to the E2B IT profile.
 - **PyTorch 2.10 + CUDA 12.8** in the Pixi environment (`torch` / `torchaudio` cu128 wheels) for current NVIDIA drivers.
 - **llama-cpp CUDA install**: `install-llama-cuda` and model download flows try **cu128 → cu126 → cu125 → cu124** wheels, then fall back to a local source build when needed.

@@ -19,14 +19,70 @@ def scrub_obsolete_user_pref_keys(prefs: dict) -> bool:
     return changed
 
 
-# --- Voice-to-Text (ASR) Library ---
+# --- Voice-to-Text (ASR) Library — Qwen3-ASR only ---
 ASR_LIBRARY = [
-    {"name": "Distil-Whisper Large v3 (English)", "whisper_repo": "Systran/faster-distil-whisper-large-v3", "whisper_model": "distil-large-v3", "repo": "Systran/faster-distil-whisper-large-v3", "description": "Fast & High Quality. Best accuracy with distilled architecture."},
-    {"name": "OpenAI Whisper Small", "whisper_repo": "openai/whisper-small", "whisper_model": "small", "repo": "openai/whisper-small", "description": "Quick processing for low-resource environments."},
-    {"name": "Qwen-ASR v3 0.6B", "whisper_repo": "Qwen/Qwen3-ASR-0.6B", "whisper_model": "qwen3-asr-0.6b", "repo": "Qwen/Qwen3-ASR-0.6B", "backend": "qwen_asr", "description": "Ultra-fast Qwen v3 ASR."},
-    {"name": "Qwen-ASR v3 1.7B", "whisper_repo": "Qwen/Qwen3-ASR-1.7B", "whisper_model": "qwen3-asr-1.7b", "repo": "Qwen/Qwen3-ASR-1.7B", "backend": "qwen_asr", "description": "Powerful Qwen v3 ASR."},
-    {"name": "Whisper Large v3 Turbo (Multilingual)", "whisper_repo": "deepdml/faster-whisper-large-v3-turbo-ct2", "whisper_model": "large-v3-turbo", "repo": "deepdml/faster-whisper-large-v3-turbo-ct2", "description": "Distilled Large v3 Turbo (CT2): fast multilingual; good all-rounder. Code-mixing is still imperfect vs full Large v3."},
+    {
+        "name": "Qwen-ASR v3 0.6B",
+        "whisper_repo": "Qwen/Qwen3-ASR-0.6B",
+        "whisper_model": "qwen3-asr-0.6b",
+        "repo": "Qwen/Qwen3-ASR-0.6B",
+        "backend": "qwen_asr",
+        "description": "Default. Fast Qwen3 ASR — strong multilingual and code-mixed speech.",
+    },
+    {
+        "name": "Qwen-ASR v3 1.7B",
+        "whisper_repo": "Qwen/Qwen3-ASR-1.7B",
+        "whisper_model": "qwen3-asr-1.7b",
+        "repo": "Qwen/Qwen3-ASR-1.7B",
+        "backend": "qwen_asr",
+        "description": "Higher-quality Qwen3 ASR. Uses more VRAM than 0.6B.",
+    },
 ]
+
+# Legacy Settings labels / folder ids → current Qwen display name.
+ASR_NAME_MIGRATIONS: dict[str, str] = {
+    "Distil-Whisper Large v3 (English)": "Qwen-ASR v3 0.6B",
+    "OpenAI Whisper Small": "Qwen-ASR v3 0.6B",
+    "Whisper Large v3 Turbo (Multilingual)": "Qwen-ASR v3 0.6B",
+    "Whisper Large v3 Turbo (Cantonese)": "Qwen-ASR v3 0.6B",
+    "Qwen3-ASR 0.6B (Multilingual)": "Qwen-ASR v3 0.6B",
+    "Qwen3-ASR 1.7B (Multilingual)": "Qwen-ASR v3 1.7B",
+    "distil-large-v3": "Qwen-ASR v3 0.6B",
+    "small": "Qwen-ASR v3 0.6B",
+    "large-v3-turbo": "Qwen-ASR v3 0.6B",
+}
+
+# Legacy config.json whisper_model folder ids → current folder id.
+ASR_FOLDER_ID_MIGRATIONS: dict[str, str] = {
+    "distil-large-v3": "qwen3-asr-0.6b",
+    "small": "qwen3-asr-0.6b",
+    "large-v3-turbo": "qwen3-asr-0.6b",
+}
+
+
+def migrate_asr_display_name(name: str | None) -> str:
+    """Map legacy ASR combo labels to a current Qwen-ASR v3 display name."""
+    if not name:
+        return DEFAULT_ASR
+    if name in ASR_NAME_MIGRATIONS:
+        return ASR_NAME_MIGRATIONS[name]
+    for m in ASR_LIBRARY:
+        if m["name"] == name or m.get("whisper_model") == name:
+            return m["name"]
+    return DEFAULT_ASR
+
+
+def migrate_asr_folder_id(folder_id: str | None) -> str:
+    """Map legacy whisper-* folder ids to a current Qwen folder id."""
+    if not folder_id:
+        return DEFAULT_ASR_WHISPER_MODEL
+    key = str(folder_id).strip()
+    if key in ASR_FOLDER_ID_MIGRATIONS:
+        return ASR_FOLDER_ID_MIGRATIONS[key]
+    for m in ASR_LIBRARY:
+        if m.get("whisper_model") == key:
+            return key
+    return DEFAULT_ASR_WHISPER_MODEL
 
 # --- Refiner (LLM) Library ---
 # Display names use "IT" for the main instruction-tuned checkpoints (google/gemma-4-*-it).
@@ -88,11 +144,10 @@ def refiner_gguf_min_complete_bytes(file_name: str) -> int:
 
 
 # --- Defaults ---
-# Default ASR uses faster-whisper (CTranslate2) — no PyTorch for transcription.
 # Display name as stored in .user_prefs.json / ASR combo (must match ASR_LIBRARY "name").
-DEFAULT_ASR = "Distil-Whisper Large v3 (English)"
+DEFAULT_ASR = "Qwen-ASR v3 0.6B"
 # Folder id under models/whisper-<id> and config.json "whisper_model" (keep in sync with ASR_LIBRARY entry).
-DEFAULT_ASR_WHISPER_MODEL = "distil-large-v3"
+DEFAULT_ASR_WHISPER_MODEL = "qwen3-asr-0.6b"
 DEFAULT_LLM = "Gemma 4 E2B IT (TurboQuant)"
 
 # --- Persona Lenses ---

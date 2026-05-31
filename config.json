@@ -1,7 +1,7 @@
 {
-    "asr_backend": "whisper",
-    "whisper_repo": "Systran/faster-distil-whisper-large-v3",
-    "whisper_model": "distil-large-v3",
+    "asr_backend": "qwen_asr",
+    "whisper_repo": "Qwen/Qwen3-ASR-0.6B",
+    "whisper_model": "qwen3-asr-0.6b",
     "grammar_repo": "unsloth/gemma-4-E2B-it-GGUF",
     "grammar_file": "gemma-4-E2B-it-Q4_K_M.gguf",
     "active_character": "Professional Refiner",

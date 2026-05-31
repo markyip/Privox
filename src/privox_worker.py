@@ -139,12 +139,19 @@ class InferenceWorker:
 
     def _handle_reload(self) -> dict:
         try:
+            asr_reload = False
             if self.app is not None and hasattr(self.app, "load_config"):
                 self.app.load_config()
+                if hasattr(self.app, "_reload_asr_if_preset_changed"):
+                    asr_reload = bool(self.app._reload_asr_if_preset_changed())
                 # Refiner persona/dictionary live on the grammar checker; refresh them.
                 if hasattr(self.app, "_sync_refiner_from_config"):
                     self.app._sync_refiner_from_config()
-            return {"cmd": "ack", "ok": True}
+            if asr_reload:
+                self._ready = False
+                self._load_error = ""
+                self._start_load()
+            return {"cmd": "ack", "ok": True, "asr_reload": asr_reload}
         except Exception as e:
             return {"cmd": "ack", "ok": False, "detail": str(e)}
 

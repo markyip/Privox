@@ -214,7 +214,7 @@ def verify_required_models(target_dir):
         grammar_file = cfg.get("grammar_file")
         # Default folder id — keep in sync with models_config.DEFAULT_ASR_WHISPER_MODEL
         whisper_model = cfg.get("whisper_model", models_config.DEFAULT_ASR_WHISPER_MODEL)
-        asr_backend = cfg.get("asr_backend", "whisper")
+        asr_backend = cfg.get("asr_backend", "qwen_asr")
         if not grammar_file:
             return False, "Missing grammar_file in config.json"
 

@@ -25,7 +25,7 @@ start-windowless = { cmd = "pythonw src/voice_input.py", env = { PYTHONNOUSERSIT
 
 start-worker-isolation = { cmd = "python src/voice_input.py", env = { PRIVOX_WORKER_ISOLATION = "1", PYTHONNOUSERSITE = "1" } }
 
-# CTranslate2 ASR path: if .user_prefs.json chose Qwen/SenseVoice, falls back to default faster-whisper; otherwise keeps your Whisper preset (e.g. Multilingual Turbo). PyTorch still used for Silero VAD unless NO_TORCH.
+# Legacy dev flag (faster-whisper ASR removed; app uses Qwen-ASR v3 only).
 
 start-ct2-asr = { cmd = "python src/voice_input.py", env = { PRIVOX_CT2_ASR = "1", PYTHONNOUSERSITE = "1" } }
 
@@ -33,9 +33,9 @@ start-windowless-ct2-asr = { cmd = "pythonw src/voice_input.py", env = { PRIVOX_
 
 # No PyTorch: WebRTC VAD + faster-whisper (same ASR preset rule as PRIVOX_CT2_ASR for non?yTorch backends).
 
-start-no-torch = { cmd = "python src/voice_input.py", env = { PRIVOX_NO_TORCH = "1", PRIVOX_CT2_ASR = "1", PYTHONNOUSERSITE = "1" } }
+start-no-torch = { cmd = "python src/voice_input.py", env = { PRIVOX_NO_TORCH = "1", PYTHONNOUSERSITE = "1" } }
 
-start-windowless-no-torch = { cmd = "pythonw src/voice_input.py", env = { PRIVOX_NO_TORCH = "1", PRIVOX_CT2_ASR = "1", PYTHONNOUSERSITE = "1" } }
+start-windowless-no-torch = { cmd = "pythonw src/voice_input.py", env = { PRIVOX_NO_TORCH = "1", PYTHONNOUSERSITE = "1" } }
 
 # Shorthand: same env as start-no-torch (people often try `pixi run no-torch`).
 
@@ -45,7 +45,7 @@ start-windowless-no-torch = { cmd = "pythonw src/voice_input.py", env = { PRIVOX
 
 # or .\run-no-torch.ps1 / run-no-torch.cmd (uses .pixi env python directly; no sync).
 
-no-torch = { cmd = "python src/voice_input.py", env = { PRIVOX_NO_TORCH = "1", PRIVOX_CT2_ASR = "1", PYTHONNOUSERSITE = "1" } }
+no-torch = { cmd = "python src/voice_input.py", env = { PRIVOX_NO_TORCH = "1", PYTHONNOUSERSITE = "1" } }
 
 # Full app env (voice_input imports, PATH/DLL), then CT2 benchmark only ??no tray. Example:
 
@@ -150,8 +150,6 @@ pillow = "*"
 pyperclip = "*"
 
 huggingface_hub = "*"
-
-faster-whisper = "*"
 
 librosa = ">=0.10.0"
 

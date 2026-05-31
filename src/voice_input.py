@@ -835,9 +835,9 @@ INITIAL_SPEECH_ENERGY_RMS = 0.00085
 
 # Models
 # Models
-WHISPER_SIZE = "distil-large-v3" 
-WHISPER_REPO = "Systran/faster-distil-whisper-large-v3"
-ASR_BACKEND = "whisper" # Default: whisper or sensevoice
+WHISPER_SIZE = "qwen3-asr-0.6b"
+WHISPER_REPO = "Qwen/Qwen3-ASR-0.6B"
+ASR_BACKEND = "qwen_asr"
 # Optional ISO code passed to faster-whisper (e.g. yue for Cantonese-tuned checkpoints).
 WHISPER_TRANSCRIBE_LANGUAGE = None
 
@@ -871,11 +871,6 @@ class SoundManager:
             winsound.Beep(1000, 150)
         except Exception as e:
             log_print(f"Sound Error: {e}")
-
-    def play_engine_ready(self):
-        """One short tick when the worker finished loading while the user is already recording."""
-        if self.enabled:
-            threading.Thread(target=self._play, args=(880, 70), daemon=True).start()
 
     def play_stop(self):
         if self.enabled:
@@ -2328,7 +2323,7 @@ class VoiceInputApp:
         # If True, user stopped recording (toggle or auto-stop) while ASR/LLM were still loading —
         # do not auto-start again when load finishes (avoids phantom sessions after VRAM saver wake).
         self._wakeup_autostart_cancelled = False
-        self._awaiting_wake_ready_chime = False  # play_ready after worker/in-process load while recording
+        self._awaiting_wake_ready_chime = False  # play_ready after idle load when not yet recording
         self._worker_load_in_progress = False
         self._heavy_model_load_in_progress = False  # suppress prefs hot-reload during ASR/LLM init
         self.last_model_error = ""
@@ -2360,6 +2355,8 @@ class VoiceInputApp:
         self._worker = None
         self._worker_lock = threading.Lock()
         self._worker_ready = False  # True once the worker reports models loaded
+        self._worker_load_thread = None  # single-flight background load after idle wake
+        self._worker_load_lock = threading.Lock()
 
         # Engine mode (privox_worker.py): the worker drives model loading explicitly via
         # load_heavy_models(); do not auto-start initial_load (which also loads CPU VAD we don't need).
@@ -2596,11 +2593,69 @@ class VoiceInputApp:
             )
             return
 
+    def _needs_asr_reload(self) -> bool:
+        """True when settings point at a different ASR than the model currently in RAM."""
+        loaded = getattr(self, "_asr_loaded_key", None)
+        if loaded is None:
+            return False
+        return loaded != (ASR_BACKEND, WHISPER_SIZE)
+
+    def _unload_asr_model_only(self):
+        """Drop the resident ASR weights without unloading the refiner."""
+        if self.asr_model is None:
+            self._asr_held_key = None
+            return
+        log_print("Unloading previous ASR model from VRAM...")
+        try:
+            _inner = getattr(self.asr_model, "model", None)
+            if _inner is not None:
+                if getattr(_inner, "hf_device_map", None):
+                    from accelerate.hooks import remove_hook_from_module
+                    remove_hook_from_module(_inner, recurse=True)
+                if hasattr(_inner, "cpu"):
+                    _inner.cpu()
+                del _inner
+                if hasattr(self.asr_model, "model"):
+                    self.asr_model.model = None
+        except Exception:
+            pass
+        try:
+            import accelerate
+            accelerate.utils.release_memory(self.asr_model)
+        except Exception:
+            pass
+        self.asr_model = None
+        self._asr_held_key = None
+        self._asr_loaded_key = None
+        import gc
+        gc.collect()
+        if torch is not None:
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
+
+    def _reload_asr_if_preset_changed(self) -> bool:
+        """Settings changed ASR; clear stale weights so the next load uses the new backend."""
+        if not self._needs_asr_reload():
+            return False
+        old = getattr(self, "_asr_loaded_key", None)
+        log_print(
+            f"ASR preset changed ({old} -> {(ASR_BACKEND, WHISPER_SIZE)}). "
+            "Unloading previous ASR; will reload on next transcription."
+        )
+        self._unload_asr_model_only()
+        self.heavy_models_loaded = False
+        return True
+
     def load_heavy_models(self):
         """Concurrent loading of ASR and Grammar models to minimize wake-up latency."""
         with self.model_lock:
-            if self.heavy_models_loaded:
+            if self.heavy_models_loaded and not self._needs_asr_reload():
                 return
+            if self.heavy_models_loaded and self._needs_asr_reload():
+                self._reload_asr_if_preset_changed()
 
             self._heavy_model_load_in_progress = True
             try:
@@ -2919,9 +2974,34 @@ class VoiceInputApp:
                     if not cuda_is_available():
                         return False  # CPU-only: parallel just saturates cores, no real win
                     try:
-                        return cuda_device_total_memory_gib(0) >= 12.0
+                        # 10 GiB+ : parallel ASR+refiner load (~max of the two) vs sequential sum.
+                        return cuda_device_total_memory_gib(0) >= 10.0
                     except Exception:
                         return False
+
+                # Worker: load Qwen ASR first and ping "ready" before Gemma refiner finishes.
+                if ENGINE_MODE:
+                    log_print("Worker: loading ASR first (refiner continues in background)...")
+                    res_asr = _do_load_models()
+                    if not res_asr:
+                        return
+                    self.heavy_models_loaded = True
+                    self.model_load_stage = "loading_grammar"
+                    self.loading_status = "Ready"
+                    log_vram_usage("Post-ASR (refiner loading in background)")
+
+                    def _finish_grammar():
+                        try:
+                            g_ok = load_grammar()
+                            if g_ok:
+                                log_print("Worker: refiner load finished.")
+                            else:
+                                log_print("Worker: refiner load failed (ASR still available).")
+                        except Exception as _g_err:
+                            log_print(f"Worker: refiner background load error: {_g_err}")
+
+                    threading.Thread(target=_finish_grammar, daemon=True, name="privox-worker-grammar").start()
+                    return
 
                 use_parallel = _parallel_load_enabled()
 
@@ -2961,20 +3041,21 @@ class VoiceInputApp:
                         res_asr = _load_results.get("asr", False)
                         res_grammar = _load_results.get("grammar", False)
                     else:
-                        log_print("Using Sequential Load Strategy to prevent CPU spikes...")
-                        res_grammar = load_grammar()
-                        # Flush any VRAM transiently used during grammar init before ASR claims GPU memory.
-                        _t2 = get_torch()
-                        if _t2 is not None:
-                            try:
-                                import gc as _gc
-                                _gc.collect()
-                                if _t2.cuda.is_available():
-                                    _t2.cuda.empty_cache()
-                                    log_print("VRAM cache flushed between grammar and ASR load.")
-                            except Exception as _flush_err:
-                                log_print(f"VRAM flush warning (non-fatal): {_flush_err}")
+                        log_print("Using Sequential Load Strategy (ASR first, then refiner)...")
                         res_asr = _do_load_models()
+                        if not res_asr:
+                            res_grammar = False
+                        else:
+                            _t2 = get_torch()
+                            if _t2 is not None:
+                                try:
+                                    import gc as _gc
+                                    _gc.collect()
+                                    if _t2.cuda.is_available():
+                                        _t2.cuda.empty_cache()
+                                except Exception as _flush_err:
+                                    log_print(f"VRAM flush warning (non-fatal): {_flush_err}")
+                            res_grammar = load_grammar()
                 finally:
                     if _t is not None:
                         try:
@@ -3382,7 +3463,9 @@ class VoiceInputApp:
             global WHISPER_SIZE, WHISPER_REPO, ASR_BACKEND, WHISPER_TRANSCRIBE_LANGUAGE
             old_whisper = WHISPER_SIZE
             _wm_pref = prefs.get("whisper_model")
-            _prefs_wm_missing = not _wm_pref
+            if _wm_pref:
+                _wm_pref = models_config.migrate_asr_display_name(_wm_pref)
+            _prefs_wm_missing = not prefs.get("whisper_model")
             if not _wm_pref:
                 _wr_cfg = (config.get("whisper_repo") or "").strip()
                 if _wr_cfg:
@@ -3398,41 +3481,17 @@ class VoiceInputApp:
                 self._update_user_prefs(lambda p: p.__setitem__("whisper_model", _wm_save))
             self.active_asr_name = _wm_pref
             active_asr = self.active_asr_name
-            _ct2_env = (os.environ.get("PRIVOX_CT2_ASR") or "").strip().lower()
-            _force_whisper = _ct2_env in ("1", "true", "yes", "on") or NO_TORCH
-            if _force_whisper:
-                # Only replace the user's Settings choice when it is a PyTorch ASR (Qwen / SenseVoice).
-                # PRIVOX_CT2_ASR / NO_TORCH must not clobber a saved faster-whisper model (e.g. Large v3 Turbo).
-                _saved_for_ct2 = active_asr
-                _needs_torch_asr = False
-                for asr in self.asr_library:
-                    if asr["name"] == _saved_for_ct2 or asr.get("whisper_model") == _saved_for_ct2:
-                        _needs_torch_asr = asr.get("backend", "whisper") in ("qwen_asr", "sensevoice")
-                        break
-                if _needs_torch_asr:
-                    active_asr = models_config.DEFAULT_ASR
-                    self.active_asr_name = active_asr
-                    log_print(
-                        "PRIVOX_CT2_ASR / PRIVOX_NO_TORCH: saved ASR needs PyTorch — "
-                        f"switched to default faster-whisper ({models_config.DEFAULT_ASR})."
-                    )
-                if NO_TORCH:
-                    log_print(
-                        "PRIVOX_NO_TORCH: WebRTC VAD; PyTorch ASR (Qwen-ASR / SenseVoice) disabled — "
-                        "faster-whisper (CT2) and/or Qwen ONNX ASR still allowed."
-                    )
-                if _ct2_env in ("1", "true", "yes", "on") and not _needs_torch_asr:
-                    log_print(
-                        "PRIVOX_CT2_ASR: CTranslate2 ASR path — "
-                        f"using whisper_model from settings ({_saved_for_ct2})."
-                    )
+            if NO_TORCH:
+                log_print(
+                    "PRIVOX_NO_TORCH: WebRTC VAD only — Qwen-ASR requires PyTorch; unset PRIVOX_NO_TORCH for transcription."
+                )
 
             # Find in library
-            WHISPER_REPO = "Systran/faster-distil-whisper-large-v3" # Defaults
-            WHISPER_SIZE = "distil-large-v3"
+            WHISPER_REPO = "Qwen/Qwen3-ASR-0.6B"
+            WHISPER_SIZE = models_config.DEFAULT_ASR_WHISPER_MODEL
             WHISPER_TRANSCRIBE_LANGUAGE = None
 
-            ASR_BACKEND = "whisper"
+            ASR_BACKEND = "qwen_asr"
             matched_asr = False
             for asr in self.asr_library:
                 if asr["name"] == active_asr or asr.get("whisper_model") == active_asr:
@@ -3459,11 +3518,11 @@ class VoiceInputApp:
                         self.active_asr_name = asr["name"]
                         break
 
-            if NO_TORCH and ASR_BACKEND in ("qwen_asr", "sensevoice"):
+            if ASR_BACKEND != "qwen_asr":
                 log_print(
-                    f"PRIVOX_NO_TORCH: ASR backend '{ASR_BACKEND}' needs PyTorch; using faster-whisper defaults."
+                    f"ASR backend '{ASR_BACKEND}' is no longer supported; using {models_config.DEFAULT_ASR}."
                 )
-                ASR_BACKEND = "whisper"
+                ASR_BACKEND = "qwen_asr"
                 for asr in self.asr_library:
                     if asr.get("name") == models_config.DEFAULT_ASR:
                         WHISPER_REPO = asr.get("whisper_repo") or asr.get("repo") or WHISPER_REPO
@@ -3473,13 +3532,31 @@ class VoiceInputApp:
                         self.active_asr_name = asr["name"]
                         break
 
-            if getattr(self, "heavy_models_loaded", False) and getattr(self, "_asr_loaded_key", None) is not None:
-                if self._asr_loaded_key != (ASR_BACKEND, WHISPER_SIZE):
-                    log_print(
-                        "ASR preset changed (settings) but the previous ASR is still loaded. "
-                        "Restart Privox, or wait for VRAM idle unload and transcribe again to load: "
-                        f"backend={ASR_BACKEND}, folder id={WHISPER_SIZE}."
-                    )
+            _new_asr_key = (ASR_BACKEND, WHISPER_SIZE)
+            _prev_asr_key = getattr(self, "_last_configured_asr_key", None)
+            self._last_configured_asr_key = _new_asr_key
+            if _prev_asr_key is not None and _prev_asr_key != _new_asr_key:
+                log_print(
+                    f"ASR preset changed ({_prev_asr_key} -> {_new_asr_key}). "
+                    "Scheduling reload of inference weights."
+                )
+                if _worker_isolation_enabled():
+                    self._worker_ready = False
+                    if self._worker is not None and self._worker.is_alive():
+                        try:
+                            resp = self._worker.request({"cmd": "reload_config"}, timeout=30.0)
+                            if resp and resp.get("asr_reload"):
+                                log_print("Inference worker is reloading ASR in the background.")
+                        except Exception as _w_err:
+                            log_print(f"Worker ASR reload failed ({_w_err}); respawning worker.")
+                            try:
+                                self._shutdown_worker()
+                            except Exception:
+                                pass
+                else:
+                    self._reload_asr_if_preset_changed()
+            elif self._needs_asr_reload():
+                self._reload_asr_if_preset_changed()
             
             # REMOVED cleanup_stale_models from here to prevent recursive reload loops
 
@@ -3994,6 +4071,12 @@ class VoiceInputApp:
             self.pending_wakeup = False
             self._awaiting_wake_ready_chime = False
             return
+        # Active recording: start beep already played; never add load-complete chimes mid-take.
+        if self.is_listening:
+            self._awaiting_wake_ready_chime = False
+            if self.pending_wakeup:
+                self.pending_wakeup = False
+            return
         if self.pending_wakeup and self.mic_active and not self.is_listening:
             self.pending_wakeup = False
             log_print("Wake load complete: auto-starting recording.")
@@ -4008,11 +4091,7 @@ class VoiceInputApp:
         )
         if models_ok and getattr(self, "_awaiting_wake_ready_chime", False):
             self._awaiting_wake_ready_chime = False
-            if self.is_listening:
-                # Single tick (not the old double-chime) so idle-wake sessions get clear feedback.
-                self.sound_manager.play_engine_ready()
-            else:
-                self.sound_manager.play_ready()
+            self.sound_manager.play_ready()
 
     def start_listening(self):
         self._cancel_paste_anchor_timer()
@@ -4026,7 +4105,7 @@ class VoiceInputApp:
         self._heard_voice_energy = False
         log_print("\n[Start Listening]", flush=True)
         if _worker_isolation_enabled() and not self._worker_ready:
-            self._awaiting_wake_ready_chime = True
+            self._schedule_worker_load()
         self.sound_manager.play_start()
         self.audio_buffer = []
         self._drain_audio_queue()
@@ -4168,7 +4247,7 @@ class VoiceInputApp:
             err = pong.get("error")
             if err:
                 log_print(f"Worker reported load error: {err}")
-            time.sleep(0.3)
+            time.sleep(0.15)
         log_print("Worker not ready within timeout; returning handle anyway.")
         return client
 
@@ -4184,17 +4263,26 @@ class VoiceInputApp:
             except Exception as e:
                 log_print(f"Worker shutdown error: {e}")
 
+    def _schedule_worker_load(self):
+        """Single background load after idle (hotkey-down / start_listening); avoids duplicate polls."""
+        if not _worker_isolation_enabled() or self._worker_ready:
+            return
+        with self._worker_load_lock:
+            t = getattr(self, "_worker_load_thread", None)
+            if t is not None and t.is_alive():
+                return
+            self._worker_load_thread = threading.Thread(
+                target=lambda: self._ensure_worker(wait_ready=True),
+                daemon=True,
+                name="privox-worker-load",
+            )
+            self._worker_load_thread.start()
+
     def _worker_warmup(self):
-        """Pre-spawn + load the worker in the background (called on hotkey-down) so the
-        first transcription after idle does not pay the full spawn+load cost serially."""
+        """Pre-spawn + load the worker in the background (called on hotkey-down)."""
         if not _worker_isolation_enabled():
             return
-        # If a WARM-FRESH (alive but not loaded) or no worker exists, trigger a full load.
-        if self._worker is not None and self._worker.is_alive() and self._worker_ready:
-            return
-        threading.Thread(
-            target=lambda: self._ensure_worker(wait_ready=True), daemon=True
-        ).start()
+        self._schedule_worker_load()
 
     def _respawn_warm_worker(self):
         """Background: kill any existing worker and spawn a fresh WARM-FRESH one (~0 VRAM).
@@ -4213,7 +4301,11 @@ class VoiceInputApp:
 
     def _transcribe_via_worker(self, audio_data, task_id):
         """Delegate ASR + refiner to the worker process, then paste in the main process."""
+        _wake_wait_start = time.time()
         client = self._ensure_worker(wait_ready=True)
+        _wake_wait_s = time.time() - _wake_wait_start
+        if _wake_wait_s > 1.0:
+            log_print(f"Worker ready wait before transcribe: {_wake_wait_s:.1f}s")
         if client is None:
             log_print("Worker unavailable; cannot transcribe.")
             self.loading_status = "ASR Error"
@@ -4232,7 +4324,14 @@ class VoiceInputApp:
             self.loading_status = "ASR Error"
             return
         if not resp.get("ok"):
-            log_print(f"Worker inference not ok: {resp.get('reason')} {resp.get('detail', '')}")
+            _reason = resp.get("reason", "")
+            _detail = resp.get("detail", "")
+            log_print(f"Worker inference not ok: {_reason} {_detail}")
+            if _reason == "asr_error":
+                self.loading_status = "ASR Error"
+                self.last_model_error = str(_detail or _reason)
+            elif _reason == "no_model":
+                self.loading_status = "ASR Error"
             return
         final_text = resp.get("final_text")
         if final_text is None or not str(final_text).strip():
@@ -4347,11 +4446,15 @@ class VoiceInputApp:
                     _asr_kw["initial_prompt"] = (
                         "Transcript may mix English and Chinese; keep each language in its usual spelling."
                     )
-                segments, info = self._run_with_timeout(
-                    lambda kw=_asr_kw: self.asr_model.transcribe(**kw),
-                    timeout_s=120,
-                    label="ASR transcribe",
-                )
+                try:
+                    segments, info = self._run_with_timeout(
+                        lambda kw=_asr_kw: self.asr_model.transcribe(**kw),
+                        timeout_s=120,
+                        label="ASR transcribe",
+                    )
+                except Exception as _asr_err:
+                    log_print(f"ASR transcribe failed: {_asr_err}")
+                    return {"ok": False, "reason": "asr_error", "detail": str(_asr_err)}
                 log_transcription(f" ASR Result - Language Detected: {info.language} ({info.language_probability:.2f})")
                 seg_results = []
                 for segment in segments:
@@ -5122,7 +5225,8 @@ class VoiceInputApp:
             if not self.mic_active:
                 if not self._worker_ready:
                     log_print("Wake accepted (microphone not active yet). Pre-loading engine...")
-                    self.sound_manager.play_wake()
+                    if not self.is_listening:
+                        self.sound_manager.play_wake()
                 else:
                     log_print("Ignored Hotkey: No Microphone Active")
                     self.sound_manager.play_error()
@@ -5175,7 +5279,8 @@ class VoiceInputApp:
                 or (not _worker_isolation_enabled() and not self.heavy_models_loaded)
             ):
                 log_print("Wake accepted (microphone not active yet). Models loading...")
-                self.sound_manager.play_wake()
+                if not self.is_listening:
+                    self.sound_manager.play_wake()
                 return
             log_print("Ignored Hotkey: No Microphone Active")
             self.sound_manager.play_error()

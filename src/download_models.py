@@ -74,13 +74,12 @@ def ensure_asr_snapshot(
 
 
 
-    if asr_backend == "qwen_asr":
+    if asr_backend != "qwen_asr":
+        raise RuntimeError(
+            f"Unsupported ASR backend {asr_backend!r}. Privox only supports Qwen-ASR v3 (qwen_asr)."
+        )
 
-        log_local("[ASR] Verifying Qwen-ASR (Transformers) files...")
-
-    else:
-
-        log_local("[ASR] Verifying faster-whisper / Whisper files...")
+    log_local("[ASR] Verifying Qwen-ASR (Transformers) files...")
 
 
 
@@ -104,11 +103,7 @@ def ensure_asr_snapshot(
 
 
 
-    critical_files = ["model.bin", "config.json", "tokenizer.json", "preprocessor_config.json"]
-
     needs_download = False
-
-
 
     if existing_repo != whisper_repo:
 
@@ -150,15 +145,8 @@ def ensure_asr_snapshot(
 
         needs_download = True
 
-    else:
-
-        for f in critical_files:
-
-            if not os.path.exists(os.path.join(whisper_target, f)):
-
-                needs_download = True
-
-                break
+    elif not os.path.exists(os.path.join(whisper_target, "config.json")):
+        needs_download = True
 
 
 
@@ -170,19 +158,10 @@ def ensure_asr_snapshot(
 
 
 
-    if asr_backend == "qwen_asr":
-
-        log_local(
-
-            f"Downloading Qwen-ASR from {whisper_repo} "
-
-            f"(local folder whisper-{whisper_model_name})."
-
-        )
-
-    else:
-
-        log_local(f"Downloading Whisper / CT2 weights ({whisper_model_name}) from {whisper_repo}...")
+    log_local(
+        f"Downloading Qwen-ASR from {whisper_repo} "
+        f"(local folder whisper-{whisper_model_name})."
+    )
 
     log_local("Note: Large models may take several minutes. Please wait.")
 
@@ -572,7 +551,7 @@ def main(log_callback=None):
 
     config_path = os.path.join(target_base_dir, "config.json")
 
-    asr_backend = _def_asr.get("backend", "whisper")
+    asr_backend = _def_asr.get("backend", "qwen_asr")
 
     if os.path.exists(config_path):
 
@@ -600,9 +579,35 @@ def main(log_callback=None):
 
             log_local(f"Config load error (using defaults): {e}")
 
-            asr_backend = "whisper"
+            asr_backend = "qwen_asr"
 
+    _qwen_ids = {
+        m.get("whisper_model")
+        for m in models_config.ASR_LIBRARY
+        if m.get("backend") == "qwen_asr"
+    }
+    if asr_backend != "qwen_asr" or whisper_model_name not in _qwen_ids:
+        log_local(
+            "Legacy faster-whisper ASR config detected — switching to "
+            f"{models_config.DEFAULT_ASR} ({models_config.DEFAULT_ASR_WHISPER_MODEL})."
+        )
+        whisper_model_name = models_config.DEFAULT_ASR_WHISPER_MODEL
+        whisper_repo = _def_asr["whisper_repo"]
+        asr_backend = "qwen_asr"
+        try:
+            if os.path.exists(config_path):
+                with open(config_path, "r", encoding="utf-8") as f:
+                    _cfg = json.load(f)
+                _cfg["asr_backend"] = "qwen_asr"
+                _cfg["whisper_model"] = whisper_model_name
+                _cfg["whisper_repo"] = whisper_repo
+                with open(config_path, "w", encoding="utf-8") as f:
+                    json.dump(_cfg, f, indent=4)
+                log_local("[ASR] Migrated config.json to Qwen-ASR v3 0.6B.")
+        except Exception as _cfg_err:
+            log_local(f"[ASR] Could not migrate config.json: {_cfg_err}")
 
+    whisper_model_name = models_config.migrate_asr_folder_id(whisper_model_name)
 
     _fixed_id = reconcile_whisper_model_folder_id(whisper_model_name, whisper_repo)
 

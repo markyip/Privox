@@ -667,14 +667,29 @@ class SettingsGUI(QMainWindow):
                 self.custom_prompts[key] = clean_prompt
                 self.prefs["custom_prompts"] = self.custom_prompts
 
-        # --- Migration: Unified Descriptive Naming ---
-        if self.prefs.get("whisper_model") == "distil-large-v3":
-            self.prefs["whisper_model"] = "Distil-Whisper Large v3 (English)"
+        # --- Migration: legacy ASR (Whisper / removed presets) → Qwen-ASR v3 ---
+        _wm_pref = self.prefs.get("whisper_model")
+        if _wm_pref:
+            self.prefs["whisper_model"] = models_config.migrate_asr_display_name(_wm_pref)
+        _wm_tech = self.tech_config.get("whisper_model")
+        if _wm_tech:
+            self.tech_config["whisper_model"] = models_config.migrate_asr_folder_id(_wm_tech)
+        self.tech_config["asr_backend"] = "qwen_asr"
+        _qwen_entry = next(
+            (m for m in models_config.ASR_LIBRARY if m.get("whisper_model") == self.tech_config.get("whisper_model")),
+            None,
+        )
+        if _qwen_entry is None:
+            self.tech_config["whisper_model"] = models_config.DEFAULT_ASR_WHISPER_MODEL
+            _qwen_entry = next(
+                m for m in models_config.ASR_LIBRARY
+                if m.get("whisper_model") == models_config.DEFAULT_ASR_WHISPER_MODEL
+            )
+        if _qwen_entry:
+            self.tech_config["whisper_repo"] = _qwen_entry.get("whisper_repo") or _qwen_entry.get("repo", "")
+
         if self.prefs.get("current_refiner") == "Standard (Llama 3.2)":
             self.prefs["current_refiner"] = models_config.DEFAULT_LLM
-        # If any of the above were found in tech_config but not yet in prefs, this ensures sync
-        if self.tech_config.get("whisper_model") == "distil-large-v3":
-            self.tech_config["whisper_model"] = "Distil-Whisper Large v3 (English)"
         if self.tech_config.get("current_refiner") == "Standard (Llama 3.2)":
             self.tech_config["current_refiner"] = models_config.DEFAULT_LLM
 
@@ -711,12 +726,7 @@ class SettingsGUI(QMainWindow):
 
     def _resolve_asr_display_name(self, value):
         """config.json may use whisper_model id; ASR combo uses ASR_LIBRARY display names."""
-        if not value:
-            return models_config.DEFAULT_ASR
-        for m in self.asr_library:
-            if m["name"] == value or m.get("whisper_model") == value:
-                return m["name"]
-        return models_config.DEFAULT_ASR
+        return models_config.migrate_asr_display_name(value)
 
     CRITICAL_RULES = models_config.CRITICAL_RULES
     DEFAULT_PROMPTS = models_config.DEFAULT_PROMPTS
@@ -1789,7 +1799,7 @@ class SettingsGUI(QMainWindow):
             if m["name"] == new_asr:
                 self.tech_config["whisper_model"] = m.get("whisper_model", "")
                 self.tech_config["whisper_repo"] = m.get("whisper_repo", "")
-                self.tech_config["asr_backend"] = m.get("backend", "whisper")
+                self.tech_config["asr_backend"] = m.get("backend", "qwen_asr")
                 break
         for m in self.llm_library:
             if m["name"] == new_llm:

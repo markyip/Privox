@@ -17,6 +17,32 @@ import urllib.request
 import models_config
 
 
+def _make_hf_progress_tqdm_class(progress_callback, progress_base: int = 0, progress_span: int = 100):
+    """Build a huggingface_hub tqdm class that forwards byte progress to a UI callback."""
+    if not progress_callback:
+        return None
+    try:
+        from huggingface_hub.utils import tqdm as hf_tqdm
+    except ImportError:
+        from tqdm.auto import tqdm as hf_tqdm
+
+    class PrivoxDownloadTqdm(hf_tqdm):
+        def update(self, n=1):
+            result = super().update(n)
+            try:
+                total = getattr(self, "total", None)
+                if total and total > 0:
+                    pct = min(100, int(100.0 * self.n / total))
+                    overall = progress_base + int(pct * progress_span / 100)
+                    desc = str(getattr(self, "desc", None) or "Downloading...")
+                    progress_callback(overall, desc)
+            except Exception:
+                pass
+            return result
+
+    return PrivoxDownloadTqdm
+
+
 
 
 
@@ -35,6 +61,12 @@ def ensure_asr_snapshot(
     asr_backend: str,
 
     log_local=None,
+
+    progress_callback=None,
+
+    progress_base: int = 70,
+
+    progress_span: int = 30,
 
 ) -> None:
 
@@ -74,12 +106,10 @@ def ensure_asr_snapshot(
 
 
 
-    if asr_backend != "qwen_asr":
-        raise RuntimeError(
-            f"Unsupported ASR backend {asr_backend!r}. Privox only supports Qwen-ASR v3 (qwen_asr)."
-        )
-
-    log_local("[ASR] Verifying Qwen-ASR (Transformers) files...")
+    if asr_backend == "qwen_asr":
+        log_local("[ASR] Verifying Qwen-ASR (Transformers) files...")
+    else:
+        log_local("[ASR] Verifying faster-whisper / Whisper files...")
 
 
 
@@ -145,8 +175,16 @@ def ensure_asr_snapshot(
 
         needs_download = True
 
-    elif not os.path.exists(os.path.join(whisper_target, "config.json")):
-        needs_download = True
+    else:
+        if asr_backend == "qwen_asr":
+            if not os.path.exists(os.path.join(whisper_target, "config.json")):
+                needs_download = True
+        else:
+            critical_files = ["model.bin", "config.json", "tokenizer.json", "preprocessor_config.json"]
+            for f in critical_files:
+                if not os.path.exists(os.path.join(whisper_target, f)):
+                    needs_download = True
+                    break
 
 
 
@@ -158,10 +196,13 @@ def ensure_asr_snapshot(
 
 
 
-    log_local(
-        f"Downloading Qwen-ASR from {whisper_repo} "
-        f"(local folder whisper-{whisper_model_name})."
-    )
+    if asr_backend == "qwen_asr":
+        log_local(
+            f"Downloading Qwen-ASR from {whisper_repo} "
+            f"(local folder whisper-{whisper_model_name})."
+        )
+    else:
+        log_local(f"Downloading Whisper / CT2 weights ({whisper_model_name}) from {whisper_repo}...")
 
     log_local("Note: Large models may take several minutes. Please wait.")
 
@@ -172,6 +213,12 @@ def ensure_asr_snapshot(
 
 
     dl_kw: dict = {"repo_id": whisper_repo, "local_dir": whisper_target}
+
+    tqdm_class = _make_hf_progress_tqdm_class(progress_callback, progress_base, progress_span)
+    if tqdm_class is not None:
+        os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "0"
+        dl_kw["tqdm_class"] = tqdm_class
+        progress_callback(max(1, progress_base), f"Preparing {whisper_model_name}...")
 
 
 
@@ -471,7 +518,7 @@ def reconcile_whisper_model_folder_id(whisper_model_name: str, whisper_repo: str
 
 
 
-def main(log_callback=None):
+def main(log_callback=None, progress_callback=None):
 
     def log_local(msg):
 
@@ -485,13 +532,27 @@ def main(log_callback=None):
 
 
 
+    def emit_progress(pct, detail=""):
+
+        if progress_callback:
+
+            try:
+
+                progress_callback(int(pct), str(detail or ""))
+
+            except Exception:
+
+                pass
+
+
+
     print(f"[DEBUG] download_models.main() entered with log_callback={log_callback}", flush=True)
 
     # huggingface_hub uses threaded tqdm for each file; mixed with [ModelSetup] lines it corrupts Windows consoles
 
     # (prompt glued to progress text, bars re-printing after "complete"). Disable tqdm for CLI unless user opted in.
 
-    if log_callback is None and os.environ.get("HF_HUB_DISABLE_PROGRESS_BARS") is None:
+    if log_callback is None and progress_callback is None and os.environ.get("HF_HUB_DISABLE_PROGRESS_BARS") is None:
 
         os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 
@@ -504,6 +565,7 @@ def main(log_callback=None):
         )
 
     log_local("Initializing model setup engine...")
+    emit_progress(1, "Initializing model setup engine...")
 
     # 0. Environment Isolation
 
@@ -581,31 +643,23 @@ def main(log_callback=None):
 
             asr_backend = "qwen_asr"
 
-    _qwen_ids = {
-        m.get("whisper_model")
-        for m in models_config.ASR_LIBRARY
-        if m.get("backend") == "qwen_asr"
-    }
-    if asr_backend != "qwen_asr" or whisper_model_name not in _qwen_ids:
-        log_local(
-            "Legacy faster-whisper ASR config detected — switching to "
-            f"{models_config.DEFAULT_ASR} ({models_config.DEFAULT_ASR_WHISPER_MODEL})."
-        )
-        whisper_model_name = models_config.DEFAULT_ASR_WHISPER_MODEL
-        whisper_repo = _def_asr["whisper_repo"]
-        asr_backend = "qwen_asr"
-        try:
-            if os.path.exists(config_path):
-                with open(config_path, "r", encoding="utf-8") as f:
-                    _cfg = json.load(f)
-                _cfg["asr_backend"] = "qwen_asr"
-                _cfg["whisper_model"] = whisper_model_name
-                _cfg["whisper_repo"] = whisper_repo
-                with open(config_path, "w", encoding="utf-8") as f:
-                    json.dump(_cfg, f, indent=4)
-                log_local("[ASR] Migrated config.json to Qwen-ASR v3 0.6B.")
-        except Exception as _cfg_err:
-            log_local(f"[ASR] Could not migrate config.json: {_cfg_err}")
+    _known_ids = {m.get("whisper_model") for m in models_config.ASR_LIBRARY if m.get("whisper_model")}
+    if whisper_model_name not in _known_ids:
+        for m in models_config.ASR_LIBRARY:
+            if (m.get("whisper_repo") or m.get("repo") or "").strip() == (whisper_repo or "").strip():
+                whisper_model_name = m["whisper_model"]
+                whisper_repo = m.get("whisper_repo") or m.get("repo")
+                asr_backend = m.get("backend", "whisper")
+                log_local(f"[ASR] Resolved unknown folder id from repo → {whisper_model_name}")
+                break
+        else:
+            log_local(
+                f"[ASR] Unknown whisper_model {whisper_model_name!r}; using default "
+                f"{models_config.DEFAULT_ASR}."
+            )
+            whisper_model_name = models_config.DEFAULT_ASR_WHISPER_MODEL
+            whisper_repo = _def_asr["whisper_repo"]
+            asr_backend = _def_asr.get("backend", "qwen_asr")
 
     whisper_model_name = models_config.migrate_asr_folder_id(whisper_model_name)
 
@@ -646,6 +700,7 @@ def main(log_callback=None):
 
 
     log_local("[Stage 1/4] Environment verification & configuration loading...")
+    emit_progress(5, "Verifying environment...")
 
 
 
@@ -706,6 +761,7 @@ def main(log_callback=None):
     # 0. Install Llama-cpp-python with CUDA support
 
     log_local("[Stage 2/4] Verifying LLM engine and CUDA dependencies...")
+    emit_progress(10, "Verifying LLM engine...")
 
     # We check for version AND CUDA support. 0.2.24 (common in conda) is too old for Llama 3.2.
 
@@ -1346,6 +1402,7 @@ def main(log_callback=None):
     # 1. Grammar Model (LLM Refiner)
 
     log_local("[Stage 3/4] Verifying LLM Grammar Model files...")
+    emit_progress(15, "Verifying refiner model...")
 
     grammar_target = os.path.join(models_dir, grammar_file)
 
@@ -1403,6 +1460,8 @@ def main(log_callback=None):
 
                 last_log = time.time()
 
+                last_ui = 0.0
+
                 with open(tmp_path, "wb") as f:
 
                     while True:
@@ -1418,6 +1477,16 @@ def main(log_callback=None):
                         downloaded += len(chunk)
 
                         now = time.time()
+
+                        if progress_callback and total > 0 and now - last_ui >= 0.25:
+
+                            pct = (downloaded / total) * 100
+
+                            overall = 15 + int(pct * 50 / 100)
+
+                            emit_progress(overall, f"{filename}: {pct:.0f}%")
+
+                            last_ui = now
 
                         if now - last_log >= 5:
 
@@ -1554,12 +1623,23 @@ def main(log_callback=None):
     # 2. ASR weights on disk (faster-whisper layout under models/whisper-<id>, or Qwen / ONNX snapshot)
 
     log_local("[Stage 4/4] Verifying speech / transcription model files...")
+    emit_progress(65, "Verifying speech model...")
 
-    ensure_asr_snapshot(target_base_dir, whisper_model_name, whisper_repo, asr_backend, log_local)
+    ensure_asr_snapshot(
+        target_base_dir,
+        whisper_model_name,
+        whisper_repo,
+        asr_backend,
+        log_local,
+        progress_callback=progress_callback,
+        progress_base=65,
+        progress_span=35,
+    )
 
 
 
     log_local("All AI models are verified and ready.")
+    emit_progress(100, "All models ready.")
 
 
 

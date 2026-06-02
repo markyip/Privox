@@ -151,6 +151,8 @@ pyperclip = "*"
 
 huggingface_hub = "*"
 
+faster-whisper = "*"
+
 librosa = ">=0.10.0"
 
 webrtcvad = "*"

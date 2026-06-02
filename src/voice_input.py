@@ -838,8 +838,10 @@ INITIAL_SPEECH_ENERGY_RMS = 0.00085
 WHISPER_SIZE = "qwen3-asr-0.6b"
 WHISPER_REPO = "Qwen/Qwen3-ASR-0.6B"
 ASR_BACKEND = "qwen_asr"
-# Optional ISO code passed to faster-whisper (e.g. yue for Cantonese-tuned checkpoints).
+# Optional ISO code passed to faster-whisper (e.g. en for English-only CT2).
 WHISPER_TRANSCRIBE_LANGUAGE = None
+# When True, use per-segment language ID + code-mix prompt instead of pinning one language.
+WHISPER_CODE_MIX = False
 
 # Fallback refiner when profile is empty (matches LLM_LIBRARY[0])
 GRAMMAR_REPO = models_config.LLM_LIBRARY[0]["repo_id"]
@@ -919,6 +921,50 @@ def _infer_language_from_transcript(text: str) -> tuple[str | None, float]:
     if latin >= total * 0.72:
         return "en", 0.75
     return None, 0.0
+
+
+def _build_faster_whisper_transcribe_kwargs(audio_data) -> dict:
+    """Build faster-whisper transcribe() kwargs (shared by in-process and worker inference)."""
+    _asr_kw: dict = dict(
+        audio=np.asarray(audio_data, dtype=np.float32),
+        task="transcribe",
+        beam_size=5,
+        vad_filter=True,
+        vad_parameters=dict(min_silence_duration_ms=500),
+    )
+    _seg_lid = (os.environ.get("PRIVOX_WHISPER_PER_SEGMENT_LANGUAGE") or "").strip().lower()
+    _use_per_segment_lang = _seg_lid not in ("0", "false", "no", "off")
+    _mix_prompt = (
+        models_config.WHISPER_CODE_MIX_PROMPT
+        if WHISPER_CODE_MIX
+        else "Transcript may mix English and Chinese; keep each language in its usual spelling."
+    )
+    if WHISPER_CODE_MIX:
+        # Always use per-segment LID for code-mix presets (do not pin yue for the whole clip).
+        _asr_kw["multilingual"] = True
+        _asr_kw["initial_prompt"] = _mix_prompt
+    elif WHISPER_TRANSCRIBE_LANGUAGE:
+        _asr_kw["language"] = WHISPER_TRANSCRIBE_LANGUAGE
+    elif _use_per_segment_lang:
+        _asr_kw["multilingual"] = True
+        _asr_kw["initial_prompt"] = _mix_prompt
+    return _asr_kw
+
+
+def _refiner_language_hint(
+    raw_text: str,
+    whisper_lang: str | None,
+    whisper_prob: float,
+) -> tuple[str | None, float]:
+    """Align refiner language hints with transcript script (avoid 'translate to Chinese' on English)."""
+    inf, iprob = _infer_language_from_transcript(raw_text)
+    if inf == "en" and iprob >= 0.72 and whisper_lang in ("yue", "zh", "chinese"):
+        return "en", max(whisper_prob, iprob)
+    if raw_text and _transcript_mixes_cjk_and_latin(raw_text):
+        return whisper_lang, whisper_prob
+    if inf and iprob >= 0.78 and whisper_lang in ("yue", "zh") and inf != whisper_lang:
+        return inf, iprob
+    return whisper_lang, whisper_prob
 
 
 # Distinctive Han forms: count to guess Traditional vs Simplified output (refiner often flips script).
@@ -1338,7 +1384,7 @@ class GrammarChecker:
             "large numbers → locale-appropriate grouping/unit words (e.g. 萬/億, 万/億, 만/억, lakh/crore, millions). "
             "Never invent unstated results or round beyond what was spoken."
         )
-        if language and language != "en" and language_prob > 0.4:
+        if language and language not in ("en",) and language_prob > 0.4:
             lang_name = models_config.ISO_LANGUAGE_MAP.get(language, language)
             # Do not replace the whole directive with "CLEAN <LANG>" when the utterance mixes CJK + Latin —
             # that wording pushes the model to translate English into Chinese (etc.).
@@ -2324,6 +2370,7 @@ class VoiceInputApp:
         # do not auto-start again when load finishes (avoids phantom sessions after VRAM saver wake).
         self._wakeup_autostart_cancelled = False
         self._awaiting_wake_ready_chime = False  # play_ready after idle load when not yet recording
+        self._defer_recording_feedback = False  # wake-from-idle: spinner + wake beep until engine ready
         self._worker_load_in_progress = False
         self._heavy_model_load_in_progress = False  # suppress prefs hot-reload during ASR/LLM init
         self.last_model_error = ""
@@ -2357,12 +2404,37 @@ class VoiceInputApp:
         self._worker_ready = False  # True once the worker reports models loaded
         self._worker_load_thread = None  # single-flight background load after idle wake
         self._worker_load_lock = threading.Lock()
+        self._wake_t0 = None
+        self._wake_t_last = None
 
         # Engine mode (privox_worker.py): the worker drives model loading explicitly via
         # load_heavy_models(); do not auto-start initial_load (which also loads CPU VAD we don't need).
         if not ENGINE_MODE:
             # Start loading threads
             threading.Thread(target=self.initial_load, daemon=True).start()
+
+    def _idle_preload_asr_enabled(self) -> bool:
+        """After tier-1 idle unload, optionally preload models on the WARM-FRESH worker (uses VRAM while idle).
+
+        Default off: tier 1 frees VRAM to ~0 and keeps it there until the next hotkey.
+        Set PRIVOX_IDLE_PRELOAD_ASR=1 for faster wake at the cost of re-occupying GPU memory while idle.
+        """
+        env = (os.environ.get("PRIVOX_IDLE_PRELOAD_ASR") or "0").strip().lower()
+        return env in ("1", "true", "yes", "on")
+
+    def _wake_timing_reset(self, label: str = "wake") -> None:
+        self._wake_t0 = time.monotonic()
+        self._wake_t_last = self._wake_t0
+        log_print(f"[Wake timing] --- {label} ---")
+
+    def _wake_timing_mark(self, phase: str) -> None:
+        if self._wake_t0 is None:
+            self._wake_timing_reset("implicit")
+        now = time.monotonic()
+        delta = now - self._wake_t_last
+        total = now - self._wake_t0
+        self._wake_t_last = now
+        log_print(f"[Wake timing] {phase}: +{delta:.2f}s (total {total:.2f}s)")
 
     def _emit_runtime_error(self, title, message, error_detail="", include_thread_dump=False):
         """Surface runtime errors for EXE mode where console logs are not visible."""
@@ -2660,6 +2732,8 @@ class VoiceInputApp:
             self._heavy_model_load_in_progress = True
             try:
                 log_print("Loading Heavy Models (Wake up)...")
+                if not ENGINE_MODE:
+                    self._wake_timing_mark("heavy-load-start")
                 self.loading_status = "Loading Models..."
                 
                 # Signal RECORDING immediately if user already hit hotkey during wake-up
@@ -2974,21 +3048,15 @@ class VoiceInputApp:
                     if not cuda_is_available():
                         return False  # CPU-only: parallel just saturates cores, no real win
                     try:
-                        # 10 GiB+ : parallel ASR+refiner load (~max of the two) vs sequential sum.
-                        return cuda_device_total_memory_gib(0) >= 10.0
+                        # 8 GiB+ : parallel ASR+refiner load (~max of the two) vs sequential sum.
+                        return cuda_device_total_memory_gib(0) >= 8.0
                     except Exception:
                         return False
 
-                # Worker: load Qwen ASR first and ping "ready" before Gemma refiner finishes.
+                # Worker: parallel ASR + refiner; report ready as soon as ASR finishes.
                 if ENGINE_MODE:
-                    log_print("Worker: loading ASR first (refiner continues in background)...")
-                    res_asr = _do_load_models()
-                    if not res_asr:
-                        return
-                    self.heavy_models_loaded = True
-                    self.model_load_stage = "loading_grammar"
-                    self.loading_status = "Ready"
-                    log_vram_usage("Post-ASR (refiner loading in background)")
+                    log_print("Worker: parallel ASR + refiner load (ready after ASR)...")
+                    self._wake_timing_mark("worker-load-start")
 
                     def _finish_grammar():
                         try:
@@ -3000,7 +3068,19 @@ class VoiceInputApp:
                         except Exception as _g_err:
                             log_print(f"Worker: refiner background load error: {_g_err}")
 
-                    threading.Thread(target=_finish_grammar, daemon=True, name="privox-worker-grammar").start()
+                    threading.Thread(
+                        target=_finish_grammar, daemon=True, name="privox-worker-grammar"
+                    ).start()
+                    _asr_t0 = time.time()
+                    res_asr = _do_load_models()
+                    if not res_asr:
+                        return
+                    self.heavy_models_loaded = True
+                    self.model_load_stage = "loading_grammar"
+                    self.loading_status = "Ready"
+                    log_print(f"Worker: ASR ready in {time.time() - _asr_t0:.2f}s (refiner still loading).")
+                    self._wake_timing_mark("worker-asr-ready")
+                    log_vram_usage("Post-ASR (refiner loading in background)")
                     return
 
                 use_parallel = _parallel_load_enabled()
@@ -3460,7 +3540,7 @@ class VoiceInputApp:
                 self.grammar_checker.use_simplified_chinese_output = self.use_simplified_chinese_output
             
             # ASR Model resolution
-            global WHISPER_SIZE, WHISPER_REPO, ASR_BACKEND, WHISPER_TRANSCRIBE_LANGUAGE
+            global WHISPER_SIZE, WHISPER_REPO, ASR_BACKEND, WHISPER_TRANSCRIBE_LANGUAGE, WHISPER_CODE_MIX
             old_whisper = WHISPER_SIZE
             _wm_pref = prefs.get("whisper_model")
             if _wm_pref:
@@ -3482,14 +3562,24 @@ class VoiceInputApp:
             self.active_asr_name = _wm_pref
             active_asr = self.active_asr_name
             if NO_TORCH:
-                log_print(
-                    "PRIVOX_NO_TORCH: WebRTC VAD only — Qwen-ASR requires PyTorch; unset PRIVOX_NO_TORCH for transcription."
-                )
+                _needs_torch = False
+                for asr in self.asr_library:
+                    if asr["name"] == active_asr or asr.get("whisper_model") == active_asr:
+                        _needs_torch = asr.get("backend", "whisper") in ("qwen_asr", "sensevoice")
+                        break
+                if _needs_torch:
+                    active_asr = models_config.DEFAULT_ASR_ENGLISH
+                    self.active_asr_name = active_asr
+                    log_print(
+                        "PRIVOX_NO_TORCH: PyTorch ASR disabled — using faster-whisper "
+                        f"({models_config.DEFAULT_ASR_ENGLISH})."
+                    )
 
             # Find in library
             WHISPER_REPO = "Qwen/Qwen3-ASR-0.6B"
             WHISPER_SIZE = models_config.DEFAULT_ASR_WHISPER_MODEL
             WHISPER_TRANSCRIBE_LANGUAGE = None
+            WHISPER_CODE_MIX = False
 
             ASR_BACKEND = "qwen_asr"
             matched_asr = False
@@ -3501,6 +3591,7 @@ class VoiceInputApp:
                     ASR_BACKEND = asr.get("backend", "whisper")
                     _wl = asr.get("whisper_language")
                     WHISPER_TRANSCRIBE_LANGUAGE = (_wl or "").strip() or None
+                    WHISPER_CODE_MIX = bool(asr.get("whisper_code_mix"))
                     matched_asr = True
                     break
             if not matched_asr and self.asr_library:
@@ -3515,20 +3606,23 @@ class VoiceInputApp:
                         ASR_BACKEND = asr.get("backend", "whisper")
                         _wl = asr.get("whisper_language")
                         WHISPER_TRANSCRIBE_LANGUAGE = (_wl or "").strip() or None
+                        WHISPER_CODE_MIX = bool(asr.get("whisper_code_mix"))
                         self.active_asr_name = asr["name"]
                         break
 
-            if ASR_BACKEND != "qwen_asr":
+            if NO_TORCH and ASR_BACKEND in ("qwen_asr", "sensevoice"):
                 log_print(
-                    f"ASR backend '{ASR_BACKEND}' is no longer supported; using {models_config.DEFAULT_ASR}."
+                    f"PRIVOX_NO_TORCH: ASR backend '{ASR_BACKEND}' needs PyTorch; "
+                    f"using {models_config.DEFAULT_ASR_ENGLISH}."
                 )
-                ASR_BACKEND = "qwen_asr"
+                ASR_BACKEND = "whisper"
                 for asr in self.asr_library:
-                    if asr.get("name") == models_config.DEFAULT_ASR:
+                    if asr.get("name") == models_config.DEFAULT_ASR_ENGLISH:
                         WHISPER_REPO = asr.get("whisper_repo") or asr.get("repo") or WHISPER_REPO
                         WHISPER_SIZE = asr.get("whisper_model") or asr.get("name") or WHISPER_SIZE
                         _wl = asr.get("whisper_language")
                         WHISPER_TRANSCRIBE_LANGUAGE = (_wl or "").strip() or None
+                        WHISPER_CODE_MIX = bool(asr.get("whisper_code_mix"))
                         self.active_asr_name = asr["name"]
                         break
 
@@ -3765,6 +3859,7 @@ class VoiceInputApp:
         if status == "SLEEP":
             self._hotkey_primary_down = False
             self._awaiting_wake_ready_chime = False
+            self._defer_recording_feedback = False
 
         # Immediate text update (icon handled by loop or here if static)
         if not self.icon: return
@@ -3805,6 +3900,11 @@ class VoiceInputApp:
                 if self.ui_state == "RECORDING":
                     # Waveform Animation (12fps)
                     new_icon = self.draw_waveform(frame, base_img)
+                    frame += 1
+                    sleep_time = 0.08
+                elif self.is_listening and self._models_loading_for_session():
+                    # Engine still loading after hotkey — spinner matches wake/load, not recording yet
+                    new_icon = self.draw_spinner(frame, base_img)
                     frame += 1
                     sleep_time = 0.08
                 elif self.ui_state in ["PROCESSING", "DOWNLOADING", "INITIALIZING"]:
@@ -3993,7 +4093,7 @@ class VoiceInputApp:
                 return
 
             now = time.time()
-            if now - self.last_toggle_time < 0.3: # Reduced from 0.4 for better responsiveness
+            if now - self.last_toggle_time < 0.2:
                 return
 
             self._hotkey_primary_down = True
@@ -4066,10 +4166,21 @@ class VoiceInputApp:
         return False
 
     def _try_complete_wake_feedback(self):
-        """Honor pending_wakeup or play ready chime after idle model reload."""
+        """Honor pending_wakeup or play start beep after idle model reload."""
         if self._wakeup_autostart_cancelled:
             self.pending_wakeup = False
             self._awaiting_wake_ready_chime = False
+            self._defer_recording_feedback = False
+            return
+        # Active recording while engine still loading: wait before start beep + waveform.
+        if self.is_listening and getattr(self, "_defer_recording_feedback", False):
+            if self._models_loading_for_session():
+                return
+            self._defer_recording_feedback = False
+            self.pending_wakeup = False
+            log_print("Wake load complete: engine ready — recording.")
+            self.sound_manager.play_start()
+            self.update_status("RECORDING")
             return
         # Active recording: start beep already played; never add load-complete chimes mid-take.
         if self.is_listening:
@@ -4093,7 +4204,7 @@ class VoiceInputApp:
             self._awaiting_wake_ready_chime = False
             self.sound_manager.play_ready()
 
-    def start_listening(self):
+    def start_listening(self, defer_start_feedback: bool = False):
         self._cancel_paste_anchor_timer()
         with self._paste_anchor_lock:
             self._paste_anchor_hwnd = None
@@ -4103,21 +4214,37 @@ class VoiceInputApp:
         self.is_listening = True
         self.is_speaking = False
         self._heard_voice_energy = False
+        self._wakeup_autostart_cancelled = False
         log_print("\n[Start Listening]", flush=True)
+        wake_load = defer_start_feedback or (
+            _worker_isolation_enabled() and not self._worker_ready
+        )
         if _worker_isolation_enabled() and not self._worker_ready:
+            if self._wake_t0 is None:
+                self._wake_timing_reset("recording-session")
+            self._wake_timing_mark("start-listening")
             self._schedule_worker_load()
-        self.sound_manager.play_start()
+        if wake_load:
+            self._defer_recording_feedback = True
+            self.pending_wakeup = True
+            self.sound_manager.play_wake()
+            self.update_status("INITIALIZING")
+        else:
+            self._defer_recording_feedback = False
+            self.sound_manager.play_start()
+            self.update_status("RECORDING")
         self.audio_buffer = []
         self._drain_audio_queue()
         self._dropped_audio_chunks = 0
         if self.vad_iterator:
             self.vad_iterator.reset_states()
-        self.update_status("RECORDING")
         self.update_tray_tooltip()
 
     def stop_listening(self):
         log_print(" [Stopped]", flush=True)
+        self._wake_timing_mark("stop-listening")
         self.sound_manager.play_stop()
+        self._defer_recording_feedback = False
         self._awaiting_wake_ready_chime = False
         # Any stop during a VRAM-saver wake load means "do not auto-start when load finishes"
         # (covers auto-stop and toggle-off; avoids race vs setting heavy_models_loaded before this runs).
@@ -4207,10 +4334,12 @@ class VoiceInputApp:
             if not self._worker.is_alive():
                 self.loading_status = "Starting engine..."
                 self.update_tray_tooltip()
+                self._wake_timing_mark("worker-spawn-start")
                 if not self._worker.start():
                     log_print("Could not start inference worker.")
                     self._worker = None
                     return None
+                self._wake_timing_mark("worker-spawn-done")
             client = self._worker
 
         if not wait_ready:
@@ -4224,6 +4353,7 @@ class VoiceInputApp:
             self.update_tray_tooltip()
             try:
                 client.request({"cmd": "load"}, timeout=10.0)
+                self._wake_timing_mark("worker-load-cmd-sent")
             except Exception as e:
                 log_print(f"Worker load command failed: {e}")
 
@@ -4239,6 +4369,7 @@ class VoiceInputApp:
                     log_print("Worker is ready (models loaded).")
                 self._worker_ready = True
                 self._refresh_tray_ready_state()
+                self._wake_timing_mark("worker-ready")
                 # Start the idle countdown from readiness, not from spawn, so a slow load
                 # is never immediately killed by the VRAM saver.
                 self.last_activity_time = time.time()
@@ -4276,6 +4407,7 @@ class VoiceInputApp:
                 daemon=True,
                 name="privox-worker-load",
             )
+            self._wake_timing_mark("worker-load-scheduled")
             self._worker_load_thread.start()
 
     def _worker_warmup(self):
@@ -4296,14 +4428,22 @@ class VoiceInputApp:
             self._shutdown_worker()
             if self.running:
                 self._ensure_worker(wait_ready=False)
+                self._wake_timing_reset("tier1-idle")
+                self._wake_timing_mark("warm-fresh-spawned")
+                if self.vram_timeout > 0 and self._idle_preload_asr_enabled():
+                    log_print("Idle (tier 1): background ASR preload on WARM-FRESH worker.")
+                    self._schedule_worker_load()
         except Exception as e:
             log_print(f"WARM worker respawn error: {e}")
 
     def _transcribe_via_worker(self, audio_data, task_id):
         """Delegate ASR + refiner to the worker process, then paste in the main process."""
+        self._wake_timing_mark("transcribe-begin")
         _wake_wait_start = time.time()
         client = self._ensure_worker(wait_ready=True)
         _wake_wait_s = time.time() - _wake_wait_start
+        if _wake_wait_s > 0.05:
+            self._wake_timing_mark(f"worker-ready-for-transcribe (+{_wake_wait_s:.2f}s wait)")
         if _wake_wait_s > 1.0:
             log_print(f"Worker ready wait before transcribe: {_wake_wait_s:.1f}s")
         if client is None:
@@ -4318,6 +4458,7 @@ class VoiceInputApp:
             "sample_rate": SAMPLE_RATE,
         }
         resp = client.request(header, audio.tobytes(), timeout=200.0)
+        self._wake_timing_mark("transcribe-worker-response")
         if resp is None:
             log_print("Worker request failed (no response); tearing down for respawn.")
             self._shutdown_worker()
@@ -4430,22 +4571,7 @@ class VoiceInputApp:
                 log_transcription(f" Qwen3-ASR Result: '{raw_text}'")
 
             else:
-                _seg_lid = (os.environ.get("PRIVOX_WHISPER_PER_SEGMENT_LANGUAGE") or "").strip().lower()
-                _use_per_segment_lang = _seg_lid not in ("0", "false", "no", "off")
-                _asr_kw: dict = dict(
-                    audio=audio_data.astype(np.float32),
-                    task="transcribe",
-                    beam_size=5,
-                    vad_filter=True,
-                    vad_parameters=dict(min_silence_duration_ms=500),
-                )
-                if WHISPER_TRANSCRIBE_LANGUAGE:
-                    _asr_kw["language"] = WHISPER_TRANSCRIBE_LANGUAGE
-                elif _use_per_segment_lang:
-                    _asr_kw["multilingual"] = True
-                    _asr_kw["initial_prompt"] = (
-                        "Transcript may mix English and Chinese; keep each language in its usual spelling."
-                    )
+                _asr_kw = _build_faster_whisper_transcribe_kwargs(audio_data)
                 try:
                     segments, info = self._run_with_timeout(
                         lambda kw=_asr_kw: self.asr_model.transcribe(**kw),
@@ -4486,6 +4612,10 @@ class VoiceInputApp:
             t2 = time.time()
             detected_lang = info.language if (info and ASR_BACKEND == 'whisper') else None
             detected_prob = info.language_probability if (info and ASR_BACKEND == 'whisper') else 0.0
+            if ASR_BACKEND == "whisper":
+                detected_lang, detected_prob = _refiner_language_hint(
+                    raw_text, detected_lang, detected_prob or 0.0
+                )
             final_text = self._run_with_timeout(
                 lambda: self.grammar_checker.correct(
                     command_text,
@@ -4641,27 +4771,7 @@ class VoiceInputApp:
                     log_transcription(f" Qwen3-ASR Result: '{raw_text}'")
                     
                 else:
-                    # Faster-Whisper: `multilingual=True` runs language ID per segment so code-switched
-                    # speech (e.g. EN phrases in a ZH-dominant clip) is less often forced into one script.
-                    # Disable with PRIVOX_WHISPER_PER_SEGMENT_LANGUAGE=0 if you see unstable LID.
-                    _seg_lid = (os.environ.get("PRIVOX_WHISPER_PER_SEGMENT_LANGUAGE") or "").strip().lower()
-                    _use_per_segment_lang = _seg_lid not in ("0", "false", "no", "off")
-                    _asr_kw: dict = dict(
-                        audio=audio_data.astype(np.float32),
-                        task="transcribe",
-                        beam_size=5,
-                        vad_filter=True,
-                        vad_parameters=dict(min_silence_duration_ms=500),
-                    )
-                    # Library may pin decoding language (e.g. yue for Cantonese CT2). Do not combine with
-                    # per-segment LID — faster-whisper would override the pinned language each segment.
-                    if WHISPER_TRANSCRIBE_LANGUAGE:
-                        _asr_kw["language"] = WHISPER_TRANSCRIBE_LANGUAGE
-                    elif _use_per_segment_lang:
-                        _asr_kw["multilingual"] = True
-                        _asr_kw["initial_prompt"] = (
-                            "Transcript may mix English and Chinese; keep each language in its usual spelling."
-                        )
+                    _asr_kw = _build_faster_whisper_transcribe_kwargs(audio_data)
                     segments, info = self._run_with_timeout(
                         lambda kw=_asr_kw: self.asr_model.transcribe(**kw),
                         timeout_s=120,
@@ -4714,6 +4824,10 @@ class VoiceInputApp:
                 t2 = time.time()
                 detected_lang = info.language if (info and ASR_BACKEND == 'whisper') else None
                 detected_prob = info.language_probability if (info and ASR_BACKEND == 'whisper') else 0.0
+                if ASR_BACKEND == "whisper":
+                    detected_lang, detected_prob = _refiner_language_hint(
+                        raw_text, detected_lang, detected_prob or 0.0
+                    )
                 final_text = self._run_with_timeout(
                     lambda: self.grammar_checker.correct(
                         command_text,
@@ -5221,12 +5335,16 @@ class VoiceInputApp:
         # Worker isolation: models live in the worker. Pre-warm it on hotkey-down so the
         # first transcription after idle overlaps spawn+load with the user speaking.
         if _worker_isolation_enabled():
+            self._wakeup_autostart_cancelled = False
             self._worker_warmup()
             if not self.mic_active:
                 if not self._worker_ready:
                     log_print("Wake accepted (microphone not active yet). Pre-loading engine...")
+                    self.pending_wakeup = True
                     if not self.is_listening:
                         self.sound_manager.play_wake()
+                        if self.ui_state == "SLEEP":
+                            self.update_status("INITIALIZING")
                 else:
                     log_print("Ignored Hotkey: No Microphone Active")
                     self.sound_manager.play_error()
@@ -5234,7 +5352,7 @@ class VoiceInputApp:
             if not self.is_listening:
                 if self.ui_state == "PROCESSING":
                     log_print("Interrupting current processing to start new recording.")
-                self.start_listening()
+                self.start_listening(defer_start_feedback=not self._worker_ready)
             else:
                 self.stop_listening()
             return

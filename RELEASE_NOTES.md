@@ -1,5 +1,29 @@
 # Privox Release Notes
 
+## v1.3.1 (ASR options, idle VRAM, UX)
+
+**Release date:** 2026-05-30
+
+### 🚀 Improvements
+
+- **faster-whisper ASR restored in Settings**: **Distil-Whisper Large v3 (English)** for fast English-only dictation; **Whisper Turbo Cantonese (CT2)** (JackyHoCL) for Cantonese + English code-mix with faster idle wake than Qwen-ASR.
+- **Cantonese code-mix**: Cantonese CT2 uses per-segment language detection + an initial prompt so long English passages stay in English instead of being forced into Chinese.
+- **Idle VRAM stays at ~0 after tier 1**: By default Privox no longer preloads models in the background after the VRAM saver kills a loaded worker (`PRIVOX_IDLE_PRELOAD_ASR=0`). Models load on the next hotkey only. Set `PRIVOX_IDLE_PRELOAD_ASR=1` for the previous faster-wake behaviour.
+- **Idle wake UX**: Wake/load feedback aligned (spinner + wake tone while loading, start tone when ready); parallel worker load when GPU ≥ 8 GiB; `[Wake timing]` logs for diagnostics.
+- **Settings model download**: Progress bar updates during Hugging Face / GGUF downloads (byte progress + stage labels).
+
+### 🐛 Bug Fixes
+
+- **Settings download progress** showed a blank bar until completion; now reports percentage and file detail.
+- **Legacy ASR labels** migrate to current presets (including Cantonese CT2).
+
+### 🔧 Technical Notes
+
+- `pixi.toml` includes `faster-whisper` again for CT2 backends.
+- `config.json` default remains **Qwen-ASR v3 0.6B**; choose CT2 models in Settings.
+
+---
+
 ## v1.3 (Installer, UX & Engine Update)
 
 **Release date:** 2026-05-30

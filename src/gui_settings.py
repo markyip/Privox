@@ -146,9 +146,15 @@ class ModelUpdateWorker(QObject):
                 sys.__stderr__.write(f"[UI LOG] {msg}\n")
             except: pass
 
+        def ui_progress(pct, detail=""):
+            self.signals.progress.emit(int(pct))
+            if detail:
+                self.signals.status.emit(str(detail))
+
         # Initial heartbeat
         print("[DEBUG] Worker thread started. Emitting heartbeat...", flush=True)
         ui_log("Starting model setup engine...")
+        ui_progress(1, "Starting model setup engine...")
 
         print("[DEBUG] Redirecting stderr...", flush=True)
         old_stderr = sys.stderr
@@ -157,7 +163,7 @@ class ModelUpdateWorker(QObject):
         try:
             print("[DEBUG] Calling download_models.main()...", flush=True)
             # Re-ensure path for download_models internal imports if any
-            download_models.main(log_callback=ui_log)
+            download_models.main(log_callback=ui_log, progress_callback=ui_progress)
             print("[DEBUG] download_models.main() finished successfully.", flush=True)
             self.signals.finished.emit(True, "")
         except Exception as e:
@@ -520,12 +526,12 @@ class ModernProgressDialog(QDialog):
             self.sub_status.setText(sub_text)
 
     def set_progress(self, value):
-        if value <= 0:
+        if value is None or value < 0:
             # Indeterminate mode if no progress reported yet
             self.progress_bar.setRange(0, 0)
         else:
             self.progress_bar.setRange(0, 100)
-            self.progress_bar.setValue(int(value))
+            self.progress_bar.setValue(max(0, min(100, int(value))))
 
     def show_completion(self, main_text="AI Setup Complete", sub_text="Restoring application background engine..."):
         self.progress_bar.setRange(0, 100)
@@ -667,26 +673,30 @@ class SettingsGUI(QMainWindow):
                 self.custom_prompts[key] = clean_prompt
                 self.prefs["custom_prompts"] = self.custom_prompts
 
-        # --- Migration: legacy ASR (Whisper / removed presets) → Qwen-ASR v3 ---
+        # --- Migration: legacy ASR labels / folder ids ---
         _wm_pref = self.prefs.get("whisper_model")
         if _wm_pref:
             self.prefs["whisper_model"] = models_config.migrate_asr_display_name(_wm_pref)
         _wm_tech = self.tech_config.get("whisper_model")
         if _wm_tech:
             self.tech_config["whisper_model"] = models_config.migrate_asr_folder_id(_wm_tech)
-        self.tech_config["asr_backend"] = "qwen_asr"
-        _qwen_entry = next(
-            (m for m in models_config.ASR_LIBRARY if m.get("whisper_model") == self.tech_config.get("whisper_model")),
-            None,
-        )
-        if _qwen_entry is None:
-            self.tech_config["whisper_model"] = models_config.DEFAULT_ASR_WHISPER_MODEL
-            _qwen_entry = next(
-                m for m in models_config.ASR_LIBRARY
-                if m.get("whisper_model") == models_config.DEFAULT_ASR_WHISPER_MODEL
+        _asr_entry = None
+        for m in models_config.ASR_LIBRARY:
+            if m["name"] == self.prefs.get("whisper_model"):
+                _asr_entry = m
+                break
+            if m.get("whisper_model") == self.tech_config.get("whisper_model"):
+                _asr_entry = m
+                break
+        if _asr_entry is None:
+            _asr_entry = next(
+                (m for m in models_config.ASR_LIBRARY if m["name"] == models_config.DEFAULT_ASR),
+                None,
             )
-        if _qwen_entry:
-            self.tech_config["whisper_repo"] = _qwen_entry.get("whisper_repo") or _qwen_entry.get("repo", "")
+        if _asr_entry:
+            self.tech_config["whisper_model"] = _asr_entry.get("whisper_model", "")
+            self.tech_config["whisper_repo"] = _asr_entry.get("whisper_repo") or _asr_entry.get("repo", "")
+            self.tech_config["asr_backend"] = _asr_entry.get("backend", "whisper")
 
         if self.prefs.get("current_refiner") == "Standard (Llama 3.2)":
             self.prefs["current_refiner"] = models_config.DEFAULT_LLM
@@ -2264,11 +2274,11 @@ class SettingsGUI(QMainWindow):
                 dlg.set_status("Finalizing Setup", msg)
             else:
                 dlg.set_status("Model Setup Engine", msg)
+            dlg.sub_status.setText(msg)
         
         def on_progress(val):
-            if val > 0:
-                dlg.set_progress(val)
-            if val == 100:
+            dlg.set_progress(val)
+            if val >= 100:
                 dlg.set_status("Download Complete", "Verifying files...")
 
         def on_finished(success, error_msg):

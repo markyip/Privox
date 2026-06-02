@@ -19,15 +19,33 @@ def scrub_obsolete_user_pref_keys(prefs: dict) -> bool:
     return changed
 
 
-# --- Voice-to-Text (ASR) Library — Qwen3-ASR only ---
+# --- Voice-to-Text (ASR) Library ---
 ASR_LIBRARY = [
+    {
+        "name": "Distil-Whisper Large v3 (English)",
+        "whisper_repo": "Systran/faster-distil-whisper-large-v3",
+        "whisper_model": "distil-large-v3",
+        "repo": "Systran/faster-distil-whisper-large-v3",
+        "backend": "whisper",
+        "whisper_language": "en",
+        "description": "Fast English (CT2). Best wake-from-idle speed for English-only dictation.",
+    },
+    {
+        "name": "Whisper Turbo Cantonese (CT2)",
+        "whisper_repo": "JackyHoCL/whisper-large-v3-turbo-cantonese-yue-english-ct2",
+        "whisper_model": "large-v3-turbo-cantonese-yue",
+        "repo": "JackyHoCL/whisper-large-v3-turbo-cantonese-yue-english-ct2",
+        "backend": "whisper",
+        "whisper_code_mix": True,
+        "description": "Cantonese + English (CT2 turbo). Per-segment LID keeps long English passages in English.",
+    },
     {
         "name": "Qwen-ASR v3 0.6B",
         "whisper_repo": "Qwen/Qwen3-ASR-0.6B",
         "whisper_model": "qwen3-asr-0.6b",
         "repo": "Qwen/Qwen3-ASR-0.6B",
         "backend": "qwen_asr",
-        "description": "Default. Fast Qwen3 ASR — strong multilingual and code-mixed speech.",
+        "description": "Default multilingual. Strong for Cantonese, Mandarin, code-mixed speech.",
     },
     {
         "name": "Qwen-ASR v3 1.7B",
@@ -39,29 +57,28 @@ ASR_LIBRARY = [
     },
 ]
 
-# Legacy Settings labels / folder ids → current Qwen display name.
+# Legacy Settings labels → current ASR_LIBRARY display name.
 ASR_NAME_MIGRATIONS: dict[str, str] = {
-    "Distil-Whisper Large v3 (English)": "Qwen-ASR v3 0.6B",
-    "OpenAI Whisper Small": "Qwen-ASR v3 0.6B",
+    "OpenAI Whisper Small": "Distil-Whisper Large v3 (English)",
     "Whisper Large v3 Turbo (Multilingual)": "Qwen-ASR v3 0.6B",
-    "Whisper Large v3 Turbo (Cantonese)": "Qwen-ASR v3 0.6B",
+    "Whisper Large v3 Turbo (Cantonese)": "Whisper Turbo Cantonese (CT2)",
+    "Whisper Small Cantonese (CT2)": "Whisper Turbo Cantonese (CT2)",
     "Qwen3-ASR 0.6B (Multilingual)": "Qwen-ASR v3 0.6B",
     "Qwen3-ASR 1.7B (Multilingual)": "Qwen-ASR v3 1.7B",
-    "distil-large-v3": "Qwen-ASR v3 0.6B",
-    "small": "Qwen-ASR v3 0.6B",
+    "small": "Distil-Whisper Large v3 (English)",
     "large-v3-turbo": "Qwen-ASR v3 0.6B",
 }
 
-# Legacy config.json whisper_model folder ids → current folder id.
+# Legacy config.json folder ids → current folder id (obsolete presets only).
 ASR_FOLDER_ID_MIGRATIONS: dict[str, str] = {
-    "distil-large-v3": "qwen3-asr-0.6b",
-    "small": "qwen3-asr-0.6b",
+    "small": "distil-large-v3",
     "large-v3-turbo": "qwen3-asr-0.6b",
+    "small-cantonese-yue": "large-v3-turbo-cantonese-yue",
 }
 
 
 def migrate_asr_display_name(name: str | None) -> str:
-    """Map legacy ASR combo labels to a current Qwen-ASR v3 display name."""
+    """Map legacy ASR combo labels to a current ASR_LIBRARY display name."""
     if not name:
         return DEFAULT_ASR
     if name in ASR_NAME_MIGRATIONS:
@@ -73,7 +90,7 @@ def migrate_asr_display_name(name: str | None) -> str:
 
 
 def migrate_asr_folder_id(folder_id: str | None) -> str:
-    """Map legacy whisper-* folder ids to a current Qwen folder id."""
+    """Map legacy whisper-* folder ids to a current ASR folder id."""
     if not folder_id:
         return DEFAULT_ASR_WHISPER_MODEL
     key = str(folder_id).strip()
@@ -146,6 +163,17 @@ def refiner_gguf_min_complete_bytes(file_name: str) -> int:
 # --- Defaults ---
 # Display name as stored in .user_prefs.json / ASR combo (must match ASR_LIBRARY "name").
 DEFAULT_ASR = "Qwen-ASR v3 0.6B"
+# English-focused faster-whisper preset (Settings + PRIVOX_NO_TORCH fallback).
+DEFAULT_ASR_ENGLISH = "Distil-Whisper Large v3 (English)"
+# Cantonese-focused faster-whisper preset (JackyHoCL CT2, language=yue).
+DEFAULT_ASR_CANTONESE = "Whisper Turbo Cantonese (CT2)"
+
+# faster-whisper initial_prompt for Cantonese+English code-mix presets (whisper_code_mix=True).
+WHISPER_CODE_MIX_PROMPT = (
+    "The transcript mixes Cantonese and English. "
+    "Write spoken Cantonese in Chinese characters and English words or sentences in English. "
+    "Do not translate English speech into Chinese."
+)
 # Folder id under models/whisper-<id> and config.json "whisper_model" (keep in sync with ASR_LIBRARY entry).
 DEFAULT_ASR_WHISPER_MODEL = "qwen3-asr-0.6b"
 DEFAULT_LLM = "Gemma 4 E2B IT (TurboQuant)"
@@ -469,6 +497,7 @@ You MUST put the COMPLETE refined transcript inside one pair of <refined> and </
 ISO_LANGUAGE_MAP = {
     "en": "English",
     "zh": "Chinese/Cantonese",
+    "yue": "Cantonese",
     "ja": "Japanese",
     "ko": "Korean",
     "de": "German",

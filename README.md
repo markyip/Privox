@@ -35,7 +35,7 @@ A powerful, private, and fully local voice input assistant for Windows. Privox c
 ### 2. How to Use
 
 > [!NOTE]
-> **VRAM Usage**: Privox runs its AI models in a separate worker process. When the **VRAM Saver** kicks in after idle, that process is terminated so **essentially all GPU memory is returned to the system** (idle VRAM drops to ~0), then a lightweight "warm" process is kept ready for a fast next wake. Waking from idle reloads the models in about **10–12 seconds** (mostly the speech model). If you prefer models to stay resident for instant response, set the **VRAM Saver timeout to 0** in Settings (they then occupy ~4–7 GB while running). You can also fully disable worker isolation by setting `PRIVOX_WORKER_ISOLATION=0`.
+> **VRAM Usage**: Privox runs its AI models in a separate worker process. When the **VRAM Saver** kicks in after idle, that process is terminated so **GPU memory returns to ~0**. A lightweight **warm** worker (no models loaded) stays ready so the next wake skips process spawn. Models load **only when you press the hotkey** again — wake time depends on your ASR choice (~2–5 s for **Distil-Whisper** / **Whisper Turbo Cantonese CT2**, ~8–12 s for **Qwen-ASR**). Set **VRAM Saver timeout to 0** to keep models resident for instant response (~4–7 GB VRAM). Set `PRIVOX_WORKER_ISOLATION=0` to use the legacy in-process engine.
 
 - **Always Ready**: Once launched, Privox lives in your **System Tray** (near the clock). You can right-click the icon to access Settings or exit the app.
 - **Tap your hotkey** (default: `F8`): The app starts listening (you'll see a small animation in your taskbar).
@@ -49,8 +49,11 @@ A powerful, private, and fully local voice input assistant for Windows. Privox c
 > **Your Hotkey, Your Way**: Don't like `F8`? You can change it to any key or combination (like `Ctrl+Shift+Space`) in **Settings**. Open Settings by right-clicking the Privox icon in your taskbar.
 
 > [!NOTE]
-> **Speech recognition (Qwen-ASR v3)**  
-> Privox uses **Qwen3-ASR** for voice-to-text (multilingual, code-mixed speech, Cantonese/Mandarin/Japanese, and more). The default is **Qwen-ASR v3 0.6B**; choose **Qwen-ASR v3 1.7B** in **Settings → AI Models** if you want higher accuracy and have more VRAM.
+> **Speech model choices (Settings → AI Models)**  
+> - **Qwen-ASR v3 0.6B** (default): best overall multilingual / code-mixed quality; slower idle wake.  
+> - **Qwen-ASR v3 1.7B**: higher quality when you have more VRAM.  
+> - **Distil-Whisper Large v3 (English)**: fastest idle wake for **English-only** dictation (faster-whisper / CT2).  
+> - **Whisper Turbo Cantonese (CT2)**: Cantonese + English code-mix with fast wake; long English passages stay in English (per-segment language detection). Not recommended for Mandarin-only speech.
 
 ## ⚙️ Simple Controls
 
@@ -70,7 +73,7 @@ You don't need to be a computer expert to customize Privox. Just right-click the
 - **VRAM usage is model-dependent**: Privox loads two local AI models (ASR + Refiner). Typical active VRAM is around 4–7 GB depending on your selected backend and GPU size. On **10–12 GB cards**, Privox automatically caps how many refiner layers go on GPU to leave enough headroom for the ASR model — both coexist without CUDA out-of-memory errors.
 - **TurboQuant refiner profiles**: Settings list **Gemma 4 E2B IT** and **E4B IT** (instruction-tuned checkpoints). They use tuned load settings (`n_ctx`, `n_gpu_layers`, `n_batch`) for a good balance on typical GPUs. This is not the separate Google **IT-Assistant** MTP drafter used for speculative decoding. **`n_ctx` is 8192** so longer dictation is less likely to be truncated during refinement; very long transcripts use a **compact system prompt** that still enforces the same critical rules but skips heavy few-shot blocks to fit context.
 - **Config file safety**: If `config.json` or `.user_prefs.json` is temporarily invalid JSON while you save in an editor, Privox reports a clear error (including path and a short preview) when running **from source / Pixi** (`privox_app.log`). The **packaged executable** does not write that log file; fix the file and save again to apply settings.
-- **VRAM Saver (worker isolation)**: The speech (ASR) and refiner (Grammar) models run in a **separate worker process**. After idle, Privox **terminates that process** so the operating system reclaims the entire GPU footprint — model weights **and** the PyTorch/CUDA hardware context — bringing idle VRAM down to **~0** (previously a long-lived process permanently reserved ~1–1.5 GB it could never release). A fresh, model-free "warm" worker is then kept ready so the next wake only has to reload weights (~10–12 s, dominated by the speech model). Setting the **VRAM Saver timeout to 0** keeps the worker loaded for instant response. Worker isolation is on by default for the packaged app and the `pixi run start-worker-isolation` dev task; set `PRIVOX_WORKER_ISOLATION=0` to use the legacy in-process engine instead.
+- **VRAM Saver (worker isolation)**: ASR + refiner run in a **separate worker process**. After idle (`vram_timeout`, default 60 s), the loaded worker is killed and VRAM returns to **~0**; a **warm** worker (process only, no models) is respawned. Models reload on the **next hotkey**, not automatically in the background. Optional: set `PRIVOX_IDLE_PRELOAD_ASR=1` before launch to preload after idle (faster wake, but VRAM is occupied again while idle). Extended idle (`worker_kill_timeout`, default 600 s) kills the warm worker to free system RAM. Set **VRAM Saver timeout to 0** to keep models loaded. Worker isolation is on by default; set `PRIVOX_WORKER_ISOLATION=0` for the legacy in-process engine.
 - **Qwen-ASR on mid-range GPUs**: When using Qwen-ASR on a 10–12 GB card, the ASR model is loaded with a VRAM cap (`~42%` of total, ~5 GB on 12 GB) using `device_map` to prevent out-of-memory during the transition from CPU to GPU.
 - **Very short sentences may not be refined**: To prevent hallucination, Privox will skip AI grammar correction if your spoken input is very short (roughly a few words). The original transcription will be typed out as-is. This is a deliberate safety measure to ensure quality output.
 - **Chinese output script (繁體 / 简体)**: In **Settings → General**, **Simplified Chinese output (简体中文)** is **off by default**. When it is off, any Chinese in the **final pasted text** is normalized to **Traditional Chinese** (refiner instructions plus **zhconv** when the package is installed). Turn the option **on** to normalize everything to **Simplified** instead. This applies regardless of whether the speech recognition returned Traditional or Simplified characters. Colloquial Cantonese particles are still encouraged when the transcript looks like spoken Cantonese.
@@ -78,8 +81,8 @@ You don't need to be a computer expert to customize Privox. Just right-click the
 
 ## ⚠️ Known Limitations
 
-- **Default speech model**: First-time setup downloads **Qwen-ASR v3 0.6B** (see `config.json`). **Qwen-ASR v3 1.7B** is optional in Settings when you need higher quality and have enough GPU memory.
-- **Multilingual accuracy varies**: Voice-to-text is **Qwen3-ASR** only. If quality is weak for your language or accent, try **Qwen-ASR v3 1.7B** in Settings. Please [open an Issue](https://github.com/markyip/Privox/issues) with a short example if something looks wrong.
+- **Default speech model**: First-time setup downloads **Qwen-ASR v3 0.6B** (see `config.json`). **Distil-Whisper Large v3 (English)** and **Whisper Turbo Cantonese (CT2)** use faster-whisper (CT2) for lower VRAM and faster idle wake. **Qwen-ASR v3 1.7B** is optional for higher multilingual quality.
+- **Multilingual accuracy varies**: Voice-to-text is **Qwen3-ASR** or **faster-whisper (Distil / Cantonese turbo)** depending on Settings. See the speech-model note under [How to Use](#2-how-to-use).
 - **Accent variations may affect transcription accuracy**: The voice-to-text engine can be sensitive to strong or regional accents, which is an inherent limitation of the underlying ASR technology. If transcription quality seems off, try switching to a different ASR model in **Settings** (e.g., the Multilingual model may handle diverse accents better).
 - **Occasional LLM hallucination**: Although multiple safeguards are in place, the refiner model may occasionally add, rephrase, or embellish words beyond the original transcript. The refiner is asked to return text inside `<refined>` tags; if a model ignores that format, Privox falls back to heuristics and may return the raw transcription when the reply looks like a prompt echo. If you notice output that doesn't match what you said, please report it.
 - **Mixed-language in one utterance**: ASR quality still varies when you code-mix (e.g. English technical terms inside Chinese). The refiner is instructed to **preserve** Latin + CJK in the same sentence rather than translating everything to one language; if you see unwanted rewriting, try another ASR model or report an issue with a short example.
@@ -133,11 +136,21 @@ Privox runs the ASR + refiner models in a **separate, killable worker process** 
 
 Behaviour:
 
-- **Idle VRAM ≈ 0**: at the VRAM Saver timeout (`vram_timeout`, default 60 s) the loaded worker is killed (freeing weights *and* the CUDA context) and a fresh **warm** worker (no models, ~0 VRAM) is respawned for a fast next wake.
-- **Wake from idle ≈ 10–12 s**: the warm worker has already paid the process-spawn + `import` cost; waking only reloads model weights (the Qwen3-ASR load dominates at ~8 s).
-- **Extended idle** (`PRIVOX_WORKER_KILL_TIMEOUT`, default `600` seconds, or the `worker_kill_timeout` preference): the warm worker is also terminated to free system RAM.
-- **Pre-warm Models on Startup** (Settings → General): when enabled, the worker loads its models at launch so the **first** transcription is instant (the idle VRAM saver still frees everything after `vram_timeout` of no use). When disabled, only the worker *process* is pre-warmed (~0 VRAM) and models load on the first hotkey (~10–12 s).
-- **Instant response instead**: set the **VRAM Saver timeout to 0** to keep the worker loaded, or set **`PRIVOX_WORKER_ISOLATION=0`** to fall back to the legacy in-process engine entirely.
+- **Idle VRAM ≈ 0**: at `vram_timeout` (default 60 s) the loaded worker is killed (weights + CUDA context) and a **warm** worker (no models, ~0 VRAM) is respawned. By default Privox does **not** reload models until your next hotkey (`PRIVOX_IDLE_PRELOAD_ASR` defaults to `0`).
+- **Wake from idle**: warm worker has already paid spawn + import; you only wait for model load. Typical: **~2–5 s** (Distil / Cantonese CT2), **~8–12 s** (Qwen-ASR 0.6B).
+- **Extended idle** (`PRIVOX_WORKER_KILL_TIMEOUT`, default `600` s): if the warm worker never loaded models, it is killed to free system RAM.
+- **Pre-warm Models on Startup** (Settings → General): load at launch for an instant first transcription (idle saver still frees VRAM after `vram_timeout`).
+- **Faster idle wake at cost of VRAM**: `PRIVOX_IDLE_PRELOAD_ASR=1` preloads models after tier-1 idle.
+- **Instant response**: VRAM Saver timeout **0**, or `PRIVOX_WORKER_ISOLATION=0` for in-process mode.
+
+Environment variables (optional):
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `PRIVOX_IDLE_PRELOAD_ASR` | `0` | After tier-1 idle, preload models in background (faster wake, uses VRAM while idle). |
+| `PRIVOX_WORKER_KILL_TIMEOUT` | `600` | Seconds before killing the warm worker when still unloaded. |
+| `PRIVOX_WHISPER_PER_SEGMENT_LANGUAGE` | on | Per-segment LID for faster-whisper code-mix (set `0` to disable). |
+| `PRIVOX_WORKER_ISOLATION` | `1` (packaged) | `0` = legacy in-process engine. |
 
 See [RELEASE_NOTES.md](RELEASE_NOTES.md) for details.
 
@@ -145,7 +158,9 @@ See [RELEASE_NOTES.md](RELEASE_NOTES.md) for details.
 
 You can add custom ASR (voice-to-text) or LLM (refiner) models by editing `src/models_config.py`.
 
-**To add a new voice-to-text model**, append an entry to `ASR_LIBRARY` (Qwen3-ASR / `qwen_asr` backend only):
+**To add a new voice-to-text model**, append an entry to `ASR_LIBRARY`:
+
+Qwen3-ASR (`qwen_asr`):
 
 ```python
 {
@@ -154,6 +169,21 @@ You can add custom ASR (voice-to-text) or LLM (refiner) models by editing `src/m
     "whisper_model": "qwen3-asr-0.6b",
     "repo": "org/Qwen3-ASR-0.6B",
     "backend": "qwen_asr",
+    "description": "Short description.",
+}
+```
+
+faster-whisper / CT2 (`whisper`):
+
+```python
+{
+    "name": "My CT2 Whisper",
+    "whisper_repo": "org/my-model-ct2",
+    "whisper_model": "my-model-id",
+    "repo": "org/my-model-ct2",
+    "backend": "whisper",
+    "whisper_language": "en",  # optional pin, e.g. en
+    "whisper_code_mix": True,  # optional: per-segment LID for Cantonese+English
     "description": "Short description.",
 }
 ```

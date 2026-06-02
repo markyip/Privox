@@ -25,6 +25,7 @@ venv/
 env/
 .env
 .venv
+# Pixi environment and task cache (never commit)
 .pixi/
 pip-log.txt
 pip-delete-this-directory.txt

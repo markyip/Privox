@@ -1,29 +1,5 @@
 # Privox Release Notes
 
-## v1.3.1 (ASR options, idle VRAM, UX)
-
-**Release date:** 2026-05-30
-
-### 🚀 Improvements
-
-- **faster-whisper ASR restored in Settings**: **Distil-Whisper Large v3 (English)** for fast English-only dictation; **Whisper Turbo Cantonese (CT2)** (JackyHoCL) for Cantonese + English code-mix with faster idle wake than Qwen-ASR.
-- **Cantonese code-mix**: Cantonese CT2 uses per-segment language detection + an initial prompt so long English passages stay in English instead of being forced into Chinese.
-- **Idle VRAM stays at ~0 after tier 1**: By default Privox no longer preloads models in the background after the VRAM saver kills a loaded worker (`PRIVOX_IDLE_PRELOAD_ASR=0`). Models load on the next hotkey only. Set `PRIVOX_IDLE_PRELOAD_ASR=1` for the previous faster-wake behaviour.
-- **Idle wake UX**: Wake/load feedback aligned (spinner + wake tone while loading, start tone when ready); parallel worker load when GPU ≥ 8 GiB; `[Wake timing]` logs for diagnostics.
-- **Settings model download**: Progress bar updates during Hugging Face / GGUF downloads (byte progress + stage labels).
-
-### 🐛 Bug Fixes
-
-- **Settings download progress** showed a blank bar until completion; now reports percentage and file detail.
-- **Legacy ASR labels** migrate to current presets (including Cantonese CT2).
-
-### 🔧 Technical Notes
-
-- `pixi.toml` includes `faster-whisper` again for CT2 backends.
-- `config.json` default remains **Qwen-ASR v3 0.6B**; choose CT2 models in Settings.
-
----
-
 ## v1.3 (Installer, UX & Engine Update)
 
 **Release date:** 2026-05-30
@@ -36,11 +12,15 @@ This release polishes first-run installation, tray and settings UX, idle-wake fe
 - **No start/ready sound when waking from VRAM idle**: Auto-stop is suspended while models reload; completing a wake load can auto-start recording when intended, or play a **ready** chime if you are already listening. A short **wake** tone confirms hotkey capture when the mic is not up yet.
 - **Settings hotkey capture toggled recording**: While **RECORD NEW** is active, the main app ignores the recording hotkey so your current key can be captured. You may press the **same** hotkey again to keep it (no forced change to a different key).
 - **Installer failed on `pixi.lock` v7 / conda-pypi mapping**: Bundled Pixi is upgraded to **v0.69+** and setup uses `pixi install --frozen` so the shipped lock file is not regenerated (avoids “Lock-file version 7 is newer than supported” and flaky mapping downloads on older Pixi 0.67).
+- **Settings download progress** showed a blank bar until completion; now updates during download.
 
 ### 🚀 Improvements
 
-- **Faster idle wake-to-transcribe**: The inference worker loads **Qwen ASR first** and reports ready before the Gemma refiner finishes; refiner loads in the background. Main process uses a **single background load** on hotkey-down and when recording starts (overlaps speech with model load). Sequential in-process wake also loads ASR before refiner; parallel load threshold lowered to **10 GiB** VRAM.
-- **ASR rolled back to Qwen-ASR v3 only**: Default speech model is again **Qwen-ASR v3 0.6B** (optional **1.7B** in Settings). Legacy faster-whisper / Distil / Whisper presets are removed from the catalog; old `config.json` and `.user_prefs.json` values migrate automatically on load.
+- **Faster idle wake-to-transcribe**: The inference worker loads **Qwen ASR first** and reports ready before the Gemma refiner finishes; refiner loads in the background. Main process uses a **single background load** on hotkey-down and when recording starts (overlaps speech with model load). Sequential in-process wake also loads ASR before refiner; parallel load threshold lowered to **8 GiB** VRAM.
+- **ASR options in Settings**: Default **Qwen-ASR v3 0.6B** (optional **1.7B**); **Distil-Whisper Large v3 (English)** and **Whisper Turbo Cantonese (CT2)** (JackyHoCL, faster-whisper) for faster idle wake. Cantonese CT2 uses per-segment language detection so long English passages stay in English. Legacy labels migrate automatically.
+- **Idle VRAM stays at ~0 after tier 1**: By default Privox does not preload models after the VRAM saver kills a loaded worker (`PRIVOX_IDLE_PRELOAD_ASR=0`); models load on the next hotkey. Set `PRIVOX_IDLE_PRELOAD_ASR=1` for faster wake at the cost of idle VRAM.
+- **Idle wake UX**: Wake/load feedback aligned (spinner + wake tone while loading, start tone when ready); `[Wake timing]` logs for diagnostics.
+- **Settings model download**: Progress bar reports byte progress and stage labels during Hugging Face / GGUF downloads.
 - **Clearer Gemma 4 refiner names in Settings**: Lists **Gemma 4 E2B IT** and **Gemma 4 E4B IT (TurboQuant)** with migration from older misleading labels; default refiner aligned to the E2B IT profile.
 - **PyTorch 2.10 + CUDA 12.8** in the Pixi environment (`torch` / `torchaudio` cu128 wheels) for current NVIDIA drivers.
 - **llama-cpp CUDA install**: `install-llama-cuda` and model download flows try **cu128 → cu126 → cu125 → cu124** wheels, then fall back to a local source build when needed.

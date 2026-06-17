@@ -108,22 +108,22 @@ LLM_LIBRARY = [
     {
         "name": "Gemma 4 E2B IT (TurboQuant)",
         "repo_id": "unsloth/gemma-4-E2B-it-GGUF",
-        "file_name": "gemma-4-E2B-it-Q4_K_M.gguf",
+        "file_name": "gemma-4-E2B-it-UD-Q4_K_XL.gguf",
         "prompt_type": "gemma",
         "turboquant": True,
         "n_ctx": 8192,
         "n_gpu_layers": 20,
-        "description": "Main refiner (google/gemma-4-E2B-it). Lowest VRAM; default.",
+        "description": "Main refiner (google/gemma-4-E2B-it). Unsloth Dynamic 4-bit; default.",
     },
     {
         "name": "Gemma 4 E4B IT (TurboQuant)",
         "repo_id": "unsloth/gemma-4-E4B-it-GGUF",
-        "file_name": "gemma-4-E4B-it-Q4_K_M.gguf",
+        "file_name": "gemma-4-E4B-it-UD-Q4_K_XL.gguf",
         "prompt_type": "gemma",
         "turboquant": True,
         "n_ctx": 8192,
         "n_gpu_layers": 42,
-        "description": "Higher-quality refiner (google/gemma-4-E4B-it). More VRAM than E2B IT.",
+        "description": "Higher-quality refiner (google/gemma-4-E4B-it). Unsloth Dynamic 4-bit.",
     },
 ]
 
@@ -136,6 +136,20 @@ REFINER_NAME_MIGRATIONS: dict[str, str] = {
 }
 
 
+REFINER_GGUF_FILE_MIGRATIONS: dict[str, str] = {
+    "gemma-4-E2B-it-Q4_K_M.gguf": "gemma-4-E2B-it-UD-Q4_K_XL.gguf",
+    "gemma-4-E4B-it-Q4_K_M.gguf": "gemma-4-E4B-it-UD-Q4_K_XL.gguf",
+}
+
+
+def migrate_refiner_gguf_file(file_name: str | None) -> str:
+    """Map legacy refiner GGUF filenames to current defaults."""
+    if not file_name:
+        return LLM_LIBRARY[0]["file_name"]
+    key = str(file_name).strip()
+    return REFINER_GGUF_FILE_MIGRATIONS.get(key, key)
+
+
 def migrate_refiner_display_name(name: str | None) -> str:
     """Map legacy refiner combo labels to current display names."""
     if not name:
@@ -146,17 +160,19 @@ def migrate_refiner_display_name(name: str | None) -> str:
 def refiner_gguf_min_complete_bytes(file_name: str) -> int:
     """Minimum on-disk bytes to treat a refiner .gguf as complete (not a partial download).
 
-    Thresholds sit safely below current Unsloth Q4_K_M sizes on Hugging Face so minor
+    Thresholds sit safely below current Unsloth GGUF sizes on Hugging Face so minor
     revisions still pass; unknown filenames keep a 256 MiB floor to reject empty stubs.
     """
     key = str(file_name).replace("\\", "/").rsplit("/", 1)[-1].lower()
     gib = 1024**3
+    if key == "gemma-4-e2b-it-ud-q4_k_xl.gguf":
+        return int(2.7 * gib)  # catalog ~2.97 GiB
+    if key == "gemma-4-e4b-it-ud-q4_k_xl.gguf":
+        return int(4.2 * gib)  # catalog ~4.77 GiB
     if key == "gemma-4-e2b-it-q4_k_m.gguf":
-        return int(2.7 * gib)  # catalog ~3.11 GiB
+        return int(2.7 * gib)  # legacy Q4_K_M
     if key == "gemma-4-e4b-it-q4_k_m.gguf":
-        return int(4.3 * gib)  # catalog ~4.98 GiB
-    if key == "gemma-4-e4b-it-q4_k_m.gguf":
-        return int(4.3 * gib)  # catalog ~4.98 GiB
+        return int(4.3 * gib)  # legacy Q4_K_M
     return 256 * 1024 * 1024
 
 
@@ -184,27 +200,32 @@ CHARACTER_LENSES = {
     "Writing Assistant": (
         "Focus on clarity, grammar, and flow. Use professional yet accessible vocabulary. "
         "Resolve ambiguities as a general senior editor would. "
-        "CRITICAL: If the input implies a sequence, list, or multiple steps, you MUST format it using bullet points or numbered lists."
+        "CRITICAL: If the input implies a sequence, list, or multiple steps, you MUST format it using bullet points or numbered lists. "
+        "Always correct grammar, spelling, and sentence coherence."
     ),
     "Code Expert": (
         "Focus on Software Engineering jargon. Do not simplify technical abbreviations (API, SDK, PR, VRAM). "
         "Preserve camelCase, PascalCase, or snake_case formatting. Prioritize logic-based corrections. "
-        "CRITICAL: If explaining multiple steps, files, or properties, you MUST use clean Markdown bullet points."
+        "CRITICAL: If explaining multiple steps, files, or properties, you MUST use clean Markdown bullet points. "
+        "Ensure all statements are grammatically complete and coherent."
     ),
     "Academic": (
         "Focus on intellectual and ontological vocabulary. Maintain complex sentence structures. "
         "Do not simplify metaphysical or academic terms. Prioritize depth of nuance. "
-        "CRITICAL: If the input contains a series of concepts or arguments, format them as a structured, numbered list or bullet points for academic clarity."
+        "CRITICAL: If the input contains a series of concepts or arguments, format them as a structured, numbered list or bullet points for academic clarity. "
+        "All sentences must be grammatically complete and logically coherent."
     ),
     "Executive Secretary": (
         "Focus on extreme formality and business etiquette. Use polite, indirect phrasing. "
         "Organize thoughts into clear, actionable business communication. "
-        "CRITICAL: Always structure multi-point information into clean, readable bullet points."
+        "CRITICAL: Always structure multi-point information into clean, readable bullet points. "
+        "Ensure all sentences are grammatically flawless and logically complete."
     ),
     "Personal Buddy": (
         "Focus on conversational, low-friction vocabulary. Tolerant of slang and informal grammar. "
         "Prioritize making the text sound like a natural, relaxed voice. "
-        "CRITICAL: Even though you are casual, if I list several things, you MUST format them as a neat bulleted list so it's easy to read."
+        "CRITICAL: Even though you are casual, if I list several things, you MUST format them as a neat bulleted list so it's easy to read. "
+        "Even in casual mode, fix broken grammar and incoherent sentence structures."
     ),
     "Custom": "" # User provides absolute persona definition
 }
@@ -217,8 +238,8 @@ TONE_OVERLAYS = {
         "Objective: Sound authoritative and polished."
     ),
     "Natural": (
-        "Style: Conversational. Maintain the speaker's original cadence. Fix only obvious errors. "
-        "Objective: Sound like a clear version of the original speaker."
+        "Style: Conversational. Maintain the speaker's vocabulary and cadence. Fix grammar, spelling, and sentence coherence (Rule 3) — but do NOT alter word choices, formality, or sentence length beyond what is needed for correctness. "
+        "Objective: Sound like a clean, accurate version of the original speaker."
     ),
     "Polite": (
         "Style: Courteous. Soften direct statements. Use honorifics/politeness where contextually appropriate. "
@@ -244,7 +265,7 @@ CRITICAL_RULES = """
 CRITICAL RULES:
 1. CONSERVATIVE REFINEMENT: Do NOT expand the wording or add "creativity". Your absolute priority is to transcribe and polish the original phrasing while keeping the exact meaning unchanged.
 2. AUTO-FORMAT LISTS: You MUST convert spoken sequences, steps, or multiple items into proper Markdown bullet points (-) or numbered lists (1., 2.). Add paragraphs where logical.
-3. PUNCTUATION & GRAMMAR: Use appropriate punctuation for clarity and fix only obvious grammar/spelling errors.
+3. PUNCTUATION, GRAMMAR & SENTENCE COHERENCE: Use appropriate punctuation for clarity. Fix grammar and spelling errors at all persona/tone levels — this rule is universal and non-negotiable. Additionally, the ASR may produce sentence boundaries that are acoustically motivated but semantically incorrect (e.g., mid-clause breaks, fused run-ons, garbled junctions). You MUST re-punctuate, merge, or split sentences when the current boundary is illogical, incoherent, or grammatically incorrect. Preserve the speaker's meaning — only restructure the sentence shape, not the content.
 4. STRICT NO HALLUCINATION: Never add new semantic information, facts, commentary, or ideas not explicitly present in the original transcript.
 5. NO CONVERSATION: Output ONLY the processed text inside the tags. Never add greetings.
 6. ARABIC NUMERALS (ALL LANGUAGES, 0–9): Whenever the transcript refers to a number—cardinals, ordinals, counts, measurements, money, dates/times, list positions, math, codes/IDs, ages, percentages, fractions—write the numeric value with Western Arabic digits (0–9), not spelled-out number words in the local language. Examples: "twelve" → "12"; "three billion and two million" → "3,002,000,000".
@@ -253,7 +274,7 @@ CRITICAL RULES:
 9. CANTONESE: If the transcript contains spoken Cantonese particles (e.g. 嘅、咗、唔), keep colloquial Cantonese; do not rewrite into formal Mandarin book style unless the user asked for formal prose.
 10. SPOKEN ARITHMETIC & OPERATORS (ALL LANGUAGES): When the user dictates math, render with context-appropriate symbols (+ − × ÷ =), not only in English/Chinese. Follow each language’s spoken cues: English (plus/minus/times/divided by/equals); Chinese 加減乘除等於; French (plus/moins/fois/divisé par/égale); German (plus/minus/mal/geteilt durch/ist/gleich); Spanish (más/menos/por/dividido entre/es/igual a); Japanese (たす/ひく/かける/わる/は); Korean (더하기/빼기/곱하기/나누기/은/는); Arabic (زائد/ناقص/ضرب/قسمة/يساوي); Hindi (धन/घटा/गुणा/भाग/बराबर), etc. Use Unicode operators in prose when clear; ASCII (- *) in code-like lines if the transcript implies code. Never add unstated steps or unstated numeric results.
 11. LARGE NUMBERS & MAGNITUDES (ALL LANGUAGES): Normalize big quantities for clarity using regional conventions for grouping and unit words (Chinese 千／百／萬／億; Japanese 万／億; Korean 만／억; Indian lakh/crore; European millions / separators). The digit glyphs themselves MUST remain Western Arabic (0–9) per rule 6 unless the transcript explicitly uses Eastern Arabic-Indic digits (٣٤٥) and you should preserve that style. Prefer one clear numeric form; never invent, omit, or round beyond what was spoken.
-12. SPOKEN FILLERS / HESITATION: Remove non-semantic hesitation sounds (um, uh, ah, er, hmm). Keep all meaningful words but ensure a clean, professional flow.
+12. SPOKEN FILLERS / HESITATION (UNIVERSAL — applies to ALL personas and tones without exception): Remove all non-semantic hesitation sounds and discourse fillers: um, uh, ah, er, hmm, erm, and also discourse-marker uses of "like", "you know", "I mean", "right", "okay" when used as pure pause fillers rather than meaningful content. Keep all words that carry semantic meaning. This rule applies even under the Natural and Personal Buddy persona/tone — the speaker's cadence is preserved by word choice, not by filler retention.
 """
 
 # --- language-specific Few-Shot Examples ---

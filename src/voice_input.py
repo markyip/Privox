@@ -1422,13 +1422,12 @@ class GrammarChecker:
             if _mixed_cjk_lat:
                 directive += (
                     "\nMIXED SCRIPT (inferred Latin-primary): Keep all CJK phrases unchanged in meaning; "
-                    "remove fillers only in Latin parts (CRITICAL RULE 12). Never translate CJK to English "
+                    "Apply CRITICAL RULE 12 (filler removal) to Latin/English parts only. Never translate CJK to English "
                     "or English to Chinese (CRITICAL RULE 7)."
                 )
             else:
                 directive += (
-                    "\nENGLISH (inferred): Remove non-semantic fillers (um, uh, ah, er, hmm, like/you know when purely "
-                    "discourse markers). Keep wording otherwise; do not translate to another language (CRITICAL RULE 7)."
+                    "\nENGLISH (inferred): Apply CRITICAL RULE 12 (filler removal). Keep wording otherwise; do not translate to another language (CRITICAL RULE 7)."
                 )
 
         # Chinese script: user chooses Simplified vs Traditional for all Chinese output (default: Traditional).
@@ -2356,12 +2355,13 @@ class VoiceInputApp:
         self.vram_timeout = 60 # Seconds before unloading
         # Two-tier idle (worker isolation): at vram_timeout we kill the LOADED worker (frees ALL
         # VRAM incl. CUDA context) and immediately respawn a WARM-FRESH one (~0 VRAM) so the next
-        # wake skips spawn+import. After worker_kill_timeout of continued idle we kill the
-        # WARM-FRESH worker too, to free its RAM (next wake then pays full spawn+import+load once).
+        # wake skips spawn+import. Tier 2 (optional) kills the warm worker after extended idle;
+        # we respawn warm again right after so wake stays fast (brief RAM dip only).
         try:
-            self.worker_kill_timeout = max(60, int(os.environ.get("PRIVOX_WORKER_KILL_TIMEOUT", "600")))
+            _wkt = os.environ.get("PRIVOX_WORKER_KILL_TIMEOUT", "0").strip()
+            self.worker_kill_timeout = max(0, int(_wkt)) if _wkt else 0
         except (TypeError, ValueError):
-            self.worker_kill_timeout = 600
+            self.worker_kill_timeout = 0
         # Idle unload policy: unload ASR with refiner after VRAM Saver timeout (wake-up reload is fast enough).
         self.use_simplified_chinese_output = False
         self.eager_model_load = True 
@@ -2371,6 +2371,8 @@ class VoiceInputApp:
         self._wakeup_autostart_cancelled = False
         self._awaiting_wake_ready_chime = False  # play_ready after idle load when not yet recording
         self._defer_recording_feedback = False  # wake-from-idle: spinner + wake beep until engine ready
+        self._recording_start_feedback_played = False  # True after play_start (defer or immediate)
+        self._stop_flush_pending = False  # processing_loop may append while stop drains the queue
         self._worker_load_in_progress = False
         self._heavy_model_load_in_progress = False  # suppress prefs hot-reload during ASR/LLM init
         self.last_model_error = ""
@@ -2404,6 +2406,7 @@ class VoiceInputApp:
         self._worker_ready = False  # True once the worker reports models loaded
         self._worker_load_thread = None  # single-flight background load after idle wake
         self._worker_load_lock = threading.Lock()
+        self._warm_respawn_in_progress = False
         self._wake_t0 = None
         self._wake_t_last = None
 
@@ -3379,9 +3382,21 @@ class VoiceInputApp:
                 self._update_user_prefs(lambda p: p.__setitem__("current_refiner", _migrated))
 
             _gem = models_config.LLM_LIBRARY[0]
-            if config.get("grammar_file") == "Qwen3.5-4B-Q4_K_M.gguf" or config.get("grammar_repo") == "unsloth/Qwen3.5-4B-GGUF":
-                config["grammar_repo"] = _gem["repo_id"]
-                config["grammar_file"] = _gem["file_name"]
+            _gf = config.get("grammar_file")
+            _migrated_gf = models_config.migrate_refiner_gguf_file(_gf)
+            if (
+                config.get("grammar_file") == "Qwen3.5-4B-Q4_K_M.gguf"
+                or config.get("grammar_repo") == "unsloth/Qwen3.5-4B-GGUF"
+                or (_gf and _migrated_gf != _gf)
+            ):
+                for m in models_config.LLM_LIBRARY:
+                    if m.get("file_name") == _migrated_gf:
+                        config["grammar_repo"] = m["repo_id"]
+                        config["grammar_file"] = m["file_name"]
+                        break
+                else:
+                    config["grammar_repo"] = _gem["repo_id"]
+                    config["grammar_file"] = _migrated_gf
                 with open(config_path, "w", encoding="utf-8") as f:
                     json.dump(config, f, indent=4)
             
@@ -3457,7 +3472,7 @@ class VoiceInputApp:
             self.vram_timeout = 0 if v_val == 0 else max(5, v_val)
             try:
                 _k_val = int(prefs.get("worker_kill_timeout", self.worker_kill_timeout))
-                self.worker_kill_timeout = max(self.vram_timeout if self.vram_timeout > 0 else 60, _k_val)
+                self.worker_kill_timeout = max(0, _k_val)
             except (TypeError, ValueError):
                 pass
             self.use_simplified_chinese_output = bool(prefs.get("use_simplified_chinese_output", False))
@@ -3991,6 +4006,21 @@ class VoiceInputApp:
         except queue.Empty:
             pass
 
+    def _flush_audio_queue_to_buffer(self):
+        """Append any mic chunks still in the queue before stop/transcribe (avoids losing tail audio)."""
+        try:
+            while True:
+                chunk = self.q.get_nowait()
+                chunk = np.asarray(chunk, dtype=np.float32).reshape(-1)
+                self.audio_buffer.append(chunk)
+                if len(chunk) > 0:
+                    rms = float(np.sqrt(np.mean(chunk * chunk)))
+                    if rms >= INITIAL_SPEECH_ENERGY_RMS:
+                        self._heard_voice_energy = True
+                        self._last_loud_chunk_time = time.time()
+        except queue.Empty:
+            pass
+
     def audio_callback(self, indata, frames, callback_time, status):
         if not (self.running and self.mic_active and self.models_ready and self.is_listening):
             return
@@ -4180,6 +4210,9 @@ class VoiceInputApp:
             self.pending_wakeup = False
             log_print("Wake load complete: engine ready — recording.")
             self.sound_manager.play_start()
+            self._recording_start_feedback_played = True
+            self.last_activity_time = time.time()
+            self._last_loud_chunk_time = time.time()
             self.update_status("RECORDING")
             return
         # Active recording: start beep already played; never add load-complete chimes mid-take.
@@ -4215,6 +4248,7 @@ class VoiceInputApp:
         self.is_speaking = False
         self._heard_voice_energy = False
         self._wakeup_autostart_cancelled = False
+        self._recording_start_feedback_played = False
         log_print("\n[Start Listening]", flush=True)
         wake_load = defer_start_feedback or (
             _worker_isolation_enabled() and not self._worker_ready
@@ -4226,12 +4260,12 @@ class VoiceInputApp:
             self._schedule_worker_load()
         if wake_load:
             self._defer_recording_feedback = True
-            self.pending_wakeup = True
             self.sound_manager.play_wake()
             self.update_status("INITIALIZING")
         else:
             self._defer_recording_feedback = False
             self.sound_manager.play_start()
+            self._recording_start_feedback_played = True
             self.update_status("RECORDING")
         self.audio_buffer = []
         self._drain_audio_queue()
@@ -4243,18 +4277,26 @@ class VoiceInputApp:
     def stop_listening(self):
         log_print(" [Stopped]", flush=True)
         self._wake_timing_mark("stop-listening")
-        self.sound_manager.play_stop()
+        was_deferred = self._defer_recording_feedback
         self._defer_recording_feedback = False
         self._awaiting_wake_ready_chime = False
-        # Any stop during a VRAM-saver wake load means "do not auto-start when load finishes"
-        # (covers auto-stop and toggle-off; avoids race vs setting heavy_models_loaded before this runs).
-        if self.pending_wakeup:
+        # Mic-not-ready wake only: cancel phantom auto-start when load finishes.
+        if self.pending_wakeup and not self._recording_start_feedback_played:
             self._wakeup_autostart_cancelled = True
+        # Drain queue while still accepting appends (processing_loop race).
+        self._stop_flush_pending = True
+        try:
+            self._flush_audio_queue_to_buffer()
+        finally:
+            self._stop_flush_pending = False
+        has_audio = len(self.audio_buffer) > 0
+        if self._recording_start_feedback_played or has_audio or not was_deferred:
+            self.sound_manager.play_stop()
         self.is_listening = False
         self.update_status("PROCESSING")
         self.update_tray_tooltip()
 
-        if len(self.audio_buffer) > 0:
+        if has_audio:
             # Paste guard: immediate GetForegroundWindow() is often wrong (0 or wrong HWND) right on hotkey release.
             # Defer ~120ms then sample; transcribe thread waits for anchor before injecting Ctrl+V.
             with self._paste_anchor_lock:
@@ -4414,7 +4456,25 @@ class VoiceInputApp:
         """Pre-spawn + load the worker in the background (called on hotkey-down)."""
         if not _worker_isolation_enabled():
             return
+        # Tier 2 may leave no worker; start spawn immediately so load overlaps import, not after it.
+        with self._worker_lock:
+            need_spawn = self._worker is None or not self._worker.is_alive()
+        if need_spawn:
+            threading.Thread(
+                target=self._ensure_warm_worker_spawned,
+                daemon=True,
+                name="privox-worker-spawn",
+            ).start()
         self._schedule_worker_load()
+
+    def _ensure_warm_worker_spawned(self):
+        """Spawn/connect a WARM-FRESH worker (no model load). Idempotent."""
+        if not _worker_isolation_enabled() or not self.running:
+            return
+        try:
+            self._ensure_worker(wait_ready=False)
+        except Exception as e:
+            log_print(f"Warm worker spawn error: {e}")
 
     def _respawn_warm_worker(self):
         """Background: kill any existing worker and spawn a fresh WARM-FRESH one (~0 VRAM).
@@ -4424,6 +4484,9 @@ class VoiceInputApp:
         """
         if not _worker_isolation_enabled() or not self.running:
             return
+        if getattr(self, "_warm_respawn_in_progress", False):
+            return
+        self._warm_respawn_in_progress = True
         try:
             self._shutdown_worker()
             if self.running:
@@ -4435,9 +4498,14 @@ class VoiceInputApp:
                     self._schedule_worker_load()
         except Exception as e:
             log_print(f"WARM worker respawn error: {e}")
+        finally:
+            self._warm_respawn_in_progress = False
 
     def _transcribe_via_worker(self, audio_data, task_id):
         """Delegate ASR + refiner to the worker process, then paste in the main process."""
+        if task_id is not None and task_id != getattr(self, "_transcribe_task_id", 0):
+            log_transcription(" [Skip transcribe: superseded recording session]")
+            return
         self._wake_timing_mark("transcribe-begin")
         _wake_wait_start = time.time()
         client = self._ensure_worker(wait_ready=True)
@@ -4477,6 +4545,9 @@ class VoiceInputApp:
         final_text = resp.get("final_text")
         if final_text is None or not str(final_text).strip():
             log_transcription(" [Skip paste: empty refined output]")
+            return
+        if task_id is not None and task_id != getattr(self, "_transcribe_task_id", 0):
+            log_transcription(" [Skip paste: superseded recording session]")
             return
         ft = str(final_text)
         cap = 500
@@ -4658,6 +4729,9 @@ class VoiceInputApp:
     def transcribe(self, audio_data, task_id=None):
         with self.model_lock:
             try:
+                if task_id is not None and task_id != getattr(self, "_transcribe_task_id", 0):
+                    log_transcription(" [Skip transcribe: superseded recording session]")
+                    return
                 duration = len(audio_data) / SAMPLE_RATE
                 max_amp = np.max(np.abs(audio_data))
                 rms = np.sqrt(np.mean(audio_data**2))
@@ -5087,17 +5161,38 @@ class VoiceInputApp:
                         self.update_tray_tooltip()
                         self.update_status("SLEEP")
                         threading.Thread(target=self._respawn_warm_worker, daemon=True).start()
-                    # Tier 2 (at worker_kill_timeout): after extended idle, kill the WARM-FRESH
-                    # worker too so the OS reclaims its RAM. Next wake pays full spawn+import+load.
+                    # Tier 2 (optional worker_kill_timeout > 0): kill WARM-FRESH to free system RAM,
+                    # then respawn warm immediately so the next wake still skips spawn+import.
                     elif (
                         worker_alive
                         and not self._worker_ready
+                        and self.worker_kill_timeout > 0
                         and idle_for > self.worker_kill_timeout
                     ):
-                        log_print(f"Idle (tier 2, {idle_for:.0f}s): killing WARM-FRESH worker to free RAM.")
+                        log_print(
+                            f"Idle (tier 2, {idle_for:.0f}s): recycling WARM-FRESH worker "
+                            f"(timeout {self.worker_kill_timeout}s)."
+                        )
                         self._shutdown_worker()
+                        threading.Thread(target=self._respawn_warm_worker, daemon=True).start()
                 elif self.heavy_models_loaded:
                     self.unload_heavy_models()
+
+            # Keep a warm worker ready while sleeping (covers tier-2 recycle + edge-case crashes).
+            if (
+                _worker_isolation_enabled()
+                and self.ui_state == "SLEEP"
+                and not self.is_listening
+                and not self._transcribe_in_progress
+                and not getattr(self, "_warm_respawn_in_progress", False)
+            ):
+                worker_alive = self._worker is not None and self._worker.is_alive()
+                if not worker_alive:
+                    threading.Thread(
+                        target=self._respawn_warm_worker,
+                        daemon=True,
+                        name="privox-sleep-warm-respawn",
+                    ).start()
 
             # Keyboard Listener Watchdog
             # Windows hooks can be dropped by the OS after long idle or power state changes.
@@ -5157,9 +5252,9 @@ class VoiceInputApp:
                 except queue.Empty:
                     continue
                     
-                if not self.is_listening:
+                if not self.is_listening and not getattr(self, "_stop_flush_pending", False):
                     continue
-                    
+
                 chunk = np.asarray(chunk, dtype=np.float32).reshape(-1)
                 self.audio_buffer.append(chunk)
 

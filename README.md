@@ -1,6 +1,6 @@
 # Privox 🎙️
 
-![App version](https://img.shields.io/badge/app-v1.3-blue)
+![App version](https://img.shields.io/badge/app-v1.4-blue)
 [![Python Version](https://img.shields.io/badge/python-3.10--3.12-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-Noncommercial-green.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Windows-blue?logo=windows)
@@ -28,7 +28,7 @@ A powerful, private, and fully local voice input assistant for Windows. Privox c
 
 ### 1. Installation
 
-1. Download **Privox.exe** from our [Releases](https://github.com/markyip/Privox/releases) page. The latest stable release is **v1.3** (2026-05-30); see [RELEASE_NOTES.md](RELEASE_NOTES.md) for full changes.
+1. Download **Privox.exe** from our [Releases](https://github.com/markyip/Privox/releases) page. The latest stable release is **v1.4** (2026-06-17); see [RELEASE_NOTES.md](RELEASE_NOTES.md) for full changes.
 2. Run the program and follow the simple on-screen instructions.
 3. On your first run, Privox will take a few minutes to set up its "AI Brains"—then you're ready to go!
 
@@ -73,7 +73,7 @@ You don't need to be a computer expert to customize Privox. Just right-click the
 - **VRAM usage is model-dependent**: Privox loads two local AI models (ASR + Refiner). Typical active VRAM is around 4–7 GB depending on your selected backend and GPU size. On **10–12 GB cards**, Privox automatically caps how many refiner layers go on GPU to leave enough headroom for the ASR model — both coexist without CUDA out-of-memory errors.
 - **TurboQuant refiner profiles**: Settings list **Gemma 4 E2B IT** and **E4B IT** (instruction-tuned checkpoints). They use tuned load settings (`n_ctx`, `n_gpu_layers`, `n_batch`) for a good balance on typical GPUs. This is not the separate Google **IT-Assistant** MTP drafter used for speculative decoding. **`n_ctx` is 8192** so longer dictation is less likely to be truncated during refinement; very long transcripts use a **compact system prompt** that still enforces the same critical rules but skips heavy few-shot blocks to fit context.
 - **Config file safety**: If `config.json` or `.user_prefs.json` is temporarily invalid JSON while you save in an editor, Privox reports a clear error (including path and a short preview) when running **from source / Pixi** (`privox_app.log`). The **packaged executable** does not write that log file; fix the file and save again to apply settings.
-- **VRAM Saver (worker isolation)**: ASR + refiner run in a **separate worker process**. After idle (`vram_timeout`, default 60 s), the loaded worker is killed and VRAM returns to **~0**; a **warm** worker (process only, no models) is respawned. Models reload on the **next hotkey**, not automatically in the background. Optional: set `PRIVOX_IDLE_PRELOAD_ASR=1` before launch to preload after idle (faster wake, but VRAM is occupied again while idle). Extended idle (`worker_kill_timeout`, default 600 s) kills the warm worker to free system RAM. Set **VRAM Saver timeout to 0** to keep models loaded. Worker isolation is on by default; set `PRIVOX_WORKER_ISOLATION=0` for the legacy in-process engine.
+- **VRAM Saver (worker isolation)**: ASR + refiner run in a **separate worker process**. After idle (`vram_timeout`, default 60 s), the loaded worker is killed and VRAM returns to **~0**; a **warm** worker (process only, no models) is respawned. Models reload on the **next hotkey**, not automatically in the background. Optional: `PRIVOX_IDLE_PRELOAD_ASR=1` for faster wake at the cost of idle VRAM. Tier 2 warm-worker recycle is **off by default** (`worker_kill_timeout=0`). Set **VRAM Saver timeout to 0** to keep models loaded.
 - **Qwen-ASR on mid-range GPUs**: When using Qwen-ASR on a 10–12 GB card, the ASR model is loaded with a VRAM cap (`~42%` of total, ~5 GB on 12 GB) using `device_map` to prevent out-of-memory during the transition from CPU to GPU.
 - **Very short sentences may not be refined**: To prevent hallucination, Privox will skip AI grammar correction if your spoken input is very short (roughly a few words). The original transcription will be typed out as-is. This is a deliberate safety measure to ensure quality output.
 - **Chinese output script (繁體 / 简体)**: In **Settings → General**, **Simplified Chinese output (简体中文)** is **off by default**. When it is off, any Chinese in the **final pasted text** is normalized to **Traditional Chinese** (refiner instructions plus **zhconv** when the package is installed). Turn the option **on** to normalize everything to **Simplified** instead. This applies regardless of whether the speech recognition returned Traditional or Simplified characters. Colloquial Cantonese particles are still encouraged when the transcript looks like spoken Cantonese.
@@ -105,7 +105,6 @@ Or install [Pixi](https://pixi.sh) globally (`pixi self-update`), then run `pixi
 
 We're actively working on making Privox even better:
 
-- **🍎 Mac Version**: A native macOS version is currently in development.
 - **♿ Accessibility Version**: A dedicated high-contrast, screen-reader-friendly version is under active development for users with accessibility needs.
 
 ## 🤝 Contributing & Feedback
@@ -125,7 +124,7 @@ Every piece of feedback helps shape Privox into a better tool. Thank you for you
 
 For power users who want to go beyond the Settings UI, Privox can be customized by editing the configuration files directly.
 
-The **packaged app version** string is `APP_VERSION` in `src/bootstrap.py` (currently **1.3**); it should match `version_info.txt` and `assets/privox.manifest` when you cut a release build.
+The **packaged app version** string is `APP_VERSION` in `src/bootstrap.py` (currently **1.4**); it should match `version_info.txt` and `assets/privox.manifest` when you cut a release build.
 
 ### Near-Zero Idle VRAM (Worker-Process Isolation)
 
@@ -138,7 +137,7 @@ Behaviour:
 
 - **Idle VRAM ≈ 0**: at `vram_timeout` (default 60 s) the loaded worker is killed (weights + CUDA context) and a **warm** worker (no models, ~0 VRAM) is respawned. By default Privox does **not** reload models until your next hotkey (`PRIVOX_IDLE_PRELOAD_ASR` defaults to `0`).
 - **Wake from idle**: warm worker has already paid spawn + import; you only wait for model load. Typical: **~2–5 s** (Distil / Cantonese CT2), **~8–12 s** (Qwen-ASR 0.6B).
-- **Extended idle** (`PRIVOX_WORKER_KILL_TIMEOUT`, default `600` s): if the warm worker never loaded models, it is killed to free system RAM.
+- **Extended idle (tier 2, optional)**: `worker_kill_timeout` defaults to **0** (disabled). When set (e.g. `PRIVOX_WORKER_KILL_TIMEOUT=3600`), the warm worker is recycled after long idle; Privox respawns a fresh warm process immediately so the next wake still skips spawn+import.
 - **Pre-warm Models on Startup** (Settings → General): load at launch for an instant first transcription (idle saver still frees VRAM after `vram_timeout`).
 - **Faster idle wake at cost of VRAM**: `PRIVOX_IDLE_PRELOAD_ASR=1` preloads models after tier-1 idle.
 - **Instant response**: VRAM Saver timeout **0**, or `PRIVOX_WORKER_ISOLATION=0` for in-process mode.
@@ -148,7 +147,7 @@ Environment variables (optional):
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `PRIVOX_IDLE_PRELOAD_ASR` | `0` | After tier-1 idle, preload models in background (faster wake, uses VRAM while idle). |
-| `PRIVOX_WORKER_KILL_TIMEOUT` | `600` | Seconds before killing the warm worker when still unloaded. |
+| `PRIVOX_WORKER_KILL_TIMEOUT` | `0` (off) | Optional tier-2 warm-worker recycle after N seconds idle (then warm respawn). |
 | `PRIVOX_WHISPER_PER_SEGMENT_LANGUAGE` | on | Per-segment LID for faster-whisper code-mix (set `0` to disable). |
 | `PRIVOX_WORKER_ISOLATION` | `1` (packaged) | `0` = legacy in-process engine. |
 

@@ -1,5 +1,26 @@
 # Privox Release Notes
 
+## v1.4 (Prompt, Filler Control & Diagnostics Update)
+
+**Release date:** 2026-06-17
+
+This release focuses on prompt engineering refinements to improve filler word removal, sentence breaking coherence, and universal grammar correction across all persona and tone settings, as well as diagnostic latency profiling for worker idle-wake.
+
+### 🚀 Prompt & Refinement Improvements
+
+- **Universal Spoken Filler Control**: Expanded Rule 12 (`SPOKEN FILLERS / HESITATION`) to apply unconditionally across all personas and tones, including `Natural` tone and `Personal Buddy` persona. Added more fillers (`erm`, and discourse-marker uses of `like`, `you know`, `I mean`, `right`, `okay` when used as pause fillers).
+- **Sentence Breaking & Punctuation Coherence**: Updated Rule 3 (`PUNCTUATION, GRAMMAR & SENTENCE COHERENCE`) to explicitly grant the refiner permission to re-punctuate, merge, or split sentences when the raw ASR-produced boundaries are illogical or incoherent.
+- **Universal Grammar Enforcement**: Added explicit instructions to each standard persona lens to ensure grammar, spelling, and sentence coherence are corrected, resolving a conflict in the conversational `Natural` tone overlay while preserving the speaker's vocabulary and cadence.
+- **Simplified Inline Directives**: Updated internal language-conditional prompt logic in `voice_input.py` to reference the central Rule 12 directly, ensuring consistent filler-removal behavior across language-mix boundaries.
+
+### 📊 Idle-Wake Performance Diagnostics
+
+- **Diagnostic Latency Profiling**: Added automated benchmarking for cold/warm worker process wake-up times and model-loading costs.
+- **VRAM-Isolated Process Warm-Fresh Spawn**: Verified ~2.5 seconds saved by using a pre-spawned background worker process to avoid import cost on wake.
+- **CUDA Graph Warmup Verification**: Confirmed built-in warmup keeps initial transcription latency under ~0.20 seconds, eliminating first-use transcription lag.
+
+---
+
 ## v1.3 (Installer, UX & Engine Update)
 
 **Release date:** 2026-05-30

@@ -56,15 +56,18 @@ class InferenceWorker:
         self._load_lock = threading.RLock()
         self._load_thread = None
         self._load_thread_lock = threading.Lock()
+        self._prebuild_done = threading.Event()
 
     # --- model lifecycle -------------------------------------------------
     def _build_app(self):
         with self._load_lock:
             if self.app is not None:
+                self._prebuild_done.set()
                 return self.app
             import voice_input
 
             self.app = voice_input.VoiceInputApp()
+            self._prebuild_done.set()
         return self.app
 
     def _prebuild_app(self):
@@ -80,8 +83,12 @@ class InferenceWorker:
                 _log("engine pre-built (WARM-FRESH, ~0 VRAM).")
         except BaseException as e:
             _log(f"pre-build error: {type(e).__name__}: {e}\n{traceback.format_exc()}")
+        finally:
+            self._prebuild_done.set()
 
     def _load_models(self):
+        if not self._prebuild_done.wait(timeout=120.0):
+            _log("pre-build still running after 120s; loading anyway")
         with self._load_lock:
             if self._ready:
                 return

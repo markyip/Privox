@@ -1450,7 +1450,7 @@ def main(log_callback=None, progress_callback=None):
 
             tmp_path = out_path + ".part"
 
-            req = urllib.request.Request(url, headers={"User-Agent": "Privox-Installer/1.3.0"})
+            req = urllib.request.Request(url, headers={"User-Agent": "Privox-Installer/1.4.0"})
 
             with urllib.request.urlopen(req, timeout=60) as resp:
 

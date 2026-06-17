@@ -624,11 +624,21 @@ class SettingsGUI(QMainWindow):
                 self.tech_config = json.load(f)
 
         _gem = models_config.LLM_LIBRARY[0]
-        if self.tech_config.get("grammar_file") == "Qwen3.5-4B-Q4_K_M.gguf" or self.tech_config.get(
-            "grammar_repo"
-        ) == "unsloth/Qwen3.5-4B-GGUF":
-            self.tech_config["grammar_repo"] = _gem["repo_id"]
-            self.tech_config["grammar_file"] = _gem["file_name"]
+        _gf = self.tech_config.get("grammar_file")
+        _migrated_gf = models_config.migrate_refiner_gguf_file(_gf)
+        if (
+            self.tech_config.get("grammar_file") == "Qwen3.5-4B-Q4_K_M.gguf"
+            or self.tech_config.get("grammar_repo") == "unsloth/Qwen3.5-4B-GGUF"
+            or (_gf and _migrated_gf != _gf)
+        ):
+            for m in models_config.LLM_LIBRARY:
+                if m.get("file_name") == _migrated_gf:
+                    self.tech_config["grammar_repo"] = m["repo_id"]
+                    self.tech_config["grammar_file"] = m["file_name"]
+                    break
+            else:
+                self.tech_config["grammar_repo"] = _gem["repo_id"]
+                self.tech_config["grammar_file"] = _migrated_gf
             with open(self.config_path, "w", encoding="utf-8") as f:
                 json.dump(self.tech_config, f, indent=4)
 
@@ -1032,7 +1042,7 @@ class SettingsGUI(QMainWindow):
         self.btn_save_all.clicked.connect(self.save_config)
         sidebar_layout.addWidget(self.btn_save_all)
         
-        footer_label = QLabel("v1.3.0")
+        footer_label = QLabel("v1.4.0")
         footer_label.setStyleSheet("color: #444444; padding-left: 20px;")
         sidebar_layout.addWidget(footer_label)
 

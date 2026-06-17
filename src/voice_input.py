@@ -523,11 +523,26 @@ def _convert_english_spoken_digit_lists(text: str) -> str:
     return _EN_SPOKEN_SPACE_RUN_RE.sub(_repl_space_run, out)
 
 
+def _remove_spoken_fillers(text: str) -> str:
+    """Remove common English spoken fillers (um, uh, ah, er, hmm, erm) and clean up punctuation."""
+    # Match filler words with optional trailing punctuation/whitespace
+    t = re.sub(r'\b(um|uh|ah|er|hmm|erm)\b[,\s\-]*', '', text, flags=re.IGNORECASE)
+    # Clean up double commas or leading/trailing punctuation left over
+    t = re.sub(r',\s*,', ',', t)
+    t = re.sub(r'^\s*,\s*', '', t)
+    t = re.sub(r'\s*,\s*$', '', t)
+    t = t.strip()
+    if t and t[0].islower():
+        t = t[0].upper() + t[1:]
+    return t
+
+
 def _finalize_refiner_text(text: str | None, use_simplified_zh: bool) -> str:
     """Spoken English number lists → digits, then Chinese script normalization."""
     if text is None:
         return ""
-    t = _convert_english_spoken_digit_lists(str(text))
+    cleaned = _remove_spoken_fillers(str(text))
+    t = _convert_english_spoken_digit_lists(cleaned)
     return _apply_chinese_output_script(t, use_simplified_zh)
 
 

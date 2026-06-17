@@ -835,8 +835,8 @@ INITIAL_SPEECH_ENERGY_RMS = 0.00085
 
 # Models
 # Models
-WHISPER_SIZE = "qwen3-asr-0.6b"
-WHISPER_REPO = "Qwen/Qwen3-ASR-0.6B"
+WHISPER_SIZE = "qwen3-asr-1.7b"
+WHISPER_REPO = "Qwen/Qwen3-ASR-1.7B"
 ASR_BACKEND = "qwen_asr"
 # Optional ISO code passed to faster-whisper (e.g. en for English-only CT2).
 WHISPER_TRANSCRIBE_LANGUAGE = None
@@ -1516,7 +1516,7 @@ class GrammarChecker:
             return True
         return len(head) >= 300 and (n * 11) > len(head) * 0.25
 
-    def _run_gemma_chat_completion(self, user_content: str, max_tokens: int) -> tuple[str, bool]:
+    def _run_gemma_chat_completion(self, user_content: str, max_tokens: int, temperature: float = 0.0) -> tuple[str, bool]:
         """
         Gemma refiner via create_chat_completion so llama_cpp applies the same BOS/special
         tokenization as format_gemma (raw self.model(str) skips that and can emit <unused*> spam).
@@ -1527,7 +1527,7 @@ class GrammarChecker:
             stream = self.model.create_chat_completion(
                 messages=[{"role": "user", "content": user_content}],
                 max_tokens=max_tokens,
-                temperature=0.0,
+                temperature=temperature,
                 top_p=1.0,
                 repeat_penalty=1.1,
                 seed=42,
@@ -1572,7 +1572,7 @@ class GrammarChecker:
         return text, False
 
     def _run_gemma_raw_prompt_stream(
-        self, prompt: str, max_tokens: int, stop_tokens
+        self, prompt: str, max_tokens: int, stop_tokens, temperature: float = 0.35
     ) -> tuple[str, bool]:
         """Last-resort raw prompt + stream (e.g. two-turn system/user); still may lack BOS."""
         stop_list = list(stop_tokens) if isinstance(stop_tokens, (list, tuple)) else (
@@ -1585,7 +1585,7 @@ class GrammarChecker:
             max_tokens=max_tokens,
             stop=stop_list,
             echo=False,
-            temperature=0.35,
+            temperature=temperature,
             top_p=0.92,
             repeat_penalty=1.28,
             seed=43,
@@ -1607,7 +1607,7 @@ class GrammarChecker:
         return text, False
 
     def _run_refiner_completion(
-        self, prompt: str, prompt_type: str, max_tokens: int, stop_tokens
+        self, prompt: str, prompt_type: str, max_tokens: int, stop_tokens, temperature: float = 0.3
     ) -> tuple[str, bool]:
         """Non-Gemma chat templates only (Llama/Qwen/…). Returns (raw_text, always False)."""
         stop_list = list(stop_tokens) if isinstance(stop_tokens, (list, tuple)) else (
@@ -1620,7 +1620,7 @@ class GrammarChecker:
             max_tokens=max_tokens,
             stop=stop_list,
             echo=False,
-            temperature=0.3,
+            temperature=temperature,
             top_p=0.9,
             repeat_penalty=1.1,
             seed=42,
@@ -1652,6 +1652,7 @@ class GrammarChecker:
     
             try:
                 prompt_type = self.profile.get("prompt_type", "llama")
+                tone_temp = 0.0 if is_command else models_config.TONE_TEMPERATURES.get(self.tone, 0.3)
     
                 if is_command:
                     # Agent Mode
@@ -1671,13 +1672,12 @@ class GrammarChecker:
                     system_prompt = models_config.get_system_formatter_for_transcript(
                         language=lang_effective, 
                         transcript_char_len=len(clean_text),
-                        persona_mission=core_directive
+                        persona_mission=core_directive,
+                        tone=self.tone
                     )
                     user_content = (
-                        f"[Core Directive]: {core_directive}\n"
                         f"[Transcript]: {text}\n"
-                        "Do not repeat the Core Directive, rules, or examples. "
-                        "Write only the opening tag <refined>, the cleaned transcript, and </refined>.\n"
+                        "Do not repeat instructions or examples. Write only the opening tag <refined>, the refined transcript, and </refined>.\n"
                         "Output: "
                     )
     
@@ -1719,7 +1719,7 @@ class GrammarChecker:
                 gemma_degenerate = False
                 if prompt_type == "gemma":
                     raw_response, gemma_degenerate = self._run_gemma_chat_completion(
-                        combined_user, max_tokens
+                        combined_user, max_tokens, temperature=tone_temp
                     )
                     if gemma_degenerate:
                         log_transcription(
@@ -1731,11 +1731,11 @@ class GrammarChecker:
                             "<start_of_turn>model\n"
                         )
                         raw_response, gemma_degenerate = self._run_gemma_raw_prompt_stream(
-                            prompt_fb, max_tokens, ["<end_of_turn>"]
+                            prompt_fb, max_tokens, ["<end_of_turn>"], temperature=tone_temp
                         )
                 else:
                     raw_response, gemma_degenerate = self._run_refiner_completion(
-                        prompt, prompt_type, max_tokens, stop_tokens
+                        prompt, prompt_type, max_tokens, stop_tokens, temperature=tone_temp
                     )
                 if gemma_degenerate:
                     log_transcription(
@@ -1937,6 +1937,7 @@ class GrammarChecker:
             "output only the processed text",
             "critical rules:",
             "conservative refinement:",
+            "fluent refinement:",
         )
         return any(m in sl for m in markers)
 
@@ -2047,6 +2048,7 @@ class GrammarChecker:
     _PROMPT_FINGERPRINTS = [
         "critical rules:",
         "conservative refinement:",
+        "fluent refinement:",
         "core directive",
         "strict identity override",
         "strict style override",
@@ -3591,7 +3593,7 @@ class VoiceInputApp:
                     )
 
             # Find in library
-            WHISPER_REPO = "Qwen/Qwen3-ASR-0.6B"
+            WHISPER_REPO = "Qwen/Qwen3-ASR-1.7B"
             WHISPER_SIZE = models_config.DEFAULT_ASR_WHISPER_MODEL
             WHISPER_TRANSCRIBE_LANGUAGE = None
             WHISPER_CODE_MIX = False

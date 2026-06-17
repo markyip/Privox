@@ -1241,8 +1241,12 @@ class SettingsGUI(QMainWindow):
                         combo.setCurrentIndex(i)
                         return
                 
-                # Special fallback for Refiner: prefer Gemma E2B if saved name missing
+                # Special fallback for Refiner: prefer Gemma E4B (then E2B) if saved name missing
                 if combo == self.llm_combo:
+                    for i in range(combo.count()):
+                        if "gemma 4 e4b" in combo.itemText(i).lower():
+                            combo.setCurrentIndex(i)
+                            return
                     for i in range(combo.count()):
                         if "gemma 4 e2b" in combo.itemText(i).lower():
                             combo.setCurrentIndex(i)

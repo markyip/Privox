@@ -93,6 +93,10 @@ privox_error_last.txt
 ort_debug.txt
 output.txt
 voice_input_diff.patch
+walkthrough.md
+implementation_plan.md
+task.md
+
 
 # User Prefs
 .user_prefs.json

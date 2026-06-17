@@ -9,9 +9,11 @@ This release focuses on prompt engineering refinements to improve filler word re
 ### 🚀 Prompt & Refinement Improvements
 
 - **Universal Spoken Filler Control**: Expanded Rule 12 (`SPOKEN FILLERS / HESITATION`) to apply unconditionally across all personas and tones, including `Natural` tone and `Personal Buddy` persona. Added more fillers (`erm`, and discourse-marker uses of `like`, `you know`, `I mean`, `right`, `okay` when used as pause fillers).
+- **Combined Tone Control Methodologies**: Integrated dynamic few-shot style demonstrations, unified prompt structures (removing redundant core directive duplication from the user prompt), and dynamic temperature/sampler selection per tone (e.g., deterministic `Natural`/`Concise` and creative `Professional`/`Casual` rephrasing).
 - **Sentence Breaking & Punctuation Coherence**: Updated Rule 3 (`PUNCTUATION, GRAMMAR & SENTENCE COHERENCE`) to explicitly grant the refiner permission to re-punctuate, merge, or split sentences when the raw ASR-produced boundaries are illogical or incoherent.
 - **Universal Grammar Enforcement**: Added explicit instructions to each standard persona lens to ensure grammar, spelling, and sentence coherence are corrected, resolving a conflict in the conversational `Natural` tone overlay while preserving the speaker's vocabulary and cadence.
 - **Simplified Inline Directives**: Updated internal language-conditional prompt logic in `voice_input.py` to reference the central Rule 12 directly, ensuring consistent filler-removal behavior across language-mix boundaries.
+- **Higher-Quality Default Models**: Transitioned defaults to the larger **Qwen-ASR v3 1.7B** voice-to-text model and **Gemma 4 E4B IT (TurboQuant)** refiner model for superior out-of-the-box transcription accuracy and grammar corrections.
 
 ### 📊 Idle-Wake Performance Diagnostics
 

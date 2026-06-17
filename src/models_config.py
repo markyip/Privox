@@ -106,16 +106,6 @@ def migrate_asr_folder_id(folder_id: str | None) -> str:
 # google/gemma-4-*-it-assistant are separate MTP drafters for speculative decoding — not listed here.
 LLM_LIBRARY = [
     {
-        "name": "Gemma 4 E2B IT (TurboQuant)",
-        "repo_id": "unsloth/gemma-4-E2B-it-GGUF",
-        "file_name": "gemma-4-E2B-it-UD-Q4_K_XL.gguf",
-        "prompt_type": "gemma",
-        "turboquant": True,
-        "n_ctx": 8192,
-        "n_gpu_layers": 20,
-        "description": "Main refiner (google/gemma-4-E2B-it). Unsloth Dynamic 4-bit; default.",
-    },
-    {
         "name": "Gemma 4 E4B IT (TurboQuant)",
         "repo_id": "unsloth/gemma-4-E4B-it-GGUF",
         "file_name": "gemma-4-E4B-it-UD-Q4_K_XL.gguf",
@@ -123,7 +113,17 @@ LLM_LIBRARY = [
         "turboquant": True,
         "n_ctx": 8192,
         "n_gpu_layers": 42,
-        "description": "Higher-quality refiner (google/gemma-4-E4B-it). Unsloth Dynamic 4-bit.",
+        "description": "Higher-quality refiner (google/gemma-4-E4B-it). Unsloth Dynamic 4-bit; default.",
+    },
+    {
+        "name": "Gemma 4 E2B IT (TurboQuant)",
+        "repo_id": "unsloth/gemma-4-E2B-it-GGUF",
+        "file_name": "gemma-4-E2B-it-UD-Q4_K_XL.gguf",
+        "prompt_type": "gemma",
+        "turboquant": True,
+        "n_ctx": 8192,
+        "n_gpu_layers": 20,
+        "description": "Main refiner (google/gemma-4-E2B-it). Unsloth Dynamic 4-bit.",
     },
 ]
 
@@ -178,7 +178,7 @@ def refiner_gguf_min_complete_bytes(file_name: str) -> int:
 
 # --- Defaults ---
 # Display name as stored in .user_prefs.json / ASR combo (must match ASR_LIBRARY "name").
-DEFAULT_ASR = "Qwen-ASR v3 0.6B"
+DEFAULT_ASR = "Qwen-ASR v3 1.7B"
 # English-focused faster-whisper preset (Settings + PRIVOX_NO_TORCH fallback).
 DEFAULT_ASR_ENGLISH = "Distil-Whisper Large v3 (English)"
 # Cantonese-focused faster-whisper preset (JackyHoCL CT2, language=yue).
@@ -191,8 +191,8 @@ WHISPER_CODE_MIX_PROMPT = (
     "Do not translate English speech into Chinese."
 )
 # Folder id under models/whisper-<id> and config.json "whisper_model" (keep in sync with ASR_LIBRARY entry).
-DEFAULT_ASR_WHISPER_MODEL = "qwen3-asr-0.6b"
-DEFAULT_LLM = "Gemma 4 E2B IT (TurboQuant)"
+DEFAULT_ASR_WHISPER_MODEL = "qwen3-asr-1.7b"
+DEFAULT_LLM = "Gemma 4 E4B IT (TurboQuant)"
 
 # --- Persona Lenses ---
 # These are the systematic instructions applied to each persona
@@ -238,8 +238,11 @@ TONE_OVERLAYS = {
         "Objective: Sound authoritative and polished."
     ),
     "Natural": (
-        "Style: Conversational. Maintain the speaker's vocabulary and cadence. Fix grammar, spelling, and sentence coherence (Rule 3) — but do NOT alter word choices, formality, or sentence length beyond what is needed for correctness. "
-        "Objective: Sound like a clean, accurate version of the original speaker."
+        "Style: Conversational and fluent. Fix grammar, spelling, and sentence coherence (Rule 3). "
+        "Feel free to restructure, rephrase, and rewrite the sentences to make them flow naturally "
+        "and sound completely fluent, while keeping the original meaning and conversational tone. "
+        "Avoid awkward spoken word order or repetitiveness. "
+        "Objective: Sound like a clean, accurate, and completely fluent version of the original speaker."
     ),
     "Polite": (
         "Style: Courteous. Soften direct statements. Use honorifics/politeness where contextually appropriate. "
@@ -260,12 +263,67 @@ TONE_OVERLAYS = {
     "Custom": "" # User provides absolute tone/style definition
 }
 
+TONE_TEMPERATURES = {
+    "Natural": 0.1,
+    "Concise": 0.0,
+    "Professional": 0.35,
+    "Casual": 0.35,
+    "Polite": 0.3,
+    "Aggressive": 0.3,
+    "Custom": 0.3,
+}
+
+TONE_EXAMPLES = {
+    "Professional": """
+<tone_example>
+Description: Show transition to professional, formal business writing.
+[Transcript]: So yeah, we need to sort of fix this bug ASAP because it's breaking stuff.
+Output: <refined>We must resolve this defect immediately, as it is impacting system stability.</refined>
+</tone_example>
+""",
+    "Polite": """
+<tone_example>
+Description: Show transition to respectful, polite communication.
+[Transcript]: We need to fix this bug ASAP.
+Output: <refined>Could we please prioritize resolving this issue at your earliest convenience?</refined>
+</tone_example>
+""",
+    "Casual": """
+<tone_example>
+Description: Show transition to natural, relaxed, conversational phrasing.
+[Transcript]: We must resolve this defect immediately, as it is impacting system stability.
+Output: <refined>We need to fix this bug as soon as possible since it's breaking things.</refined>
+</tone_example>
+""",
+    "Concise": """
+<tone_example>
+Description: Show transition to surgical, direct brevity.
+[Transcript]: So yeah, we need to sort of fix this bug ASAP because it's breaking stuff.
+Output: <refined>Fix this critical defect immediately.</refined>
+</tone_example>
+""",
+    "Aggressive": """
+<tone_example>
+Description: Show transition to direct, active, and decisive phrasing.
+[Transcript]: I think we might want to check the server logs maybe because it could help us find the issue.
+Output: <refined>Check the server logs immediately to locate the source of the issue.</refined>
+</tone_example>
+""",
+    "Natural": """
+<tone_example>
+Description: Show transition to clean, natural, and fluent conversational phrasing without losing the original meaning.
+[Transcript]: So, um, I was thinking like we could go to the store, but, uh, I'm not really sure if it's open now.
+Output: <refined>I was thinking we could go to the store, but I'm not sure if it's open now.</refined>
+</tone_example>
+"""
+}
+
 # --- Global Prompting Rules ---
 CRITICAL_RULES = """
 CRITICAL RULES:
-1. CONSERVATIVE REFINEMENT: Do NOT expand the wording or add "creativity". Your absolute priority is to transcribe and polish the original phrasing while keeping the exact meaning unchanged.
+1. FLUENT REFINEMENT: Do NOT add completely new facts, opinions, or ideas ("creativity") not present in the transcript. However, you have full liberty to rewrite, reorder, and restructure the sentences to make them completely fluent, natural, and grammatically correct. Avoid verbatim transcription of awkward, repetitive, or disjointed spoken grammar.
 2. AUTO-FORMAT LISTS: You MUST convert spoken sequences, steps, or multiple items into proper Markdown bullet points (-) or numbered lists (1., 2.). Add paragraphs where logical.
-3. PUNCTUATION, GRAMMAR & SENTENCE COHERENCE: Use appropriate punctuation for clarity. Fix grammar and spelling errors at all persona/tone levels — this rule is universal and non-negotiable. Additionally, the ASR may produce sentence boundaries that are acoustically motivated but semantically incorrect (e.g., mid-clause breaks, fused run-ons, garbled junctions). You MUST re-punctuate, merge, or split sentences when the current boundary is illogical, incoherent, or grammatically incorrect. Preserve the speaker's meaning — only restructure the sentence shape, not the content.
+3. PUNCTUATION, GRAMMAR & SENTENCE COHERENCE: Use appropriate punctuation for clarity. Fix grammar and spelling errors at all persona/tone levels — this rule is universal and non-negotiable. Additionally, the ASR may produce sentence boundaries that are acoustically motivated but semantically incorrect (e.g., mid-clause breaks, fused run-ons, garbled junctions). You MUST re-punctuate, merge, or split sentences when the current boundary is illogical, incoherent, or grammatically incorrect. Preserve the speaker's core message — restructure the sentence shape, word order, and phrasing as needed to ensure maximum fluency and natural flow, without changing the underlying meaning.
 4. STRICT NO HALLUCINATION: Never add new semantic information, facts, commentary, or ideas not explicitly present in the original transcript.
 5. NO CONVERSATION: Output ONLY the processed text inside the tags. Never add greetings.
 6. ARABIC NUMERALS (ALL LANGUAGES, 0–9): Whenever the transcript refers to a number—cardinals, ordinals, counts, measurements, money, dates/times, list positions, math, codes/IDs, ages, percentages, fractions—write the numeric value with Western Arabic digits (0–9), not spelled-out number words in the local language. Examples: "twelve" → "12"; "three billion and two million" → "3,002,000,000".
@@ -321,115 +379,96 @@ LANGUAGE_EXAMPLES = {
 _NUMBERS_FEW_SHOT_BY_LANG = {
     "en": """
 <example_3>
-[Core Directive]: Refine this text for clarity.
 [Transcript]: okay the steps are one, two, three, four
 Output: <refined>Okay, the steps are 1, 2, 3, 4.</refined>
 </example_3>
 <example_4>
-[Core Directive]: Refine this text for clarity.
 [Transcript]: so three plus five equals eight and ten minus two is also eight
 Output: <refined>So 3 + 5 = 8, and 10 − 2 = 8.</refined>
 </example_4>
 """,
     "zh": """
 <example_3>
-[Core Directive]: Refine this text for clarity.
 [Transcript]: 三加五等於八 跟住一千五百萬預算
 Output: <refined>3 + 5 = 8，跟住 1,500 萬預算。</refined>
 </example_3>
 <example_4>
-[Core Directive]: Refine this text for clarity.
 [Transcript]: 六乘七係四十二 八除二得四
 Output: <refined>6 × 7 = 42，8 ÷ 2 = 4。</refined>
 </example_4>
 """,
     "ja": """
 <example_3>
-[Core Directive]: Refine this text for clarity.
 [Transcript]: 三たす五は八です
 Output: <refined>3 + 5 = 8 です。</refined>
 </example_3>
 <example_4>
-[Core Directive]: Refine this text for clarity.
 [Transcript]: 予算は千五百万円です
 Output: <refined>予算は 1,500 万円です。</refined>
 </example_4>
 """,
     "ko": """
 <example_3>
-[Core Directive]: Refine this text for clarity.
 [Transcript]: 삼 더하기 오는 팔이에요
 Output: <refined>3 + 5 = 8이에요.</refined>
 </example_3>
 <example_4>
-[Core Directive]: Refine this text for clarity.
 [Transcript]: 예산이 삼천오백만 원입니다
 Output: <refined>예산은 3,500만 원입니다.</refined>
 </example_4>
 """,
     "fr": """
 <example_3>
-[Core Directive]: Refine this text for clarity.
 [Transcript]: euh trois plus cinq égale huit
 Output: <refined>3 + 5 = 8.</refined>
 </example_3>
 <example_4>
-[Core Directive]: Refine this text for clarity.
 [Transcript]: le budget c'est quinze millions d'euros
 Output: <refined>Le budget, c'est 15 millions d'euros.</refined>
 </example_4>
 """,
     "de": """
 <example_3>
-[Core Directive]: Refine this text for clarity.
 [Transcript]: ähm drei plus fünf ist acht
 Output: <refined>3 + 5 = 8.</refined>
 </example_3>
 <example_4>
-[Core Directive]: Refine this text for clarity.
 [Transcript]: fünfzehn millionen euro budget
 Output: <refined>Budget: 15 Millionen Euro.</refined>
 </example_4>
 """,
     "es": """
 <example_3>
-[Core Directive]: Refine this text for clarity.
 [Transcript]: tres más cinco es ocho
 Output: <refined>3 + 5 = 8.</refined>
 </example_3>
 <example_4>
-[Core Directive]: Refine this text for clarity.
 [Transcript]: quince millones de dólares
 Output: <refined>15 millones de dólares.</refined>
 </example_4>
 """,
     "ar": """
 <example_3>
-[Core Directive]: Refine this text for clarity.
 [Transcript]: ثلاثة زائد خمسة يساوي ثمانية
 Output: <refined>3 + 5 = 8.</refined>
 </example_3>
 <example_4>
-[Core Directive]: Refine this text for clarity.
 [Transcript]: خمسة عشر مليونًا
 Output: <refined>15,000,000.</refined>
 </example_4>
 """,
     "hi": """
 <example_3>
-[Core Directive]: Refine this text for clarity.
 [Transcript]: तीन धन पाँच बराबर आठ
 Output: <refined>3 + 5 = 8.</refined>
 </example_3>
 <example_4>
-[Core Directive]: Refine this text for clarity.
 [Transcript]: पंद्रह करोड़ रुपये
 Output: <refined>₹15 करोड़.</refined>
 </example_4>
 """,
     "_default": """
 <example_3>
-[Core Directive]: Refine this text for clarity.
 [Transcript]: (spoken math or large numbers in any language — rules 6, 10–11)
 Output: <refined>Use Western Arabic digits (0–9) for every numeric value, + − × ÷ = for math, locale grouping/unit words as needed; keep all non-numeric wording in the transcript language.</refined>
 </example_3>
@@ -437,7 +476,7 @@ Output: <refined>Use Western Arabic digits (0–9) for every numeric value, + �
 }
 
 
-def get_system_formatter(language=None, persona_mission=None):
+def get_system_formatter(language=None, persona_mission=None, tone=None):
     """Generates a system prompt with a language-relevant few-shot example."""
     lang_key = language if language in LANGUAGE_EXAMPLES else "en"
     ex = LANGUAGE_EXAMPLES[lang_key]
@@ -469,6 +508,8 @@ def get_system_formatter(language=None, persona_mission=None):
     else:
         numbers_ex = _NUMBERS_FEW_SHOT_BY_LANG.get(lang_key) or _NUMBERS_FEW_SHOT_BY_LANG["_default"]
 
+    tone_ex = TONE_EXAMPLES.get(tone, "") if tone else ""
+
     formatter = f"""
 You are a precise text-processing API. {mission_greeting}
 You MUST wrap your final processed text perfectly inside <refined> and </refined> XML tags. Do NOT output anything outside of these tags.
@@ -477,23 +518,21 @@ You MUST wrap your final processed text perfectly inside <refined> and </refined
 {CRITICAL_RULES}
 
 <example_1>
-[Core Directive]: Refine this text for clarity.
 [Transcript]: {ex['transcript']}
 Output: <refined>{ex['output']}</refined>
 </example_1>
 
 <example_2>
-[Core Directive]: Refine this text for clarity.
 [Transcript]: {struct_ex['transcript']}
 Output: <refined>{struct_ex['output']}</refined>
-</example_2>{numbers_ex}"""
+</example_2>{numbers_ex}{tone_ex}"""
     return formatter
 
 
-def get_system_formatter_for_transcript(language=None, transcript_char_len=0, persona_mission=None):
+def get_system_formatter_for_transcript(language=None, transcript_char_len=0, persona_mission=None, tone=None):
     """Shorter system prompt for long transcripts so prompt+text fits n_ctx; forbids summarization unless mission asks."""
     if transcript_char_len <= 300:
-        return get_system_formatter(language=language, persona_mission=persona_mission)
+        return get_system_formatter(language=language, persona_mission=persona_mission, tone=tone)
     
     mission_greeting = f"Your specific mission is: {persona_mission}" if persona_mission else "Refine the user's transcript per the Core Directive."
     
@@ -506,13 +545,15 @@ def get_system_formatter_for_transcript(language=None, transcript_char_len=0, pe
         "Be concise and remove exploratory fluff, but ensure the core technical substance is preserved."
     )
 
+    tone_ex = TONE_EXAMPLES.get(tone, "") if tone else ""
+
     return f"""
 You are a precise text-processing API. {mission_greeting}
 You MUST put the COMPLETE refined transcript inside one pair of <refined> and </refined> tags.
 {summarization_rule}
 
 {CRITICAL_RULES}
-"""
+{tone_ex}"""
 
 # --- ISO Language Map (For Prompt Highlighting) ---
 ISO_LANGUAGE_MAP = {

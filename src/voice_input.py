@@ -18,6 +18,17 @@ site.ENABLE_USER_SITE = False
 def _sanitize_user_site_paths():
     """Remove user-level site-packages from sys.path to avoid package shadowing."""
     sanitized = []
+    
+# --- Prevent Windows Background Throttling ---
+try:
+    if sys.platform == "win32":
+        import psutil
+        p = psutil.Process(os.getpid())
+        # Set to HIGH_PRIORITY_CLASS to prevent Windows 11 Efficiency Mode / EcoQoS throttling
+        # on background processes (since pythonw has no visible console window).
+        p.nice(psutil.HIGH_PRIORITY_CLASS)
+except Exception:
+    pass
     removed = []
     # Identify the pixi environment root to avoid removing it
     pixi_root = os.environ.get("CONDA_PREFIX", ".pixi").replace("\\", "/").lower()
@@ -523,18 +534,37 @@ def _convert_english_spoken_digit_lists(text: str) -> str:
     return _EN_SPOKEN_SPACE_RUN_RE.sub(_repl_space_run, out)
 
 
+_SPOKEN_FILLER_RE = re.compile(
+    r'\b(um|uh|ah|er|hmm|erm)\b[,\s\-]*',
+    flags=re.IGNORECASE,
+)
+
+
 def _remove_spoken_fillers(text: str) -> str:
-    """Remove common English spoken fillers (um, uh, ah, er, hmm, erm) and clean up punctuation."""
-    # Match filler words with optional trailing punctuation/whitespace
-    t = re.sub(r'\b(um|uh|ah|er|hmm|erm)\b[,\s\-]*', '', text, flags=re.IGNORECASE)
-    # Clean up double commas or leading/trailing punctuation left over
+    """Hardcoded strip of common English hesitation fillers (um, uh, ah, er, hmm, erm)."""
+    if not text:
+        return text
+    t = _SPOKEN_FILLER_RE.sub('', text)
     t = re.sub(r',\s*,', ',', t)
     t = re.sub(r'^\s*,\s*', '', t)
     t = re.sub(r'\s*,\s*$', '', t)
+    t = re.sub(r'\s{2,}', ' ', t)
     t = t.strip()
     if t and t[0].islower():
         t = t[0].upper() + t[1:]
     return t
+
+
+def _strip_asr_spoken_fillers(text: str) -> str:
+    """Post-ASR filler removal; logs when the transcript changes."""
+    if not text:
+        return text
+    stripped = _remove_spoken_fillers(text)
+    if stripped != text:
+        log_transcription(
+            f" [Filler strip] Removed spoken fillers ({len(text)} -> {len(stripped)} chars)"
+        )
+    return stripped
 
 
 def _finalize_refiner_text(text: str | None, use_simplified_zh: bool) -> str:
@@ -944,6 +974,7 @@ def _build_faster_whisper_transcribe_kwargs(audio_data) -> dict:
         audio=np.asarray(audio_data, dtype=np.float32),
         task="transcribe",
         beam_size=5,
+        condition_on_previous_text=False,  # Recommended for Distil-Whisper accuracy
         vad_filter=True,
         vad_parameters=dict(min_silence_duration_ms=500),
     )
@@ -955,7 +986,7 @@ def _build_faster_whisper_transcribe_kwargs(audio_data) -> dict:
         else "Transcript may mix English and Chinese; keep each language in its usual spelling."
     )
     if WHISPER_CODE_MIX:
-        # Always use per-segment LID for code-mix presets (do not pin yue for the whole clip).
+        # Always use per-segment LID for code-mix presets (do not pin yue for the whole whole clip).
         _asr_kw["multilingual"] = True
         _asr_kw["initial_prompt"] = _mix_prompt
     elif WHISPER_TRANSCRIBE_LANGUAGE:
@@ -963,8 +994,14 @@ def _build_faster_whisper_transcribe_kwargs(audio_data) -> dict:
     elif _use_per_segment_lang:
         _asr_kw["multilingual"] = True
         _asr_kw["initial_prompt"] = _mix_prompt
+        
+    try:
+        import time
+        with open("scratch/asr_debug.log", "a", encoding="utf-8") as f:
+            f.write(f"[{time.strftime('%H:%M:%S')}] Transcribe kwargs built. ASR_kw={_asr_kw.keys()}\n")
+    except Exception:
+        pass
     return _asr_kw
-
 
 def _refiner_language_hint(
     raw_text: str,
@@ -1323,25 +1360,9 @@ class GrammarChecker:
                 self._has_loaded_once = True
                 log_print(f"Done. (GPU Acceleration: {'ENABLED' if is_gpu else 'DISABLED'})")
 
-                # --- CUDA Graph Warmup: Run a tiny dummy inference to pre-bake GPU computation
-                # graphs so the user's FIRST real transcription doesn't pay the ~7-11s warmup
-                # penalty. This adds ~2-3s to model load time but eliminates first-use latency. ---
-                if is_gpu and (self.profile.get("prompt_type", "") or "").lower() == "gemma":
-                    try:
-                        import time as _wt
-                        _wup_start = _wt.time()
-                        log_print("Running CUDA graph warmup inference...")
-                        _warmup_msg = [{"role": "user", "content": "Hi"}]
-                        list(self.model.create_chat_completion(
-                            messages=_warmup_msg,
-                            max_tokens=4,
-                            temperature=0.0,
-                            seed=0,
-                            stream=True,
-                        ))
-                        log_print(f"CUDA graph warmup done in {_wt.time() - _wup_start:.2f}s.")
-                    except Exception as _wup_err:
-                        log_print(f"CUDA graph warmup skipped ({_wup_err}).")
+                # --- CUDA Graph Warmup (Deferred) ---
+                # Skipping LLM graph warmup here saves ~0.5s of wake latency.
+                # The first transcription will handle the JIT compilation organically.
 
                 return True
             except Exception as e:
@@ -2605,13 +2626,32 @@ class VoiceInputApp:
                 os.makedirs(hub_dir, exist_ok=True)
             torch.hub.set_dir(hub_dir)
             
-            self.vad_model, utils = torch.hub.load(
-                repo_or_dir="snakers4/silero-vad",
-                model="silero_vad",
-                force_reload=False,
-                onnx=False,
-                trust_repo=True,  # headless / PyTorch 2.x hub security prompt
-            )
+            local_dir = os.path.join(hub_dir, "snakers4_silero-vad_master")
+            if os.path.exists(local_dir):
+                try:
+                    self.vad_model, utils = torch.hub.load(
+                        repo_or_dir=local_dir,
+                        source="local",
+                        model="silero_vad",
+                        onnx=False,
+                    )
+                except Exception as e_local:
+                    log_print(f" Local VAD load failed ({e_local}), falling back to github...")
+                    self.vad_model, utils = torch.hub.load(
+                        repo_or_dir="snakers4/silero-vad",
+                        model="silero_vad",
+                        force_reload=False,
+                        onnx=False,
+                        trust_repo=True,
+                    )
+            else:
+                self.vad_model, utils = torch.hub.load(
+                    repo_or_dir="snakers4/silero-vad",
+                    model="silero_vad",
+                    force_reload=False,
+                    onnx=False,
+                    trust_repo=True,  # headless / PyTorch 2.x hub security prompt
+                )
             if _privox_vad_prefers_cuda() and torch.cuda.is_available():
                 try:
                     self.vad_model = self.vad_model.cuda()
@@ -2990,8 +3030,12 @@ class VoiceInputApp:
                                         self.asr_model.model.to("cuda")
                                 log_print("Qwen3ASRModel initialized successfully.")
                         else:
-                            # int8_float16 cuts VRAM vs pure float16 on CUDA with small quality cost.
-                            compute_type = "int8_float16" if is_gpu else "int8"
+                            # float16 eliminates on-the-fly quantization overhead, loading in < 1s vs 6s.
+                            compute_type = "float16" if is_gpu else "int8"
+                            try:
+                                with open("scratch/asr_debug.log", "a", encoding="utf-8") as f:
+                                    f.write(f"ASR Init: is_gpu={is_gpu}, device={device_str}, compute_type={compute_type}\n")
+                            except Exception: pass
                             from faster_whisper import WhisperModel
                             local_whisper = os.path.join(BASE_DIR, "models", f"whisper-{WHISPER_SIZE}")
                             model_path = local_whisper if os.path.exists(os.path.join(local_whisper, "model.bin")) else WHISPER_REPO
@@ -3012,31 +3056,10 @@ class VoiceInputApp:
                                     raise
                             log_print("WhisperModel initialized successfully.")
 
-                        # --- ASR CUDA Graph Warmup ---
-                        # Pre-bake GPU compilation / cuDNN benchmarking for the ASR model
-                        try:
-                            _wup_start = time.time()
-                            log_print(f"Running ASR graph warmup inference ({ASR_BACKEND}, 0.1s synthetic audio)...")
-                            _dummy_audio = np.zeros(int(SAMPLE_RATE * 0.1), dtype=np.float32)
-                            
-                            with torch.no_grad():
-                                if ASR_BACKEND == "sensevoice":
-                                    self.asr_model.generate(
-                                        input=_dummy_audio, cache={}, language="auto", use_itn=True, batch_size_s=60
-                                    )
-                                elif ASR_BACKEND == "qwen_asr":
-                                    if cuda_is_available():
-                                        _inner = getattr(self.asr_model, "model", None)
-                                        _has_map = bool(getattr(_inner, "hf_device_map", None))
-                                        if not _has_map and getattr(getattr(_inner, "device", None), "type", "cpu") != "cuda":
-                                            _inner.to("cuda")
-                                    self.asr_model.transcribe(audio=(_dummy_audio, int(SAMPLE_RATE)))
-                                elif ASR_BACKEND == "whisper":
-                                    list(self.asr_model.transcribe(_dummy_audio, language="en", beam_size=1))
-                                
-                            log_print(f"ASR graph warmup done in {time.time() - _wup_start:.2f}s.")
-                        except Exception as _wup_err:
-                            log_print(f"ASR graph warmup skipped ({_wup_err}).")
+                        # --- ASR CUDA Graph Warmup (Deferred) ---
+                        # Previously this ran synchronously, blocking the "Ready" state and "wake beep".
+                        # Now we skip it on init to drastically improve wake-up speed. The first
+                        # transcription handles lazy initialization automatically.
 
                         # Track ASR model usage here instead of in load_config
                         self.track_model_usage(getattr(self, 'active_asr_name', WHISPER_SIZE))
@@ -4676,6 +4699,8 @@ class VoiceInputApp:
                     seg_results.append(segment.text)
                 raw_text = " ".join(seg_results).strip()
 
+            raw_text = _strip_asr_spoken_fillers(raw_text)
+
             t1 = time.time()
             log_transcription(f" [ASR Total Time: {t1 - t0:.3f}s] Result: {len(raw_text)} chars")
             _asr_pv = raw_text[:400].replace("\n", " ").strip()
@@ -4878,6 +4903,8 @@ class VoiceInputApp:
                         seg_results.append(segment.text)
                     
                     raw_text = " ".join(seg_results).strip()
+
+                raw_text = _strip_asr_spoken_fillers(raw_text)
                 
                 t1 = time.time()
                 log_transcription(f" [ASR Total Time: {t1 - t0:.3f}s] Result: {len(raw_text)} chars")

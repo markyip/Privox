@@ -22,13 +22,13 @@ def scrub_obsolete_user_pref_keys(prefs: dict) -> bool:
 # --- Voice-to-Text (ASR) Library ---
 ASR_LIBRARY = [
     {
-        "name": "Distil-Whisper Large v3 (English)",
-        "whisper_repo": "Systran/faster-distil-whisper-large-v3",
-        "whisper_model": "distil-large-v3",
-        "repo": "Systran/faster-distil-whisper-large-v3",
+        "name": "Distil-Whisper Large v3.5 (English)",
+        "whisper_repo": "deepdml/faster-distil-whisper-large-v3.5",
+        "whisper_model": "distil-large-v3.5",
+        "repo": "deepdml/faster-distil-whisper-large-v3.5",
         "backend": "whisper",
         "whisper_language": "en",
-        "description": "Fast English (CT2). Best wake-from-idle speed for English-only dictation.",
+        "description": "Fast English (CT2). State-of-the-art distil-whisper 3.5 for English dictation.",
     },
     {
         "name": "Whisper Turbo Cantonese (CT2)",
@@ -59,19 +59,21 @@ ASR_LIBRARY = [
 
 # Legacy Settings labels → current ASR_LIBRARY display name.
 ASR_NAME_MIGRATIONS: dict[str, str] = {
-    "OpenAI Whisper Small": "Distil-Whisper Large v3 (English)",
+    "Distil-Whisper Large v3 (English)": "Distil-Whisper Large v3.5 (English)",
+    "OpenAI Whisper Small": "Distil-Whisper Large v3.5 (English)",
     "Whisper Large v3 Turbo (Multilingual)": "Qwen-ASR v3 0.6B",
     "Whisper Large v3 Turbo (Cantonese)": "Whisper Turbo Cantonese (CT2)",
     "Whisper Small Cantonese (CT2)": "Whisper Turbo Cantonese (CT2)",
     "Qwen3-ASR 0.6B (Multilingual)": "Qwen-ASR v3 0.6B",
     "Qwen3-ASR 1.7B (Multilingual)": "Qwen-ASR v3 1.7B",
-    "small": "Distil-Whisper Large v3 (English)",
+    "small": "Distil-Whisper Large v3.5 (English)",
     "large-v3-turbo": "Qwen-ASR v3 0.6B",
 }
 
 # Legacy config.json folder ids → current folder id (obsolete presets only).
 ASR_FOLDER_ID_MIGRATIONS: dict[str, str] = {
-    "small": "distil-large-v3",
+    "small": "distil-large-v3.5",
+    "distil-large-v3": "distil-large-v3.5",
     "large-v3-turbo": "qwen3-asr-0.6b",
     "small-cantonese-yue": "large-v3-turbo-cantonese-yue",
 }
@@ -180,7 +182,7 @@ def refiner_gguf_min_complete_bytes(file_name: str) -> int:
 # Display name as stored in .user_prefs.json / ASR combo (must match ASR_LIBRARY "name").
 DEFAULT_ASR = "Qwen-ASR v3 1.7B"
 # English-focused faster-whisper preset (Settings + PRIVOX_NO_TORCH fallback).
-DEFAULT_ASR_ENGLISH = "Distil-Whisper Large v3 (English)"
+DEFAULT_ASR_ENGLISH = "Distil-Whisper Large v3.5 (English)"
 # Cantonese-focused faster-whisper preset (JackyHoCL CT2, language=yue).
 DEFAULT_ASR_CANTONESE = "Whisper Turbo Cantonese (CT2)"
 

@@ -1074,7 +1074,7 @@ def run_app():
     # pythonw.exe (NOT a frozen binary), so it can spawn `pythonw privox_worker.py` directly — no
     # dedicated frozen entry point is required. Default ON for packaged launches; set
     # PRIVOX_WORKER_ISOLATION=0 in the environment to fall back to the in-process engine.
-    env.setdefault("PRIVOX_WORKER_ISOLATION", "1")
+    env.setdefault("PRIVOX_WORKER_ISOLATION", "0")
 
     if os.path.exists(env_pythonw):
         # Run pythonw directly to ensure no console flashes from 'pixi run' invoking a shell

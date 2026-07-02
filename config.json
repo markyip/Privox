@@ -1,6 +1,6 @@
 {
-    "asr_backend": "qwen_asr",
-    "whisper_repo": "Qwen/Qwen3-ASR-1.7B",
+    "asr_backend": "whisper",
+    "whisper_repo": "deepdml/faster-distil-whisper-large-v3.5",
     "grammar_repo": "unsloth/gemma-4-E4B-it-GGUF",
     "grammar_file": "gemma-4-E4B-it-UD-Q4_K_XL.gguf",
     "active_character": "Professional Refiner",

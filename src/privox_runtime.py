@@ -117,13 +117,22 @@ def pre_load_cuda_dlls() -> bool:
         root / "bin",
     ]
     
-    # Critical DLLs for ONNX 1.24 (CUDA 12.x + cuDNN 9)
+    # Critical DLLs for ONNX 1.24 / CTranslate2 (CUDA 12.x + cuDNN 9)
     # Search for exactly what's in the environment
     dlls_to_load = [
         "cudart64_12.dll",
         "cublas64_12.dll",
         "cublasLt64_12.dll",
+        "zlibwapi.dll",
+        "libiomp5md.dll",
         "cudnn64_9.dll",
+        "cudnn_ops64_9.dll",
+        "cudnn_cnn64_9.dll",
+        "cudnn_adv64_9.dll",
+        "cudnn_graph64_9.dll",
+        "cudnn_heuristic64_9.dll",
+        "cudnn_engines_precompiled64_9.dll",
+        "cudnn_engines_runtime_compiled64_9.dll",
     ]
     
     print(f"--- CUDA Pre-load Discovery (Root: {root}) ---")
